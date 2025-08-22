@@ -1,9 +1,11 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -24,6 +26,57 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 		c.Set("user_id", claims.UserID)
 		c.Set("role", claims.Role)
+		c.Next()
+	}
+}
+
+// FirebaseAuthMiddleware verifies Firebase ID tokens
+func FirebaseAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		if header == "" || !strings.HasPrefix(header, "Bearer ") {
+			utils.RespondWithError(c, http.StatusUnauthorized, "Missing or invalid Authorization header", nil)
+			return
+		}
+
+		idToken := strings.TrimPrefix(header, "Bearer ")
+
+		client := config.GetFirebaseAuth()
+		if client == nil {
+			utils.RespondWithError(c, http.StatusInternalServerError, "Firebase not initialized", nil)
+			return
+		}
+
+		// Verify the ID token
+		token, err := client.VerifyIDToken(context.Background(), idToken)
+		if err != nil {
+			utils.RespondWithError(c, http.StatusUnauthorized, "Invalid or expired token", err)
+			return
+		}
+
+		// Set user info in context
+		c.Set("firebase_uid", token.UID)
+		c.Set("firebase_email", token.Claims["email"])
+		c.Next()
+	}
+}
+
+// OptionalFirebaseAuth allows requests with or without auth
+func OptionalFirebaseAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		if header != "" && strings.HasPrefix(header, "Bearer ") {
+			idToken := strings.TrimPrefix(header, "Bearer ")
+
+			client := config.GetFirebaseAuth()
+			if client != nil {
+				token, err := client.VerifyIDToken(context.Background(), idToken)
+				if err == nil {
+					c.Set("firebase_uid", token.UID)
+					c.Set("firebase_email", token.Claims["email"])
+				}
+			}
+		}
 		c.Next()
 	}
 }
