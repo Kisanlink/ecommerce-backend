@@ -40,10 +40,15 @@ func (r *UserRepository) GetUserByFirebaseUID(ctx context.Context, firebaseUID s
 	return r.FindOne(ctx, filter)
 }
 
+// GetByFirebaseUID is an alias to GetUserByFirebaseUID for guard usage
+func (r *UserRepository) GetByFirebaseUID(ctx context.Context, firebaseUID string) (*models.User, error) {
+	return r.GetUserByFirebaseUID(ctx, firebaseUID)
+}
+
 // GetActiveUsers retrieves all active (non-deleted) users with pagination
 func (r *UserRepository) GetActiveUsers(ctx context.Context, page, pageSize int) ([]*models.User, error) {
 	filter := base.NewFilterBuilder().
-		Where("is_deleted", base.OpEqual, false).
+		WhereNull("deleted_at").
 		Page(page, pageSize).
 		Sort("created_at", "desc").
 		Build()
@@ -51,27 +56,40 @@ func (r *UserRepository) GetActiveUsers(ctx context.Context, page, pageSize int)
 	return r.Find(ctx, filter)
 }
 
-// SearchUsersByName searches users by first name or last name
+// SearchUsersByName searches users by name
 func (r *UserRepository) SearchUsersByName(ctx context.Context, searchTerm string, page, pageSize int) ([]*models.User, error) {
 	filter := base.NewFilterBuilder().
-		Or(
-			base.FilterCondition{Field: "first_name", Operator: base.OpContains, Value: searchTerm},
-			base.FilterCondition{Field: "last_name", Operator: base.OpContains, Value: searchTerm},
-		).
-		Where("is_deleted", base.OpEqual, false).
+		Where("name", base.OpContains, searchTerm).
+		WhereNull("deleted_at").
 		Page(page, pageSize).
-		Sort("first_name", "asc").
+		Sort("name", "asc").
 		Build()
 
 	return r.Find(ctx, filter)
 }
 
-// CountUsersByRole counts users by their role
-func (r *UserRepository) CountUsersByRole(ctx context.Context, role string) (int64, error) {
+// CountUsersByStatus counts users by their active status
+func (r *UserRepository) CountUsersByStatus(ctx context.Context, isActive bool) (int64, error) {
 	filter := base.NewFilterBuilder().
-		Where("role", base.OpEqual, role).
-		Where("is_deleted", base.OpEqual, false).
+		Where("is_active", base.OpEqual, isActive).
+		WhereNull("deleted_at").
 		Build()
 
 	return r.CountWithFilter(ctx, filter)
+}
+
+// CountActiveUsers counts all active (non-deleted) users
+func (r *UserRepository) CountActiveUsers(ctx context.Context) (int64, error) {
+	// Since Count methods have table identification issues in kisanlink-db,
+	// we'll retrieve all records and count them (not ideal for large datasets)
+	filter := base.NewFilterBuilder().
+		WhereNull("deleted_at").
+		Build()
+
+	users, err := r.Find(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+
+	return int64(len(users)), nil
 }

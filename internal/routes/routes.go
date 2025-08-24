@@ -1,48 +1,51 @@
 package routes
 
 import (
-	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
-	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/admin"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/auth"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/cart"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/delivery"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/orders"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/payment"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/products"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/recipes"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/users"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager) {
-	// Firebase Auth endpoints
-	firebaseAuth := handlers.NewFirebaseAuthHandler()
-	auth := r.Group("/auth")
+// RegisterRoutes registers all application routes by delegating to specific route modules
+func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
+	// Health check endpoint
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":  "ok",
+			"service": "ecommerce-backend",
+			"version": "1.0.0",
+		})
+	})
+
+	// API versioning
+	v1 := r.Group("/api/v1")
 	{
-		auth.POST("/signup", firebaseAuth.Signup)
-		auth.POST("/verify-token", firebaseAuth.VerifyToken)
-		auth.GET("/profile", middleware.FirebaseAuthMiddleware(), firebaseAuth.GetProfile)
-		auth.PUT("/profile", middleware.FirebaseAuthMiddleware(), firebaseAuth.UpdateProfile)
-		auth.DELETE("/account", middleware.FirebaseAuthMiddleware(), firebaseAuth.DeleteAccount)
+		// Register all route modules with both repositories and services
+		auth.RegisterAuthRoutes(v1, repoManager, serviceManager)
+		users.RegisterUserRoutes(v1, repoManager, serviceManager)
+		admin.RegisterAdminUserRoutes(v1, repoManager, serviceManager)
+		products.RegisterProductRoutes(v1, repoManager)
+		orders.RegisterOrderRoutes(v1, repoManager)
+		cart.RegisterCartRoutes(v1, repoManager)
+		recipes.RegisterRecipeRoutes(v1, repoManager)
+		payment.RegisterPaymentRoutes(v1, repoManager)
+		delivery.RegisterDeliveryRoutes(v1, repoManager)
 	}
 
-	// Create handlers with repository dependencies
-	userHandler := handlers.NewUserHandler(repoManager.UserRepository)
-	recipeHandler := handlers.NewRecipeHandler(repoManager) // May need multiple repos
-	
-	// Legacy auth endpoints (if you want to keep them)
-	r.POST("/register", userHandler.Register)
-	r.POST("/login", userHandler.Login)
-
-	// User endpoints (protected with Firebase auth)
-	userRoutes := r.Group("/users")
-	userRoutes.Use(middleware.FirebaseAuthMiddleware())
+	// Legacy routes (without versioning) for backward compatibility
+	legacy := r.Group("/")
 	{
-		userRoutes.GET("/:id", userHandler.GetUser)
-		userRoutes.PUT("/:id", userHandler.UpdateUser)
-		// Add more user-specific routes here
-	}
-
-	// Recipe endpoints (public for demo)
-	recipe := r.Group("/recipes")
-	{
-		recipe.GET("", recipeHandler.GetRecipes)
-		recipe.GET("/:id", recipeHandler.GetRecipeByID)
-		recipe.POST("", middleware.OptionalFirebaseAuth(), recipeHandler.CreateRecipe)
-		recipe.PUT("/:id", middleware.FirebaseAuthMiddleware(), recipeHandler.UpdateRecipe)
-		recipe.DELETE("/:id", middleware.FirebaseAuthMiddleware(), recipeHandler.DeleteRecipe)
+		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager)
+		recipes.RegisterRecipeRoutes(legacy, repoManager)
+		// Add other legacy routes as needed
 	}
 }

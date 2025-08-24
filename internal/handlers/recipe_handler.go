@@ -28,7 +28,7 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 
 func (h *RecipeHandler) GetRecipeByID(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	// For now, return a placeholder
 	c.JSON(http.StatusOK, gin.H{"message": "Recipe by ID not implemented yet", "id": id})
 }
@@ -39,28 +39,28 @@ func (h *RecipeHandler) CreateRecipe(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	// Create new recipe with proper constructor
 	newRecipe := models.NewRecipe(recipe.Title, recipe.Description, recipe.Ingredients, recipe.Steps, recipe.ImageURL)
-	
+
 	// For now, return the created recipe
 	c.JSON(http.StatusCreated, gin.H{"recipe": newRecipe})
 }
 
 func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	var recipe models.Recipe
 	if err := c.ShouldBindJSON(&recipe); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{"message": "Recipe update not implemented yet", "id": id})
 }
 
 func (h *RecipeHandler) DeleteRecipe(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	c.JSON(http.StatusOK, gin.H{"message": "Recipe delete not implemented yet", "id": id})
 }

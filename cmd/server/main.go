@@ -9,6 +9,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/server"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
 
@@ -48,6 +49,26 @@ func main() {
 		log.Fatalf("Failed to connect to Postgres via plugin: %v", err)
 	}
 
+	// Ensure users.id is VARCHAR to support string IDs like "USER..."
+	// This guards against older schemas where id might be BIGINT.
+	if dbConn, err := pgManager.GetDB(ctx, false); err == nil {
+		var dataType string
+		// Check current data type of users.id
+		type row struct{ DataType string }
+		var r row
+		if qerr := dbConn.Raw(
+			`SELECT data_type FROM information_schema.columns 
+			 WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'id'`,
+		).Scan(&r).Error; qerr == nil {
+			dataType = r.DataType
+		}
+		if dataType != "character varying" && dataType != "text" && dataType != "" {
+			// Drop default (e.g., sequence) if any, then alter type to VARCHAR(255)
+			_ = dbConn.Exec(`ALTER TABLE "users" ALTER COLUMN "id" DROP DEFAULT;`).Error
+			_ = dbConn.Exec(`ALTER TABLE "users" ALTER COLUMN "id" TYPE VARCHAR(255) USING "id"::text;`).Error
+		}
+	}
+
 	// Auto-migrate all models so columns/rows are created automatically
 	err := pgManager.AutoMigrateModels(ctx,
 		&models.User{},
@@ -76,8 +97,11 @@ func main() {
 	// Create repository manager with database manager
 	repoManager := repositories.NewRepositoryManager(pgManager)
 
-	// Start the main server
-	srv, err := server.NewServer(repoManager)
+	// Create service manager with repository manager (following the development rules)
+	serviceManager := services.NewServiceManager(repoManager)
+
+	// Start the main server with both repository and service managers
+	srv, err := server.NewServer(repoManager, serviceManager)
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}

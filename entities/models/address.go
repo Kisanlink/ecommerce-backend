@@ -9,11 +9,11 @@ import (
 type AddressType string
 
 const (
-	AddressTypeHome    AddressType = "home"
-	AddressTypeWork    AddressType = "work"
-	AddressTypeOther   AddressType = "other"
+	AddressTypeHome     AddressType = "home"
+	AddressTypeWork     AddressType = "work"
+	AddressTypeOther    AddressType = "other"
 	AddressTypeShipping AddressType = "shipping"
-	AddressTypeBilling AddressType = "billing"
+	AddressTypeBilling  AddressType = "billing"
 )
 
 // Address represents an address in the system
