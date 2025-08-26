@@ -6,9 +6,9 @@ import (
 
 // ServiceManager manages all services following the development rules
 type ServiceManager struct {
-	UserService *UserService
+	UserService    *UserService
+	ProductService *ProductService
 	// TODO: Add other services as they are implemented
-	// ProductService *ProductService
 	// OrderService   *OrderService
 	// CartService    *CartService
 }
@@ -16,9 +16,9 @@ type ServiceManager struct {
 // NewServiceManager creates a new service manager with repositories
 func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceManager {
 	return &ServiceManager{
-		UserService: NewUserService(repoManager.UserRepository),
+		UserService:    NewUserService(repoManager.UserRepository),
+		ProductService: NewProductService(repoManager),
 		// TODO: Initialize other services as they are implemented
-		// ProductService: NewProductService(repoManager.ProductRepository),
 		// OrderService:   NewOrderService(repoManager.OrderRepository),
 		// CartService:    NewCartService(repoManager.CartRepository),
 	}

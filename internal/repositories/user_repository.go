@@ -5,6 +5,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
+	"github.com/Kisanlink/kisanlink-db/pkg/db"
 )
 
 // UserRepository provides user-specific repository methods
@@ -13,7 +14,7 @@ type UserRepository struct {
 }
 
 // NewUserRepository creates a new user repository
-func NewUserRepository(dbManager interface{}) *UserRepository {
+func NewUserRepository(dbManager db.DBManager) *UserRepository {
 	repo := &UserRepository{
 		BaseFilterableRepository: base.NewBaseFilterableRepository[*models.User](),
 	}

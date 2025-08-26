@@ -33,7 +33,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		auth.RegisterAuthRoutes(v1, repoManager, serviceManager)
 		users.RegisterUserRoutes(v1, repoManager, serviceManager)
 		admin.RegisterAdminUserRoutes(v1, repoManager, serviceManager)
-		products.RegisterProductRoutes(v1, repoManager)
+		products.RegisterProductRoutes(v1, serviceManager, repoManager)
 		orders.RegisterOrderRoutes(v1, repoManager)
 		cart.RegisterCartRoutes(v1, repoManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)

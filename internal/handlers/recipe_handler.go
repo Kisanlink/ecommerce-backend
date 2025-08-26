@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -21,16 +22,69 @@ func NewRecipeHandler(repoManager *repositories.RepositoryManager) *RecipeHandle
 }
 
 func (h *RecipeHandler) GetRecipes(c *gin.Context) {
-	// For now, we'll use an in-memory approach since we don't have a recipe repository
-	// You can create a RecipeRepository following the same pattern as UserRepository
-	c.JSON(http.StatusOK, gin.H{"message": "Recipe repository not implemented yet"})
+	// Parse query parameters for pagination and filtering
+	page := 1
+	pageSize := 10
+
+	if p := c.Query("page"); p != "" {
+		if pageNum, err := strconv.Atoi(p); err == nil && pageNum > 0 {
+			page = pageNum
+		}
+	}
+
+	if ps := c.Query("page_size"); ps != "" {
+		if size, err := strconv.Atoi(ps); err == nil && size > 0 && size <= 100 {
+			pageSize = size
+		}
+	}
+
+	// Check for search/filter parameters
+	category := c.Query("category")
+	search := c.Query("search")
+	ingredient := c.Query("ingredient")
+
+	ctx := c.Request.Context()
+
+	// Get recipes using the new repository method
+	recipes, totalCount, err := h.repoManager.RecipesRepository.GetAllRecipes(ctx, page, pageSize, category, search, ingredient)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to fetch recipes",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"recipes": recipes,
+		"pagination": gin.H{
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       totalCount,
+			"total_pages": (totalCount + int64(pageSize) - 1) / int64(pageSize),
+		},
+	})
 }
 
 func (h *RecipeHandler) GetRecipeByID(c *gin.Context) {
 	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Recipe ID is required"})
+		return
+	}
 
-	// For now, return a placeholder
-	c.JSON(http.StatusOK, gin.H{"message": "Recipe by ID not implemented yet", "id": id})
+	ctx := c.Request.Context()
+
+	recipe, err := h.repoManager.RecipesRepository.GetRecipeByID(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":   "Recipe not found",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"recipe": recipe})
 }
 
 func (h *RecipeHandler) CreateRecipe(c *gin.Context) {
@@ -40,15 +94,41 @@ func (h *RecipeHandler) CreateRecipe(c *gin.Context) {
 		return
 	}
 
-	// Create new recipe with proper constructor
-	newRecipe := models.NewRecipe(recipe.Title, recipe.Description, recipe.Ingredients, recipe.Steps, recipe.ImageURL)
+	// Create new recipe with proper constructor using the new model structure
+	newRecipe := models.NewRecipe(recipe.Name, recipe.Description, recipe.Ingredients, recipe.Instructions)
 
-	// For now, return the created recipe
+	// Set additional fields from the request
+	newRecipe.RecipeID = recipe.RecipeID
+	newRecipe.Category = recipe.Category
+	newRecipe.Rating = recipe.Rating
+	newRecipe.Reviews = recipe.Reviews
+	newRecipe.PrepTime = recipe.PrepTime
+	newRecipe.Difficulty = recipe.Difficulty
+	newRecipe.Servings = recipe.Servings
+	newRecipe.NutritionFacts = recipe.NutritionFacts
+	newRecipe.ProTips = recipe.ProTips
+
+	ctx := c.Request.Context()
+
+	// Save to DynamoDB
+	err := h.repoManager.RecipesRepository.CreateRecipe(ctx, newRecipe)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to create recipe",
+			"details": err.Error(),
+		})
+		return
+	}
+
 	c.JSON(http.StatusCreated, gin.H{"recipe": newRecipe})
 }
 
 func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Recipe ID is required"})
+		return
+	}
 
 	var recipe models.Recipe
 	if err := c.ShouldBindJSON(&recipe); err != nil {
@@ -56,11 +136,42 @@ func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Recipe update not implemented yet", "id": id})
+	// Set the RecipeID from the URL parameter
+	recipe.RecipeID = id
+
+	ctx := c.Request.Context()
+
+	// Update in DynamoDB
+	err := h.repoManager.RecipesRepository.UpdateRecipe(ctx, &recipe)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to update recipe",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"recipe": recipe})
 }
 
 func (h *RecipeHandler) DeleteRecipe(c *gin.Context) {
 	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Recipe ID is required"})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Recipe delete not implemented yet", "id": id})
+	ctx := c.Request.Context()
+
+	// Soft delete in DynamoDB
+	err := h.repoManager.RecipesRepository.DeleteRecipe(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to delete recipe",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Recipe deleted successfully"})
 }

@@ -1,37 +1,36 @@
 package products
 
 import (
-	// "github.com/Kisanlink/ecommerce-backend/internal/handlers"
-	// "github.com/Kisanlink/ecommerce-backend/internal/middleware"
+	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
+	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
 // RegisterProductRoutes registers all product related routes
-func RegisterProductRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
-	// TODO: Create NewProductHandler when product_handler.go is implemented
-	// productHandler := handlers.NewProductHandler(repoManager.ProductRepository)
+func RegisterProductRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager, repoManager *repositories.RepositoryManager) {
+	// Create product handler with service
+	productHandler := handlers.NewProductHandler(serviceManager.ProductService)
 
-	// Placeholder routes until handlers are implemented
+	// Public product routes (no authentication required)
 	products := r.Group("/products")
 	{
-		products.GET("", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Product handler not implemented yet"}) })
-		products.GET("/:id", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Product handler not implemented yet"}) })
-		products.GET("/category/:category", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Product handler not implemented yet"}) })
-		products.GET("/search", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Product handler not implemented yet"}) })
+		products.GET("", productHandler.GetProducts)                              // Get all products with filters
+		products.GET("/:id", productHandler.GetProduct)                           // Get product by ID
+		products.GET("/category/:category", productHandler.GetProductsByCategory) // Get products by category
+		products.GET("/search", productHandler.SearchProducts)                    // Search products
 	}
 
-	// Protected product routes (commented until handler is implemented)
-	/*
-		protected := products.Group("/")
-		protected.Use(middleware.FirebaseAuthMiddleware())
-		{
-			protected.POST("", productHandler.CreateProduct)           // Create new product
-			protected.PUT("/:id", productHandler.UpdateProduct)        // Update product
-			protected.DELETE("/:id", productHandler.DeleteProduct)     // Delete product
-			protected.PUT("/:id/status", productHandler.UpdateProduct) // Update product status
-		}
-	*/
+	// Admin-only product routes (requires authentication + admin role)
+	adminProducts := products.Group("/")
+	adminProducts.Use(middleware.FirebaseAuthMiddleware())
+	adminProducts.Use(middleware.AdminGuard(repoManager))
+	{
+		adminProducts.POST("", productHandler.CreateProduct)       // Create new product (admin only)
+		adminProducts.PUT("/:id", productHandler.UpdateProduct)    // Update product (admin only)
+		adminProducts.DELETE("/:id", productHandler.DeleteProduct) // Delete product (admin only)
+	}
 
 	// Future route groups (commented until handlers are implemented)
 	/*

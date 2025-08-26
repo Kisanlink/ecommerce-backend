@@ -70,9 +70,10 @@ func main() {
 	}
 
 	// Auto-migrate all models so columns/rows are created automatically
+	// Note: Recipe model is excluded as it's stored in DynamoDB
 	err := pgManager.AutoMigrateModels(ctx,
 		&models.User{},
-		&models.Recipe{},
+		// &models.Recipe{}, // Stored in DynamoDB, not PostgreSQL
 		&models.Product{},
 		&models.Order{},
 		&models.OrderItem{},
@@ -95,7 +96,7 @@ func main() {
 	fmt.Println("Postgres tables:", tables)
 
 	// Create repository manager with database manager
-	repoManager := repositories.NewRepositoryManager(pgManager)
+	repoManager := repositories.NewRepositoryManager(pgManager, logger)
 
 	// Create service manager with repository manager (following the development rules)
 	serviceManager := services.NewServiceManager(repoManager)

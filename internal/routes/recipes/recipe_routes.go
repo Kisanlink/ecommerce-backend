@@ -15,11 +15,8 @@ func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.Reposito
 	recipes := r.Group("/recipes")
 	{
 		recipes.GET("", recipeHandler.GetRecipes)                    // Get all recipes with filters
-		recipes.GET("/:id", recipeHandler.GetRecipeByID)             // Get recipe by ID
-		recipes.GET("/search", recipeHandler.GetRecipes)             // Search recipes
-		recipes.GET("/category/:category", recipeHandler.GetRecipes) // Get recipes by category
-		recipes.GET("/featured", recipeHandler.GetRecipes)           // Get featured recipes
-		recipes.GET("/popular", recipeHandler.GetRecipes)            // Get popular recipes
+		recipes.GET("/:id", recipeHandler.GetRecipeByID)             // Get recipe by ID            // Search recipes
+		recipes.GET("/category/:category", recipeHandler.GetRecipes) // Get recipes by category           // Get popular recipes
 	}
 
 	// Protected recipe routes (requires authentication for creation/modification)
@@ -46,22 +43,5 @@ func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.Reposito
 		// reviews.POST("", reviewHandler.CreateRecipeReview)         // Create review (requires auth)
 		// reviews.PUT("/:reviewId", reviewHandler.UpdateReview)      // Update review (owner only)
 		// reviews.DELETE("/:reviewId", reviewHandler.DeleteReview)   // Delete review (owner only)
-	}
-
-	// Recipe collections/favorites
-	collections := r.Group("/my-recipes")
-	collections.Use(middleware.FirebaseAuthMiddleware())
-	{
-		collections.GET("/created", recipeHandler.GetRecipes)         // Get user's created recipes
-		collections.GET("/favorites", recipeHandler.GetRecipes)       // Get user's favorite recipes
-		collections.POST("/:id/favorite", recipeHandler.GetRecipes)   // Add to favorites
-		collections.DELETE("/:id/favorite", recipeHandler.GetRecipes) // Remove from favorites
-	}
-
-	// Recipe ingredients (for shopping integration)
-	ingredients := recipes.Group("/:id/ingredients")
-	{
-		ingredients.GET("", recipeHandler.GetRecipes)                                                   // Get recipe ingredients
-		ingredients.POST("/add-to-cart", middleware.FirebaseAuthMiddleware(), recipeHandler.GetRecipes) // Add ingredients to cart
 	}
 }
