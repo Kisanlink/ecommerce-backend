@@ -41,12 +41,27 @@ func main() {
 		PostgresSSLMode:   pgEnv.SSLMode,
 		PostgresMaxConns:  pgEnv.MaxConns,
 		PostgresIdleConns: pgEnv.IdleConns,
+		// Add S3 configuration
+		S3Region: os.Getenv("DB_S3_REGION"),
+		S3Bucket: os.Getenv("DB_S3_BUCKET"),
 	}
 
 	ctx := context.Background()
 	pgManager := db.NewPostgresManager(pgConfig, logger)
 	if err := pgManager.Connect(ctx); err != nil {
 		log.Fatalf("Failed to connect to Postgres via plugin: %v", err)
+	}
+
+	// Initialize S3Manager
+	var s3Manager *db.S3Manager
+	if pgConfig.S3Bucket != "" {
+		s3Manager = db.NewS3Manager(pgConfig, logger)
+		if err := s3Manager.Connect(ctx); err != nil {
+			log.Printf("Warning: Failed to connect to S3: %v", err)
+			log.Println("S3 image upload will not be available")
+		} else {
+			log.Println("Successfully connected to S3")
+		}
 	}
 
 	// Ensure users.id is VARCHAR to support string IDs like "USER..."
@@ -99,8 +114,8 @@ func main() {
 	// Create repository manager with database manager
 	repoManager := repositories.NewRepositoryManager(pgManager, logger)
 
-	// Create service manager with repository manager (following the development rules)
-	serviceManager := services.NewServiceManager(repoManager)
+	// Create service manager with repository manager and S3Manager (following the development rules)
+	serviceManager := services.NewServiceManager(repoManager, s3Manager)
 
 	// Start the main server with both repository and service managers
 	srv, err := server.NewServer(repoManager, serviceManager)

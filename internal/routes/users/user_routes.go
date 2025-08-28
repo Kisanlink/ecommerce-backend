@@ -19,7 +19,6 @@ func RegisterUserRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		// User profile operations
 		users.GET("/profile", userHandler.GetCurrentUserProfile) // Get current user profile
 		users.PUT("/profile", userHandler.UpdateCurrentUser)     // Update current user profile
-		users.DELETE("/profile", userHandler.DeleteCurrentUser)  // Delete current user
 
 		// User management (admin only - add admin middleware later)
 		users.GET("/:id", userHandler.GetUserByID)   // Get user by ID

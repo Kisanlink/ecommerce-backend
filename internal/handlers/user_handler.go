@@ -178,7 +178,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 	})
 }
 
-// DeleteUser soft deletes a user by ID
+// DeleteUser hard deletes a user by ID (completely removes from database)
 func (h *UserHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -186,14 +186,8 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
-	// Get current user for audit trail
-	deletedBy := "system"
-	if firebaseUID, exists := c.Get("firebase_uid"); exists {
-		deletedBy = firebaseUID.(string)
-	}
-
 	ctx := context.Background()
-	response, err := h.userService.SoftDeleteUser(ctx, id, deletedBy)
+	response, err := h.userService.HardDeleteUser(ctx, id)
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to delete user", err)
 		return
@@ -207,7 +201,7 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 	utils.RespondWithSuccess(c, gin.H{"message": response.Message})
 }
 
-// DeleteCurrentUser soft deletes the current authenticated user
+// DeleteCurrentUser hard deletes the current authenticated user
 func (h *UserHandler) DeleteCurrentUser(c *gin.Context) {
 	// Get user ID from Firebase middleware
 	firebaseUID, exists := c.Get("firebase_uid")
@@ -237,7 +231,7 @@ func (h *UserHandler) DeleteCurrentUser(c *gin.Context) {
 
 	userID := userData["id"].(string)
 
-	response, err := h.userService.SoftDeleteUser(ctx, userID, firebaseUID.(string))
+	response, err := h.userService.HardDeleteUser(ctx, userID)
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to delete account", err)
 		return

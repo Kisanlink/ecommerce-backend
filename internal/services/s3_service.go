@@ -70,7 +70,12 @@ func (s *S3Service) GetFileURL(ctx context.Context, key string) (string, error) 
 func (s *S3Service) UploadProfileImage(ctx context.Context, userID string, file multipart.File, header *multipart.FileHeader) (string, error) {
 	// Generate S3 key for profile image
 	fileExt := filepath.Ext(header.Filename)
-	s3Key := fmt.Sprintf("profiles/%s/profile_image%s", userID, fileExt)
+	s3Key := fmt.Sprintf("images/profile-images/%s/profile_image%s", userID, fileExt)
+
+	// Check if S3 manager is available
+	if s.s3Manager == nil {
+		return "", fmt.Errorf("S3 service not available - please configure S3 settings")
+	}
 
 	// Read file data
 	data, err := io.ReadAll(file)
@@ -90,5 +95,10 @@ func (s *S3Service) UploadProfileImage(ctx context.Context, userID string, file 
 
 // GetProfileImageURL generates a presigned URL for profile image access
 func (s *S3Service) GetProfileImageURL(ctx context.Context, s3Key string, expiration time.Duration) (string, error) {
+	// Check if S3 manager is available
+	if s.s3Manager == nil {
+		return "", fmt.Errorf("S3 service not available - please configure S3 settings")
+	}
+
 	return s.GeneratePresignedURL(ctx, s3Key, expiration)
 }
