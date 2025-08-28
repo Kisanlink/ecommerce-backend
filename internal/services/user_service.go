@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
+	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -19,8 +21,71 @@ type UserService struct {
 
 // NewUserService creates a new user service
 func NewUserService(userRepo *repositories.UserRepository) *UserService {
-	return &UserService{
+	service := &UserService{
 		userRepo: userRepo,
+	}
+
+	// Initialize the ID generator with existing user IDs
+	service.initializeIDGenerator()
+
+	return service
+}
+
+// initializeIDGenerator initializes the global ID generator with existing user IDs
+func (s *UserService) initializeIDGenerator() {
+	ctx := context.Background()
+
+	// Get all existing users to extract their IDs
+	filter := base.NewFilterBuilder().
+		Page(1, 10000). // Get all users
+		Build()
+
+	result, err := s.userRepo.Find(ctx, filter)
+	if err != nil {
+		// If we can't get existing users, start from 0
+		fmt.Printf("Warning: Could not initialize user ID generator: %v\n", err)
+		return
+	}
+
+	// Extract all existing IDs
+	existingIDs := make([]string, len(result))
+	for i, user := range result {
+		existingIDs[i] = user.GetID()
+	}
+
+	// Initialize the global generator with existing IDs
+	hash.InitializeGlobalCountersFromDatabase("USER", existingIDs, hash.Small)
+	fmt.Printf("Initialized user ID generator with %d existing user IDs\n", len(existingIDs))
+}
+
+// createUserWithTimestampID creates a new user with timestamp-based ID to avoid collisions
+func (s *UserService) createUserWithTimestampID(email, name, password string) *models.User {
+	// Generate timestamp-based ID to avoid collisions
+	timestampID, err := hash.GenerateRandomIDWithPattern("USER", hash.Small, "timestamp")
+	if err != nil {
+		// Fallback to hash-based ID if timestamp fails
+		hashID, hashErr := hash.GenerateRandomIDWithPattern("USER", hash.Small, "hash")
+		if hashErr != nil {
+			// Final fallback to default incremental
+			incID, _ := hash.GenerateRandomID("USER", hash.Small)
+			timestampID = incID
+		} else {
+			timestampID = hashID
+		}
+	}
+
+	// Create base model and set the custom ID
+	baseModel := base.NewBaseModel("USER", hash.Small)
+	baseModel.SetID(timestampID)
+
+	return &models.User{
+		BaseModel:  baseModel,
+		Email:      email,
+		Name:       name,
+		Password:   password,
+		IsVerified: false,
+		IsActive:   true,
+		Role:       "user",
 	}
 }
 
@@ -39,12 +104,37 @@ func (s *UserService) CreateUser(ctx context.Context, req *requests.SignupReques
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	// Create user model
-	user := models.NewUser(req.Email, req.Name, string(hashedPassword))
+	// Create user model with timestamp-based ID to avoid collisions
+	user := s.createUserWithTimestampID(req.Email, req.Name, string(hashedPassword))
 
-	// Save to database
-	if err := s.userRepo.Create(ctx, user); err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+	// Save to database with retry logic for duplicate key errors
+	maxRetries := 3
+	var createErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		createErr = s.userRepo.Create(ctx, user)
+		if createErr == nil {
+			// Successfully created user, break out of retry loop
+			break
+		}
+
+		// Check if it's a duplicate key error
+		errorStr := createErr.Error()
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "users_pkey") {
+			// Generate a new ID and try again with timestamp-based ID
+			user = s.createUserWithTimestampID(req.Email, req.Name, string(hashedPassword))
+			fmt.Printf("Duplicate key error detected, retrying with new timestamp-based ID (attempt %d/%d): %s\n", attempt+1, maxRetries, user.GetID())
+			continue
+		}
+
+		// If it's not a duplicate key error, return the error immediately
+		return nil, fmt.Errorf("failed to create user: %w", createErr)
+	}
+
+	// If we still have an error after all retries, return it
+	if createErr != nil {
+		return nil, fmt.Errorf("failed to create user after %d attempts: %w", maxRetries, createErr)
 	}
 
 	// Return response without password

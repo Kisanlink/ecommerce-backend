@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"go.uber.org/zap"
@@ -129,33 +130,21 @@ func (r *RecipesRepository) GetAllRecipes(ctx context.Context, page, pageSize in
 		// Log raw item for debugging
 		r.logger.Debug("raw DynamoDB item", zap.Any("item_keys", getMapKeys(item)))
 
-		recipe := &models.Recipe{}
-		if err := attributevalue.UnmarshalMap(item, recipe); err != nil {
-			r.logger.Error("failed to unmarshal recipe",
+		recipe, err := r.dynamoItemToRecipe(item)
+		if err != nil {
+			r.logger.Error("failed to convert DynamoDB item to recipe",
 				zap.Error(err),
 				zap.Any("item_keys", getMapKeys(item)),
 			)
-
-			// Try to unmarshal to a generic map to see the actual structure
-			var rawRecipe map[string]interface{}
-			if unmarshalErr := attributevalue.UnmarshalMap(item, &rawRecipe); unmarshalErr == nil {
-				r.logger.Error("raw recipe structure", zap.Any("raw_recipe", rawRecipe))
-			}
 			continue
 		}
 
-		// Fix the ID mapping issue - ensure recipe_id is populated
-		if recipe.RecipeID == "" && recipe.BaseModel != nil {
-			recipe.RecipeID = recipe.GetID()
-		}
-
-		// Handle null nutrition_facts and pro_tips
-		if recipe.NutritionFacts == nil {
-			recipe.NutritionFacts = make(map[string]string)
-		}
-		if recipe.ProTips == nil {
-			recipe.ProTips = make([]string, 0)
-		}
+		r.logger.Debug("converted recipe",
+			zap.String("recipe_id", recipe.RecipeID),
+			zap.String("name", recipe.Name),
+			zap.Int("nutrition_facts_count", len(recipe.NutritionFacts)),
+			zap.Int("pro_tips_count", len(recipe.ProTips)),
+		)
 
 		recipes = append(recipes, recipe)
 	}
@@ -198,26 +187,18 @@ func (r *RecipesRepository) GetRecipeByID(ctx context.Context, id string) (*mode
 		return nil, fmt.Errorf("recipe with ID %s not found", id)
 	}
 
-	recipe := &models.Recipe{}
-	if err := attributevalue.UnmarshalMap(result.Item, recipe); err != nil {
-		r.logger.Error("failed to unmarshal recipe", zap.String("recipee_id", id), zap.Error(err))
-		return nil, fmt.Errorf("failed to unmarshal recipe: %w", err)
+	recipe, err := r.dynamoItemToRecipe(result.Item)
+	if err != nil {
+		r.logger.Error("failed to convert DynamoDB item to recipe", zap.String("recipee_id", id), zap.Error(err))
+		return nil, fmt.Errorf("failed to convert recipe: %w", err)
 	}
 
-	// Fix the ID mapping issue - ensure recipe_id is populated
-	if recipe.RecipeID == "" && recipe.BaseModel != nil {
-		recipe.RecipeID = recipe.GetID()
-	}
-
-	// Handle null nutrition_facts and pro_tips
-	if recipe.NutritionFacts == nil {
-		recipe.NutritionFacts = make(map[string]string)
-	}
-	if recipe.ProTips == nil {
-		recipe.ProTips = make([]string, 0)
-	}
-
-	r.logger.Info("successfully retrieved recipe", zap.String("recipee_id", id))
+	r.logger.Info("successfully retrieved recipe",
+		zap.String("recipee_id", id),
+		zap.String("recipe_name", recipe.Name),
+		zap.Int("nutrition_facts_count", len(recipe.NutritionFacts)),
+		zap.Int("pro_tips_count", len(recipe.ProTips)),
+	)
 	return recipe, nil
 }
 
@@ -230,19 +211,11 @@ func (r *RecipesRepository) CreateRecipe(ctx context.Context, recipe *models.Rec
 		recipe.RecipeID = recipe.GetID()
 	}
 
-	// Ensure nutrition_facts and pro_tips are not null
-	if recipe.NutritionFacts == nil {
-		recipe.NutritionFacts = make(map[string]string)
-	}
-	if recipe.ProTips == nil {
-		recipe.ProTips = make([]string, 0)
-	}
-
-	// Marshal recipe to DynamoDB item
-	item, err := attributevalue.MarshalMap(recipe)
+	// Convert recipe to DynamoDB item
+	item, err := r.recipeToDBItem(recipe)
 	if err != nil {
-		r.logger.Error("failed to marshal recipe", zap.Error(err))
-		return fmt.Errorf("failed to marshal recipe: %w", err)
+		r.logger.Error("failed to convert recipe to DB item", zap.Error(err))
+		return fmt.Errorf("failed to convert recipe to DB item: %w", err)
 	}
 
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -267,19 +240,11 @@ func (r *RecipesRepository) UpdateRecipe(ctx context.Context, recipe *models.Rec
 		recipe.RecipeID = recipe.GetID()
 	}
 
-	// Ensure nutrition_facts and pro_tips are not null
-	if recipe.NutritionFacts == nil {
-		recipe.NutritionFacts = make(map[string]string)
-	}
-	if recipe.ProTips == nil {
-		recipe.ProTips = make([]string, 0)
-	}
-
-	// Marshal recipe to DynamoDB item
-	item, err := attributevalue.MarshalMap(recipe)
+	// Convert recipe to DynamoDB item
+	item, err := r.recipeToDBItem(recipe)
 	if err != nil {
-		r.logger.Error("failed to marshal recipe", zap.Error(err))
-		return fmt.Errorf("failed to marshal recipe: %w", err)
+		r.logger.Error("failed to convert recipe to DB item", zap.Error(err))
+		return fmt.Errorf("failed to convert recipe to DB item: %w", err)
 	}
 
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -314,6 +279,219 @@ func (r *RecipesRepository) DeleteRecipe(ctx context.Context, id string) error {
 
 	r.logger.Info("successfully deleted recipe", zap.String("recipee_id", id))
 	return nil
+}
+
+// Helper function to convert DynamoDB item to Recipe model
+func (r *RecipesRepository) dynamoItemToRecipe(item map[string]types.AttributeValue) (*models.Recipe, error) {
+	recipe := &models.Recipe{}
+
+	// Create a base model with a temporary ID
+	baseModel := &base.BaseModel{}
+
+	// Extract recipe ID from DynamoDB (recipee_id field)
+	if recipeIDAttr, ok := item["recipee_id"]; ok {
+		if recipeIDStr, ok := recipeIDAttr.(*types.AttributeValueMemberS); ok {
+			recipe.RecipeID = recipeIDStr.Value
+			baseModel.SetID(recipeIDStr.Value) // Use the DynamoDB ID as BaseModel ID
+		}
+	}
+
+	recipe.BaseModel = baseModel
+
+	// Extract basic string fields
+	if nameAttr, ok := item["name"]; ok {
+		if nameStr, ok := nameAttr.(*types.AttributeValueMemberS); ok {
+			recipe.Name = nameStr.Value
+		}
+	}
+
+	if categoryAttr, ok := item["category"]; ok {
+		if categoryStr, ok := categoryAttr.(*types.AttributeValueMemberS); ok {
+			recipe.Category = categoryStr.Value
+		}
+	}
+
+	if descAttr, ok := item["description"]; ok {
+		if descStr, ok := descAttr.(*types.AttributeValueMemberS); ok {
+			recipe.Description = descStr.Value
+		}
+	}
+
+	if demoDescAttr, ok := item["demo_description"]; ok {
+		if demoDescStr, ok := demoDescAttr.(*types.AttributeValueMemberS); ok {
+			recipe.DemoDescription = demoDescStr.Value
+		}
+	}
+
+	if prepTimeAttr, ok := item["prep_time"]; ok {
+		if prepTimeStr, ok := prepTimeAttr.(*types.AttributeValueMemberS); ok {
+			recipe.PrepTime = prepTimeStr.Value
+		}
+	}
+
+	if difficultyAttr, ok := item["difficulty"]; ok {
+		if difficultyStr, ok := difficultyAttr.(*types.AttributeValueMemberS); ok {
+			recipe.Difficulty = difficultyStr.Value
+		}
+	}
+
+	// Extract image URL
+	if imageAttr, ok := item["image"]; ok {
+		if imageStr, ok := imageAttr.(*types.AttributeValueMemberS); ok {
+			recipe.Image = imageStr.Value
+		}
+	}
+
+	// Extract numeric fields
+	if ratingAttr, ok := item["rating"]; ok {
+		if ratingNum, ok := ratingAttr.(*types.AttributeValueMemberN); ok {
+			if rating, err := strconv.ParseFloat(ratingNum.Value, 64); err == nil {
+				recipe.Rating = rating
+			}
+		}
+	}
+
+	if reviewsAttr, ok := item["reviews"]; ok {
+		if reviewsNum, ok := reviewsAttr.(*types.AttributeValueMemberN); ok {
+			if reviews, err := strconv.Atoi(reviewsNum.Value); err == nil {
+				recipe.Reviews = reviews
+			}
+		}
+	}
+
+	if servingsAttr, ok := item["servings"]; ok {
+		if servingsNum, ok := servingsAttr.(*types.AttributeValueMemberN); ok {
+			if servings, err := strconv.Atoi(servingsNum.Value); err == nil {
+				recipe.Servings = servings
+			}
+		}
+	}
+
+	// Extract list fields (ingredients, instructions, pro_tips)
+	if ingredientsAttr, ok := item["ingredients"]; ok {
+		if ingredientsList, ok := ingredientsAttr.(*types.AttributeValueMemberL); ok {
+			recipe.Ingredients = make([]string, 0, len(ingredientsList.Value))
+			for _, ingredient := range ingredientsList.Value {
+				if ingredientStr, ok := ingredient.(*types.AttributeValueMemberS); ok {
+					recipe.Ingredients = append(recipe.Ingredients, ingredientStr.Value)
+				}
+			}
+		}
+	}
+
+	if instructionsAttr, ok := item["instructions"]; ok {
+		if instructionsList, ok := instructionsAttr.(*types.AttributeValueMemberL); ok {
+			recipe.Instructions = make([]string, 0, len(instructionsList.Value))
+			for _, instruction := range instructionsList.Value {
+				if instructionStr, ok := instruction.(*types.AttributeValueMemberS); ok {
+					recipe.Instructions = append(recipe.Instructions, instructionStr.Value)
+				}
+			}
+		}
+	}
+
+	if proTipsAttr, ok := item["pro_tips"]; ok {
+		if proTipsList, ok := proTipsAttr.(*types.AttributeValueMemberL); ok {
+			recipe.ProTips = make([]string, 0, len(proTipsList.Value))
+			for _, proTip := range proTipsList.Value {
+				if proTipStr, ok := proTip.(*types.AttributeValueMemberS); ok {
+					recipe.ProTips = append(recipe.ProTips, proTipStr.Value)
+				}
+			}
+		}
+	} else {
+		recipe.ProTips = make([]string, 0) // Initialize empty slice
+	}
+
+	// Extract nutrition_facts map
+	if nutritionAttr, ok := item["nutrition_facts"]; ok {
+		if nutritionMap, ok := nutritionAttr.(*types.AttributeValueMemberM); ok {
+			recipe.NutritionFacts = make(map[string]string)
+			for key, value := range nutritionMap.Value {
+				if valueStr, ok := value.(*types.AttributeValueMemberS); ok {
+					recipe.NutritionFacts[key] = valueStr.Value
+				}
+			}
+		}
+	} else {
+		recipe.NutritionFacts = make(map[string]string) // Initialize empty map
+	}
+
+	return recipe, nil
+}
+
+// Helper function to convert Recipe model to DynamoDB item
+func (r *RecipesRepository) recipeToDBItem(recipe *models.Recipe) (map[string]types.AttributeValue, error) {
+	item := make(map[string]types.AttributeValue)
+
+	// Set the primary key (recipee_id)
+	if recipe.RecipeID != "" {
+		item["recipee_id"] = &types.AttributeValueMemberS{Value: recipe.RecipeID}
+	}
+
+	// Set string fields
+	if recipe.Name != "" {
+		item["name"] = &types.AttributeValueMemberS{Value: recipe.Name}
+	}
+	if recipe.Category != "" {
+		item["category"] = &types.AttributeValueMemberS{Value: recipe.Category}
+	}
+	if recipe.Description != "" {
+		item["description"] = &types.AttributeValueMemberS{Value: recipe.Description}
+	}
+	if recipe.DemoDescription != "" {
+		item["demo_description"] = &types.AttributeValueMemberS{Value: recipe.DemoDescription}
+	}
+	if recipe.PrepTime != "" {
+		item["prep_time"] = &types.AttributeValueMemberS{Value: recipe.PrepTime}
+	}
+	if recipe.Difficulty != "" {
+		item["difficulty"] = &types.AttributeValueMemberS{Value: recipe.Difficulty}
+	}
+	if recipe.Image != "" {
+		item["image"] = &types.AttributeValueMemberS{Value: recipe.Image}
+	}
+
+	// Set numeric fields
+	item["rating"] = &types.AttributeValueMemberN{Value: fmt.Sprintf("%.1f", recipe.Rating)}
+	item["reviews"] = &types.AttributeValueMemberN{Value: strconv.Itoa(recipe.Reviews)}
+	item["servings"] = &types.AttributeValueMemberN{Value: strconv.Itoa(recipe.Servings)}
+
+	// Set list fields
+	if len(recipe.Ingredients) > 0 {
+		ingredientsList := make([]types.AttributeValue, 0, len(recipe.Ingredients))
+		for _, ingredient := range recipe.Ingredients {
+			ingredientsList = append(ingredientsList, &types.AttributeValueMemberS{Value: ingredient})
+		}
+		item["ingredients"] = &types.AttributeValueMemberL{Value: ingredientsList}
+	}
+
+	if len(recipe.Instructions) > 0 {
+		instructionsList := make([]types.AttributeValue, 0, len(recipe.Instructions))
+		for _, instruction := range recipe.Instructions {
+			instructionsList = append(instructionsList, &types.AttributeValueMemberS{Value: instruction})
+		}
+		item["instructions"] = &types.AttributeValueMemberL{Value: instructionsList}
+	}
+
+	if len(recipe.ProTips) > 0 {
+		proTipsList := make([]types.AttributeValue, 0, len(recipe.ProTips))
+		for _, proTip := range recipe.ProTips {
+			proTipsList = append(proTipsList, &types.AttributeValueMemberS{Value: proTip})
+		}
+		item["pro_tips"] = &types.AttributeValueMemberL{Value: proTipsList}
+	}
+
+	// Set nutrition_facts map
+	if len(recipe.NutritionFacts) > 0 {
+		nutritionMap := make(map[string]types.AttributeValue)
+		for key, value := range recipe.NutritionFacts {
+			nutritionMap[key] = &types.AttributeValueMemberS{Value: value}
+		}
+		item["nutrition_facts"] = &types.AttributeValueMemberM{Value: nutritionMap}
+	}
+
+	return item, nil
 }
 
 // Helper function to get environment variables with defaults

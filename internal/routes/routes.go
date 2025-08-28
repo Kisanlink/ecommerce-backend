@@ -9,6 +9,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/orders"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/payment"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/products"
+	profiles "github.com/Kisanlink/ecommerce-backend/internal/routes/profile"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/recipes"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/users"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -34,6 +35,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		users.RegisterUserRoutes(v1, repoManager, serviceManager)
 		admin.RegisterAdminUserRoutes(v1, repoManager, serviceManager)
 		products.RegisterProductRoutes(v1, serviceManager, repoManager)
+		profiles.RegisterProfileRoutes(v1, repoManager, serviceManager)
 		orders.RegisterOrderRoutes(v1, repoManager)
 		cart.RegisterCartRoutes(v1, repoManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)

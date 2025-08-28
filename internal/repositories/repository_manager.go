@@ -15,6 +15,7 @@ type RepositoryManager struct {
 	CartRepository    *CartRepository
 	AddressRepository *AddressRepository
 	RecipesRepository *RecipesRepository
+	ProfileRepository *ProfileRepository
 }
 
 // NewRepositoryManager creates a new repository manager with database manager
@@ -33,6 +34,7 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 		CartRepository:    NewCartRepository(dbManager),
 		AddressRepository: NewAddressRepository(dbManager),
 		RecipesRepository: recipesRepo,
+		ProfileRepository: NewProfileRepository(dbManager),
 	}
 }
 

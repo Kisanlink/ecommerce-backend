@@ -80,6 +80,7 @@ func main() {
 		&models.Cart{},
 		&models.CartItem{},
 		&models.Address{},
+		&models.Profile{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate models: %v", err)

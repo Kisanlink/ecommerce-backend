@@ -36,10 +36,17 @@ func (s *RecipeService) CreateRecipe(ctx context.Context, req *requests.CreateRe
 	recipe.PrepTime = req.PrepTime
 	recipe.Servings = req.Servings
 	recipe.Difficulty = req.Difficulty
+	recipe.Image = req.Image                     // Set the image field
+	recipe.DemoDescription = req.DemoDescription // Set the demo_description field
 	recipe.Rating = req.Rating
 	recipe.Reviews = req.Reviews
 	recipe.NutritionFacts = req.NutritionFacts
 	recipe.ProTips = req.ProTips
+
+	// If demo_description is not provided, use description as default
+	if recipe.DemoDescription == "" {
+		recipe.DemoDescription = recipe.Description
+	}
 
 	// Set the recipe_id from the base model ID
 	recipe.RecipeID = recipe.GetID()
@@ -128,16 +135,23 @@ func (s *RecipeService) UpdateRecipe(ctx context.Context, req *requests.UpdateRe
 	// Update fields
 	existing.Name = req.Name
 	existing.Description = req.Description
+	existing.DemoDescription = req.DemoDescription // Set the demo_description field
 	existing.Category = req.Category
 	existing.PrepTime = req.PrepTime
 	existing.Servings = req.Servings
 	existing.Difficulty = req.Difficulty
+	existing.Image = req.Image // Set the image field
 	existing.Ingredients = req.Ingredients
 	existing.Instructions = req.Instructions
 	existing.Rating = req.Rating
 	existing.Reviews = req.Reviews
 	existing.NutritionFacts = req.NutritionFacts
 	existing.ProTips = req.ProTips
+
+	// If demo_description is not provided, use description as default
+	if existing.DemoDescription == "" {
+		existing.DemoDescription = existing.Description
+	}
 
 	// Ensure recipe_id is set
 	if existing.RecipeID == "" {

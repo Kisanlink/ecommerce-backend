@@ -8,6 +8,8 @@ import (
 type ServiceManager struct {
 	UserService    *UserService
 	ProductService *ProductService
+	ProfileService *ProfileService
+	S3Service      *S3Service
 	// TODO: Add other services as they are implemented
 	// OrderService   *OrderService
 	// CartService    *CartService
@@ -18,6 +20,8 @@ func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceMana
 	return &ServiceManager{
 		UserService:    NewUserService(repoManager.UserRepository),
 		ProductService: NewProductService(repoManager),
+		ProfileService: NewProfileService(repoManager),
+		S3Service:      nil, // TODO: Initialize with S3Manager when available
 		// TODO: Initialize other services as they are implemented
 		// OrderService:   NewOrderService(repoManager.OrderRepository),
 		// CartService:    NewCartService(repoManager.CartRepository),

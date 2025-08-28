@@ -19,13 +19,14 @@ func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.Reposito
 		recipes.GET("/category/:category", recipeHandler.GetRecipes) // Get recipes by category           // Get popular recipes
 	}
 
-	// Protected recipe routes (requires authentication for creation/modification)
-	protected := recipes.Group("/")
-	protected.Use(middleware.OptionalFirebaseAuth()) // Optional auth for viewing, required for creating
+	// Admin-only recipe routes (requires authentication + admin role)
+	adminRecipes := recipes.Group("/")
+	adminRecipes.Use(middleware.FirebaseAuthMiddleware())
+	adminRecipes.Use(middleware.AdminGuard(repoManager))
 	{
-		protected.POST("", recipeHandler.CreateRecipe)                                            // Create new recipe
-		protected.PUT("/:id", middleware.FirebaseAuthMiddleware(), recipeHandler.UpdateRecipe)    // Update recipe (owner only)
-		protected.DELETE("/:id", middleware.FirebaseAuthMiddleware(), recipeHandler.DeleteRecipe) // Delete recipe (owner only)
+		adminRecipes.POST("", recipeHandler.CreateRecipe)       // Create new recipe (admin only)
+		adminRecipes.PUT("/:id", recipeHandler.UpdateRecipe)    // Update recipe (admin only)
+		adminRecipes.DELETE("/:id", recipeHandler.DeleteRecipe) // Delete recipe (admin only)
 	}
 
 	// Recipe categories

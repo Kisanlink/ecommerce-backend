@@ -8,9 +8,11 @@ type CreateRecipeRequest struct {
 	Name              string            `json:"name" binding:"required"`
 	Category          string            `json:"category" binding:"required"`
 	Description       string            `json:"description" binding:"required"`
+	DemoDescription   string            `json:"demo_description"`
 	PrepTime          string            `json:"prep_time"`
 	Servings          int               `json:"servings" binding:"required,min=1"`
 	Difficulty        string            `json:"difficulty" binding:"required"`
+	Image             string            `json:"image"`
 	Ingredients       []string          `json:"ingredients" binding:"required"`
 	Instructions      []string          `json:"instructions" binding:"required"`
 	Rating            float64           `json:"rating"`
@@ -32,9 +34,11 @@ type UpdateRecipeRequest struct {
 	Name              string            `json:"name" binding:"required"`
 	Category          string            `json:"category" binding:"required"`
 	Description       string            `json:"description" binding:"required"`
+	DemoDescription   string            `json:"demo_description"`
 	PrepTime          string            `json:"prep_time"`
 	Servings          int               `json:"servings" binding:"required,min=1"`
 	Difficulty        string            `json:"difficulty" binding:"required"`
+	Image             string            `json:"image"`
 	Ingredients       []string          `json:"ingredients" binding:"required"`
 	Instructions      []string          `json:"instructions" binding:"required"`
 	Rating            float64           `json:"rating"`
@@ -57,4 +61,15 @@ type ListRecipesRequest struct {
 	Category          string `form:"category" json:"category"`
 	Search            string `form:"search" json:"search"`
 	Ingredient        string `form:"ingredient" json:"ingredient"`
+}
+
+// RecipeListResponse represents a simplified response for listing recipes
+type RecipeListResponse struct {
+	Name            string  `json:"name"`
+	DemoDescription string  `json:"demo_description"`
+	Reviews         int     `json:"reviews"`
+	Rating          float64 `json:"rating"`
+	PrepTime        string  `json:"prep_time"`
+	Difficulty      string  `json:"difficulty"`
+	Image           string  `json:"image"`
 }
