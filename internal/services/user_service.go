@@ -369,25 +369,17 @@ func (s *UserService) VerifyPassword(ctx context.Context, email, password string
 	return user, nil
 }
 
-// HardDeleteUser completely removes a user from the database
-func (s *UserService) HardDeleteUser(ctx context.Context, userID string) (*base.BaseResponse, error) {
+// SoftDeleteUser soft deletes a user
+func (s *UserService) SoftDeleteUser(ctx context.Context, userID, deletedBy string) (*base.BaseResponse, error) {
 	if userID == "" {
 		return base.NewErrorResponse("Invalid user ID",
 			base.NewValidationError("id", "User ID cannot be empty")), nil
 	}
 
-	// First check if user exists
-	_, err := s.userRepo.GetByID(ctx, userID, &models.User{})
-	if err != nil {
-		return base.NewErrorResponse("User not found",
-			base.NewNotFoundError("User", userID)), nil
-	}
-
-	// Perform hard delete - completely removes the row
-	err = s.userRepo.Delete(ctx, userID)
+	err := s.userRepo.SoftDelete(ctx, userID, deletedBy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete user: %w", err)
 	}
 
-	return base.NewSuccessResponse("User permanently deleted successfully", nil), nil
+	return base.NewSuccessResponse("User deleted successfully", nil), nil
 }

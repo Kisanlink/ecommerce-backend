@@ -9,13 +9,14 @@ import (
 
 // RepositoryManager manages all repositories
 type RepositoryManager struct {
-	UserRepository    *UserRepository
-	ProductRepository *ProductRepository
-	OrderRepository   *OrderRepository
-	CartRepository    *CartRepository
-	AddressRepository *AddressRepository
-	RecipesRepository *RecipesRepository
-	ProfileRepository *ProfileRepository
+	UserRepository     *UserRepository
+	ProductRepository  *ProductRepository
+	OrderRepository    *OrderRepository
+	CartRepository     *CartRepository
+	AddressRepository  *AddressRepository
+	RecipesRepository  *RecipesRepository
+	ProfileRepository  *ProfileRepository
+	FavoriteRepository *FavoriteRepository
 }
 
 // NewRepositoryManager creates a new repository manager with database manager
@@ -28,13 +29,14 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 	}
 
 	return &RepositoryManager{
-		UserRepository:    NewUserRepository(dbManager),
-		ProductRepository: NewProductRepository(dbManager),
-		OrderRepository:   NewOrderRepository(dbManager),
-		CartRepository:    NewCartRepository(dbManager),
-		AddressRepository: NewAddressRepository(dbManager),
-		RecipesRepository: recipesRepo,
-		ProfileRepository: NewProfileRepository(dbManager),
+		UserRepository:     NewUserRepository(dbManager),
+		ProductRepository:  NewProductRepository(dbManager),
+		OrderRepository:    NewOrderRepository(dbManager),
+		CartRepository:     NewCartRepository(dbManager),
+		AddressRepository:  NewAddressRepository(dbManager),
+		RecipesRepository:  recipesRepo,
+		ProfileRepository:  NewProfileRepository(dbManager),
+		FavoriteRepository: NewFavoriteRepository(dbManager),
 	}
 }
 

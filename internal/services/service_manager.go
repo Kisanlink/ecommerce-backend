@@ -7,10 +7,11 @@ import (
 
 // ServiceManager manages all services following the development rules
 type ServiceManager struct {
-	UserService    *UserService
-	ProductService *ProductService
-	ProfileService *ProfileService
-	S3Service      *S3Service
+	UserService     *UserService
+	ProductService  *ProductService
+	ProfileService  *ProfileService
+	FavoriteService *FavoriteService
+	S3Service       *S3Service
 	// TODO: Add other services as they are implemented
 	// OrderService   *OrderService
 	// CartService    *CartService
@@ -27,10 +28,11 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	}
 
 	return &ServiceManager{
-		UserService:    NewUserService(repoManager.UserRepository),
-		ProductService: NewProductService(repoManager),
-		ProfileService: NewProfileService(repoManager),
-		S3Service:      s3Service,
+		UserService:     NewUserService(repoManager.UserRepository),
+		ProductService:  NewProductService(repoManager),
+		ProfileService:  NewProfileService(repoManager),
+		FavoriteService: NewFavoriteService(repoManager),
+		S3Service:       s3Service,
 		// TODO: Initialize other services as they are implemented
 		// OrderService:   NewOrderService(repoManager.OrderRepository),
 		// CartService:    NewCartService(repoManager.CartRepository),

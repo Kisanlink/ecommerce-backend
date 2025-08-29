@@ -96,6 +96,7 @@ func main() {
 		&models.CartItem{},
 		&models.Address{},
 		&models.Profile{},
+		&models.Favorite{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate models: %v", err)

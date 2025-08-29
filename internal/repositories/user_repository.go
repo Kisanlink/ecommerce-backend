@@ -94,9 +94,3 @@ func (r *UserRepository) CountActiveUsers(ctx context.Context) (int64, error) {
 
 	return int64(len(users)), nil
 }
-
-// Delete hard deletes a user completely removing the row from database
-func (r *UserRepository) Delete(ctx context.Context, userID string) error {
-	user := &models.User{}
-	return r.BaseFilterableRepository.Delete(ctx, userID, user)
-}

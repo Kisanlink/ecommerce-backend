@@ -1,11 +1,13 @@
 package routes
 
 import (
+	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/admin"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/cart"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/delivery"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/favorites"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/orders"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/payment"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/products"
@@ -27,6 +29,10 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		})
 	})
 
+	// Debug endpoint to check Firebase status
+	debugHandler := handlers.NewDebugHandler()
+	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
+
 	// API versioning
 	v1 := r.Group("/api/v1")
 	{
@@ -36,6 +42,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		admin.RegisterAdminUserRoutes(v1, repoManager, serviceManager)
 		products.RegisterProductRoutes(v1, serviceManager, repoManager)
 		profiles.RegisterProfileRoutes(v1, repoManager, serviceManager)
+		favorites.RegisterFavoriteRoutes(v1, repoManager, serviceManager)
 		orders.RegisterOrderRoutes(v1, repoManager)
 		cart.RegisterCartRoutes(v1, repoManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)
