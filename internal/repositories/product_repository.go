@@ -9,6 +9,16 @@ import (
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 )
 
+// ProductRepositoryInterface defines the contract for product repository operations
+type ProductRepositoryInterface interface {
+	Create(ctx context.Context, product *models.Product) error
+	GetByID(ctx context.Context, id string, product *models.Product) (*models.Product, error)
+	Update(ctx context.Context, product *models.Product) error
+	Delete(ctx context.Context, id string, product *models.Product) error
+	Find(ctx context.Context, filter *base.Filter) ([]*models.Product, error)
+	CountWithFilter(ctx context.Context, filter *base.Filter) (int64, error)
+}
+
 // ProductRepository handles product data operations
 type ProductRepository struct {
 	*base.BaseFilterableRepository[*models.Product]

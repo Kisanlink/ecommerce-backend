@@ -44,7 +44,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		profiles.RegisterProfileRoutes(v1, repoManager, serviceManager)
 		favorites.RegisterFavoriteRoutes(v1, repoManager, serviceManager)
 		orders.RegisterOrderRoutes(v1, repoManager)
-		cart.RegisterCartRoutes(v1, repoManager)
+		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, repoManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager)
