@@ -26,7 +26,8 @@ go.work.sum
 firebase_service_account.json
 # env file
 .env
-
+server.exe
+main.exe
 # Editor/IDE
 # .idea/
 # .vscode/

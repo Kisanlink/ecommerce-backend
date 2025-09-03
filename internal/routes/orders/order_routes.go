@@ -25,6 +25,12 @@ func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.Repositor
 		orders.GET("/:id/tracking", orderHandler.GetOrderTracking) // Get order tracking
 	}
 
+	// Debug endpoint without authentication
+	debug := r.Group("/debug")
+	{
+		debug.GET("/order/:id", orderHandler.GetOrderDetailsDebug) // Debug order details
+	}
+
 	// Future route groups (commented until handlers are implemented)
 	/*
 		// Admin order routes (add admin middleware later)

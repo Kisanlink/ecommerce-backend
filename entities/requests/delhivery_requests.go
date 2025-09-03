@@ -34,6 +34,58 @@ type DelhiveryTATRequest struct {
 	ExpectedPickupDate string `json:"expected_pickup_date" validate:"required"` // YYYY-MM-DD
 }
 
+// DelhiveryShipmentRequest represents a request to create a shipment
+type DelhiveryShipmentRequest struct {
+	ShipmentDetails []DelhiveryShipmentDetail `json:"shipments"`
+	PickupLocation  DelhiveryPickupLocation   `json:"pickup_location"`
+}
+
+// DelhiveryShipmentDetail represents individual shipment details
+type DelhiveryShipmentDetail struct {
+	Name          string `json:"name" validate:"required"`
+	Add           string `json:"add" validate:"required"`
+	Pin           string `json:"pin" validate:"required,len=6"`
+	City          string `json:"city" validate:"required"`
+	State         string `json:"state" validate:"required"`
+	Country       string `json:"country" validate:"required"`
+	Phone         string `json:"phone" validate:"required"`
+	Order         string `json:"order" validate:"required"`        // Order ID
+	PaymentMode   string `json:"payment_mode" validate:"required"` // Prepaid/COD
+	ReturnPin     string `json:"return_pin" validate:"required,len=6"`
+	ReturnCity    string `json:"return_city" validate:"required"`
+	ReturnName    string `json:"return_name" validate:"required"`
+	ReturnAdd     string `json:"return_add" validate:"required"`
+	ReturnState   string `json:"return_state" validate:"required"`
+	ReturnCountry string `json:"return_country" validate:"required"`
+	ReturnPhone   string `json:"return_phone" validate:"required"`
+	ProductsDesc  string `json:"products_desc" validate:"required"`
+	HsnCode       string `json:"hsn_code"`
+	CODAmount     string `json:"cod_amount,omitempty"`
+	OrderDate     string `json:"order_date,omitempty"`
+	TotalAmount   string `json:"total_amount" validate:"required"`
+	SellerAdd     string `json:"seller_add,omitempty"`
+	SellerName    string `json:"seller_name,omitempty"`
+	SellerInv     string `json:"seller_inv,omitempty"`
+	Quantity      string `json:"quantity" validate:"required"`
+	Waybill       string `json:"waybill"` // Leave empty for auto-generation
+	ShipWidth     string `json:"shipment_width"`
+	ShipHeight    string `json:"shipment_height"`
+	Weight        string `json:"weight" validate:"required"`
+	ShippingMode  string `json:"shipping_mode" validate:"required"` // Surface/Express
+	AddressType   string `json:"address_type"`                      // home/office
+}
+
+// DelhiveryPickupLocation represents pickup location details
+type DelhiveryPickupLocation struct {
+	Name string `json:"name" validate:"required"`
+}
+
+// DelhiveryCreateShipmentPayload wraps the create shipment request with the required format key
+type DelhiveryCreateShipmentPayload struct {
+	Format string                   `json:"format"` // should be "json"
+	Data   DelhiveryShipmentRequest `json:"data"`
+}
+
 // BuildServiceabilityURL constructs the serviceability check URL with query parameters
 func (r *DelhiveryServiceabilityRequest) BuildServiceabilityURL(baseURL string) string {
 	params := url.Values{}
@@ -120,7 +172,35 @@ func NewTATRequest(originPin, destinationPin string) *DelhiveryTATRequest {
 		DestinationPin:     destinationPin,
 		ModeOfTransport:    "S", // Surface by default
 		ProductType:        "B2C",
-		ExpectedPickupDate: time.Now().Format("2006-01-02"),
+		ExpectedPickupDate: time.Now().Format("2006-01-02 15:04"), // Fixed format: YYYY-MM-DD HH:MM
+	}
+}
+
+// NewShipmentRequest creates a new shipment creation request
+func NewShipmentRequest(warehouseName string) *DelhiveryShipmentRequest {
+	return &DelhiveryShipmentRequest{
+		ShipmentDetails: []DelhiveryShipmentDetail{},
+		PickupLocation: DelhiveryPickupLocation{
+			Name: warehouseName,
+		},
+	}
+}
+
+// AddShipmentDetail adds a shipment detail to the request
+func (r *DelhiveryShipmentRequest) AddShipmentDetail(detail DelhiveryShipmentDetail) {
+	r.ShipmentDetails = append(r.ShipmentDetails, detail)
+}
+
+// BuildShipmentURL returns the shipment creation endpoint
+func (r *DelhiveryShipmentRequest) BuildShipmentURL(baseURL string) string {
+	return fmt.Sprintf("%s/api/cmu/create.json", baseURL)
+}
+
+// NewCreateShipmentPayload creates a payload wrapper with format=json
+func NewCreateShipmentPayload(req DelhiveryShipmentRequest) *DelhiveryCreateShipmentPayload {
+	return &DelhiveryCreateShipmentPayload{
+		Format: "json",
+		Data:   req,
 	}
 }
 
@@ -179,6 +259,45 @@ func (r *DelhiveryTATRequest) IsValid() error {
 	}
 	if r.ExpectedPickupDate == "" {
 		return fmt.Errorf("expected_pickup_date is required")
+	}
+	return nil
+}
+
+// IsValid validates the shipment request
+func (r *DelhiveryShipmentRequest) IsValid() error {
+	if len(r.ShipmentDetails) == 0 {
+		return fmt.Errorf("at least one shipment detail is required")
+	}
+	if r.PickupLocation.Name == "" {
+		return fmt.Errorf("pickup location name is required")
+	}
+	for i, detail := range r.ShipmentDetails {
+		if err := detail.IsValid(); err != nil {
+			return fmt.Errorf("shipment detail %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// IsValid validates a shipment detail
+func (r *DelhiveryShipmentDetail) IsValid() error {
+	if r.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if r.Add == "" {
+		return fmt.Errorf("address is required")
+	}
+	if len(r.Pin) != 6 {
+		return fmt.Errorf("pin must be exactly 6 digits")
+	}
+	if r.Phone == "" {
+		return fmt.Errorf("phone is required")
+	}
+	if r.Order == "" {
+		return fmt.Errorf("order ID is required")
+	}
+	if r.PaymentMode != "Prepaid" && r.PaymentMode != "COD" {
+		return fmt.Errorf("payment_mode must be either 'Prepaid' or 'COD'")
 	}
 	return nil
 }

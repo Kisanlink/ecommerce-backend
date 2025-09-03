@@ -37,6 +37,11 @@ type Order struct {
 	EtaMinDays      int     `json:"eta_min_days"`
 	EtaMaxDays      int     `json:"eta_max_days"`
 
+	// Delhivery tracking
+	DelhiveryWaybill string `json:"delhivery_waybill" gorm:"index"` // AWB number
+	DelhiveryStatus  string `json:"delhivery_status"`               // Shipment status
+	TrackingURL      string `json:"tracking_url"`                   // Direct tracking link
+
 	// Invoice metadata
 	InvoiceURL string `json:"invoice_url"`
 }
