@@ -96,11 +96,15 @@ type DelhiveryChargeDetail struct {
 
 // DelhiveryTATResponse represents Delhivery TAT (delivery time) API response
 type DelhiveryTATResponse struct {
-	ExpectedDeliveryDate string `json:"expected_delivery_date"`
-	DeliveryDays         int    `json:"delivery_days"`
-	OriginPin            string `json:"origin_pin,omitempty"`
-	DestinationPin       string `json:"destination_pin,omitempty"`
-	ModeOfTransport      string `json:"mot,omitempty"`
+	Message string `json:"msg"`
+	Data    struct {
+		TAT                  int    `json:"tat"`
+		ExpectedDeliveryDate string `json:"expected_delivery_date"`
+	} `json:"data"`
+	Success         bool   `json:"success"`
+	OriginPin       string `json:"origin_pin,omitempty"`
+	DestinationPin  string `json:"destination_pin,omitempty"`
+	ModeOfTransport string `json:"mot,omitempty"`
 }
 
 // DelhiveryErrorResponse represents error response from Delhivery APIs
@@ -223,12 +227,12 @@ func (r *DelhiveryChargesResponse) GetTotalShippingCost() (float64, error) {
 
 // GetExpectedDeliveryTime parses and returns the expected delivery date
 func (r *DelhiveryTATResponse) GetExpectedDeliveryTime() (*time.Time, error) {
-	if r.ExpectedDeliveryDate == "" {
+	if r.Data.ExpectedDeliveryDate == "" {
 		return nil, fmt.Errorf("expected delivery date not provided")
 	}
 
 	// Parse the date (assuming YYYY-MM-DD format)
-	t, err := time.Parse("2006-01-02", r.ExpectedDeliveryDate)
+	t, err := time.Parse("2006-01-02", r.Data.ExpectedDeliveryDate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse delivery date: %w", err)
 	}
@@ -238,7 +242,7 @@ func (r *DelhiveryTATResponse) GetExpectedDeliveryTime() (*time.Time, error) {
 
 // IsValidTAT checks if the TAT response contains valid delivery information
 func (r *DelhiveryTATResponse) IsValidTAT() bool {
-	return r.DeliveryDays > 0 && r.ExpectedDeliveryDate != ""
+	return r.Success && r.Data.TAT > 0 && r.Data.ExpectedDeliveryDate != ""
 }
 
 // Unified response wrapper for all Delhivery API responses

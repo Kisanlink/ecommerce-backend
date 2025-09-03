@@ -42,7 +42,7 @@ func GetDelhiveryConfig() DelhiveryConfig {
 	}
 
 	// CRITICAL: Validate the API token format
-	apiToken := getEnvOrDefault("DELHIVERY_API_TOKEN", "68b8f90b85d277fc158946b905bf58cb43726d3e")
+	apiToken := getEnvOrDefault("DELHIVERY_API_TOKEN", "5c2243c9d55f103ed21341076ccbf38700dabf5d")
 
 	// CRITICAL: Validate origin pincode format (must be exactly 6 digits)
 	originPincode := getEnvOrDefault("DELHIVERY_ORIGIN_PINCODE", "500033")

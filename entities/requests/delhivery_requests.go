@@ -42,7 +42,7 @@ func (r *DelhiveryServiceabilityRequest) BuildServiceabilityURL(baseURL string) 
 	return fmt.Sprintf("%s/c/api/pin-codes/json/?%s", baseURL, params.Encode())
 }
 
-// BuildChargesURL constructs the charges API URL with query parameters - CORRECTED VERSION
+// BuildChargesURL constructs the charges API URL with query parameters
 func (r *DelhiveryChargesRequest) BuildChargesURL(baseURL string) string {
 	params := url.Values{}
 	params.Set("md", r.Mode)

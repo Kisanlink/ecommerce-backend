@@ -341,10 +341,10 @@ func (s *DeliveryService) getEstimatedTAT(ctx context.Context, destinationPin st
 	}
 
 	s.logger.Info("Delhivery TAT parsed successfully",
-		zap.Int("days", tatResp.DeliveryDays),
-		zap.String("expected_date", tatResp.ExpectedDeliveryDate))
+		zap.Int("days", tatResp.Data.TAT),
+		zap.String("expected_date", tatResp.Data.ExpectedDeliveryDate))
 
-	return tatResp.DeliveryDays, nil
+	return tatResp.Data.TAT, nil
 }
 
 // extractPincode extracts and validates pincode from postal_code field

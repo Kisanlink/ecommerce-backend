@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Google OAuth</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+    <h2>Test Google Sign-In for Your Firebase Backend</h2>
+    
+    <!-- Google Sign-In Button -->
+    <div id="g_id_onload"
+         data-client_id="PASTE_YOUR_GOOGLE_CLIENT_ID_HERE"
+         data-callback="handleCredentialResponse">
+    </div>
+    <div class="g_id_signin" data-type="standard"></div>
+
+    <!-- Results Display -->
+    <div id="results" style="margin-top: 20px;">
+        <h3>Results will appear here:</h3>
+        <pre id="token-display"></pre>
+        <pre id="backend-response"></pre>
+    </div>
+
+    <script>
+        // Handle the Google Sign-In response
+        function handleCredentialResponse(response) {
+            console.log("Google ID Token:", response.credential);
+            
+            // Display the token
+            document.getElementById('token-display').innerHTML = 
+                "Google ID Token:\n" + response.credential;
+            
+            // Send the token to your backend
+            testBackendAuth(response.credential);
+        }
+
+        // Test your backend Google OAuth endpoint
+        async function testBackendAuth(googleIdToken) {
+            try {
+                const response = await fetch('http://localhost:8080/api/v1/auth/google', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        id_token: googleIdToken
+                    })
+                });
+
+                const result = await response.json();
+                
+                // Display backend response
+                document.getElementById('backend-response').innerHTML = 
+                    "Backend Response:\n" + JSON.stringify(result, null, 2);
+                    
+                if (response.ok) {
+                    alert('✅ Google OAuth successful! Check results below.');
+                } else {
+                    alert('❌ Backend error: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('backend-response').innerHTML = 
+                    "Error: " + error.message;
+                alert('❌ Network error: ' + error.message);
+            }
+        }
+    </script>
+
+    <hr>
+    <h3>Setup Instructions:</h3>
+    <ol>
+        <li><strong>Get Google Client ID:</strong>
+            <ul>
+                <li>Go to <a href="https://console.developers.google.com/" target="_blank">Google Cloud Console</a></li>
+                <li>Create a project or select existing one</li>
+                <li>Go to "APIs & Services" > "Credentials"</li>
+                <li>Create "OAuth 2.0 Client IDs" for Web application</li>
+                <li>Add <code>http://localhost</code> and <code>http://localhost:8080</code> to authorized origins</li>
+                <li>Copy the Client ID and replace <code>YOUR_GOOGLE_CLIENT_ID</code> above</li>
+            </ul>
+        </li>
+        <li><strong>Make sure your backend server is running on port 8080</strong></li>
+        <li><strong>Open this HTML file in a browser</strong></li>
+        <li><strong>Click "Sign in with Google" and test!</strong></li>
+    </ol>
+</body>
+</html>
