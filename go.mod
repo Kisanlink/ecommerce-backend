@@ -4,7 +4,7 @@ go 1.24.6
 
 require (
 	firebase.google.com/go/v4 v4.18.0
-	github.com/Kisanlink/kisanlink-db v0.0.0
+	github.com/Kisanlink/kisanlink-db v0.1.9
 	github.com/aws/aws-sdk-go-v2 v1.38.1
 	github.com/aws/aws-sdk-go-v2/config v1.29.17
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.49.1

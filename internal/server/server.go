@@ -7,6 +7,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // NewServer initializes and returns a Gin Engine with dependency injection
@@ -15,6 +16,11 @@ func NewServer(repoManager *repositories.RepositoryManager, serviceManager *serv
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
-	routes.RegisterRoutes(r, repoManager, serviceManager)
+
+	// Create logger for routes (we can reuse the main logger)
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+
+	routes.RegisterRoutes(r, repoManager, serviceManager, logger)
 	return r, nil
 }

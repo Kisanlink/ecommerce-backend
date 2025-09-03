@@ -2,18 +2,82 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-)
-
-// CartHandler handles cart operations using the cart service
+) // CartHandler handles cart operations using the cart service
 type CartHandler struct {
 	cartService services.CartServiceInterface
 	logger      *zap.Logger
+	authContext *auth.AuthContext
+	deliverySvc services.DeliveryServiceInterface
+}
+
+// Coupon represents a simple coupon configuration for runtime validation
+type Coupon struct {
+	Code         string
+	Type         string  // "percent" or "fixed"
+	Value        float64 // percent value (e.g., 10 for 10%) or fixed amount
+	MinCartTotal float64 // minimum cart total to apply
+	MaxDiscount  float64 // optional cap for discount; 0 means no cap
+	ExpiresAt    time.Time
+	Description  string
+}
+
+// In-memory coupon registry (no persistence) — extend as needed
+var availableCoupons = map[string]Coupon{
+	"SUMMER10": {
+		Code:         "SUMMER10",
+		Type:         "percent",
+		Value:        10,
+		MinCartTotal: 500,
+		MaxDiscount:  500,
+		ExpiresAt:    time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC),
+		Description:  "10% off on orders above ₹500 (max ₹500)",
+	},
+	"WELCOME100": {
+		Code:         "WELCOME100",
+		Type:         "fixed",
+		Value:        100,
+		MinCartTotal: 299,
+		MaxDiscount:  0,
+		ExpiresAt:    time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC),
+		Description:  "Flat ₹100 off on orders above ₹299",
+	},
+}
+
+func round2(f float64) float64 {
+	return math.Round(f*100) / 100
+}
+
+func calculateDiscount(total float64, c Coupon) float64 {
+	if total <= 0 {
+		return 0
+	}
+	var discount float64
+	switch strings.ToLower(c.Type) {
+	case "percent":
+		discount = total * (c.Value / 100.0)
+	case "fixed":
+		discount = c.Value
+	default:
+		discount = 0
+	}
+	if c.MaxDiscount > 0 && discount > c.MaxDiscount {
+		discount = c.MaxDiscount
+	}
+	if discount > total {
+		discount = total
+	}
+	return round2(discount)
 }
 
 // NewCartHandler creates a new cart handler with cart service
@@ -21,92 +85,121 @@ func NewCartHandler(cartService services.CartServiceInterface, logger *zap.Logge
 	return &CartHandler{
 		cartService: cartService,
 		logger:      logger,
+		authContext: auth.NewAuthContext(),
 	}
 }
 
-// getUserID extracts user ID from the Firebase authentication context
-func (h *CartHandler) getUserID(c *gin.Context) (string, error) {
-	// Try to get Firebase UID first (primary authentication method)
-	firebaseUID, exists := c.Get("firebase_uid")
-	if exists {
-		if uidStr, ok := firebaseUID.(string); ok && uidStr != "" {
-			return uidStr, nil
-		}
-	}
+// SetDeliveryService allows wiring the delivery service for checkout flows
+func (h *CartHandler) SetDeliveryService(svc services.DeliveryServiceInterface) {
+	h.deliverySvc = svc
+}
 
-	// Fallback to regular user_id (for backward compatibility)
-	userID, exists := c.Get("user_id")
-	if exists {
-		if userIDStr, ok := userID.(string); ok && userIDStr != "" {
-			return userIDStr, nil
-		}
+// authenticateUser is a helper method to get authenticated user ID
+func (h *CartHandler) authenticateUser(c *gin.Context) (string, bool) {
+	userID, authenticated := h.authContext.GetAuthenticatedUserID(c)
+	if !authenticated {
+		return "", false
 	}
+	return userID, true
+}
 
-	h.logger.Error("User ID not found in context - no firebase_uid or user_id present")
-	return "", fmt.Errorf("user ID not found in context")
+// handleCartServiceError handles common cart service errors
+func (h *CartHandler) handleCartServiceError(c *gin.Context, err error, operation string, userID string, additionalFields ...zap.Field) {
+	// Prepare log fields
+	logFields := []zap.Field{
+		zap.Error(err),
+		zap.String("user_id", userID),
+		zap.String("operation", operation),
+	}
+	logFields = append(logFields, additionalFields...)
+
+	h.logger.Error("Cart operation failed", logFields...)
+
+	errMsg := err.Error()
+
+	// Handle specific error types
+	switch {
+	case errMsg == "product not found":
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "Product not found",
+		})
+	case errMsg == "item not found in cart":
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "Item not found in cart",
+		})
+	case strings.HasPrefix(errMsg, "insufficient stock"):
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   errMsg,
+		})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to " + operation,
+		})
+	}
 }
 
 // GetCart retrieves the user's cart
 func (h *CartHandler) GetCart(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	cart, err := h.cartService.GetUserCart(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to get user cart", zap.Error(err), zap.String("user_id", userID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load cart"})
+		h.handleCartServiceError(c, err, "retrieve cart", userID)
 		return
 	}
 
+	discounted := round2(cart.TotalPrice - cart.DiscountAmount)
+	if discounted < 0 {
+		discounted = 0
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    cart,
+		"data": gin.H{
+			"cart":             cart,
+			"discount_amount":  round2(cart.DiscountAmount),
+			"discounted_total": discounted,
+		},
 		"message": "Cart retrieved successfully",
 	})
 }
 
 // AddToCart adds an item to the user's cart
 func (h *CartHandler) AddToCart(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	var req requests.AddToCartRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request format: " + err.Error(),
+		})
 		return
 	}
 
 	// Validate quantity
 	if req.Quantity <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Quantity must be positive"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Quantity must be positive",
+		})
 		return
 	}
 
 	cart, err := h.cartService.AddItemToCart(c.Request.Context(), userID, req.ProductID, req.Quantity)
 	if err != nil {
-		h.logger.Error("Failed to add item to cart",
-			zap.Error(err),
-			zap.String("user_id", userID),
+		h.handleCartServiceError(c, err, "add item to cart", userID,
 			zap.String("product_id", req.ProductID),
 			zap.Int("quantity", req.Quantity))
-
-		// Check for specific error types
-		if err.Error() == "product not found" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
-			return
-		}
-		if err.Error()[:len("insufficient stock")] == "insufficient stock" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add item to cart"})
 		return
 	}
 
@@ -119,49 +212,43 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 
 // UpdateCartItem updates the quantity of an item in the cart
 func (h *CartHandler) UpdateCartItem(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	productID := c.Param("product_id")
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Product ID is required",
+		})
 		return
 	}
 
 	var req requests.UpdateCartItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request format: " + err.Error(),
+		})
 		return
 	}
 
 	// Validate quantity
 	if req.Quantity < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Quantity cannot be negative"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Quantity cannot be negative",
+		})
 		return
 	}
 
 	cart, err := h.cartService.UpdateCartItem(c.Request.Context(), userID, productID, req.Quantity)
 	if err != nil {
-		h.logger.Error("Failed to update cart item",
-			zap.Error(err),
-			zap.String("user_id", userID),
+		h.handleCartServiceError(c, err, "update cart item", userID,
 			zap.String("product_id", productID),
 			zap.Int("quantity", req.Quantity))
-
-		// Check for specific error types
-		if err.Error() == "product not found" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
-			return
-		}
-		if err.Error()[:len("insufficient stock")] == "insufficient stock" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update cart item"})
 		return
 	}
 
@@ -174,48 +261,31 @@ func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 
 // IncrementCartItem increments the quantity of an item in the cart by a specified amount (default: 1)
 func (h *CartHandler) IncrementCartItem(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	productID := c.Param("product_id")
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Product ID is required",
+		})
 		return
 	}
 
 	var req requests.IncrementCartItemRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		// If no body provided, default to increment by 1
-		req.Amount = 1
-	}
-
-	// Default to 1 if amount is 0 or negative
-	if req.Amount <= 0 {
+	// Default to increment by 1 if no body provided or on error
+	if err := c.ShouldBindJSON(&req); err != nil || req.Amount <= 0 {
 		req.Amount = 1
 	}
 
 	cart, err := h.cartService.IncrementCartItem(c.Request.Context(), userID, productID, req.Amount)
 	if err != nil {
-		h.logger.Error("Failed to increment cart item",
-			zap.Error(err),
-			zap.String("user_id", userID),
+		h.handleCartServiceError(c, err, "increment cart item", userID,
 			zap.String("product_id", productID),
 			zap.Int("amount", req.Amount))
-
-		// Check for specific error types
-		if err.Error() == "product not found" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
-			return
-		}
-		if err.Error() == "item not found in cart" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Item not found in cart"})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to increment cart item"})
 		return
 	}
 
@@ -228,48 +298,31 @@ func (h *CartHandler) IncrementCartItem(c *gin.Context) {
 
 // DecrementCartItem decrements the quantity of an item in the cart by a specified amount (default: 1)
 func (h *CartHandler) DecrementCartItem(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	productID := c.Param("product_id")
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Product ID is required",
+		})
 		return
 	}
 
 	var req requests.DecrementCartItemRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		// If no body provided, default to decrement by 1
-		req.Amount = 1
-	}
-
-	// Default to 1 if amount is 0 or negative
-	if req.Amount <= 0 {
+	// Default to decrement by 1 if no body provided or on error
+	if err := c.ShouldBindJSON(&req); err != nil || req.Amount <= 0 {
 		req.Amount = 1
 	}
 
 	cart, err := h.cartService.DecrementCartItem(c.Request.Context(), userID, productID, req.Amount)
 	if err != nil {
-		h.logger.Error("Failed to decrement cart item",
-			zap.Error(err),
-			zap.String("user_id", userID),
+		h.handleCartServiceError(c, err, "decrement cart item", userID,
 			zap.String("product_id", productID),
 			zap.Int("amount", req.Amount))
-
-		// Check for specific error types
-		if err.Error() == "product not found" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
-			return
-		}
-		if err.Error() == "item not found in cart" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Item not found in cart"})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decrement cart item"})
 		return
 	}
 
@@ -282,26 +335,24 @@ func (h *CartHandler) DecrementCartItem(c *gin.Context) {
 
 // RemoveFromCart removes an item from the cart
 func (h *CartHandler) RemoveFromCart(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	productID := c.Param("product_id")
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Product ID is required",
+		})
 		return
 	}
 
 	cart, err := h.cartService.RemoveCartItem(c.Request.Context(), userID, productID)
 	if err != nil {
-		h.logger.Error("Failed to remove cart item",
-			zap.Error(err),
-			zap.String("user_id", userID),
+		h.handleCartServiceError(c, err, "remove cart item", userID,
 			zap.String("product_id", productID))
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove item from cart"})
 		return
 	}
 
@@ -314,15 +365,13 @@ func (h *CartHandler) RemoveFromCart(c *gin.Context) {
 
 // ClearCart removes all items from the user's cart
 func (h *CartHandler) ClearCart(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	if err := h.cartService.ClearCart(c.Request.Context(), userID); err != nil {
-		h.logger.Error("Failed to clear cart", zap.Error(err), zap.String("user_id", userID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear cart"})
+		h.handleCartServiceError(c, err, "clear cart", userID)
 		return
 	}
 
@@ -334,16 +383,14 @@ func (h *CartHandler) ClearCart(c *gin.Context) {
 
 // GetCartSummary retrieves cart summary (total items, total price)
 func (h *CartHandler) GetCartSummary(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	summary, err := h.cartService.GetCartSummary(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to get cart summary", zap.Error(err), zap.String("user_id", userID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get cart summary"})
+		h.handleCartServiceError(c, err, "get cart summary", userID)
 		return
 	}
 
@@ -356,16 +403,14 @@ func (h *CartHandler) GetCartSummary(c *gin.Context) {
 
 // GetCartItemCount retrieves the total number of items in the cart
 func (h *CartHandler) GetCartItemCount(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	cart, err := h.cartService.GetUserCart(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to get cart for item count", zap.Error(err), zap.String("user_id", userID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get cart item count"})
+		h.handleCartServiceError(c, err, "get cart item count", userID)
 		return
 	}
 
@@ -378,16 +423,14 @@ func (h *CartHandler) GetCartItemCount(c *gin.Context) {
 
 // ValidateCart validates all items in the cart (stock availability, price changes)
 func (h *CartHandler) ValidateCart(c *gin.Context) {
-	userID, err := h.getUserID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	userID, authenticated := h.authenticateUser(c)
+	if !authenticated {
 		return
 	}
 
 	result, err := h.cartService.ValidateCart(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to validate cart", zap.Error(err), zap.String("user_id", userID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate cart"})
+		h.handleCartServiceError(c, err, "validate cart", userID)
 		return
 	}
 
@@ -405,8 +448,170 @@ func (h *CartHandler) HealthCheck(c *gin.Context) {
 		"data": gin.H{
 			"service":   "cart_handler",
 			"status":    "healthy",
-			"timestamp": gin.H{"unix": gin.H{}},
+			"timestamp": time.Now().Unix(),
 		},
 		"message": "Cart service is running",
+	})
+}
+
+// CleanupDuplicateCarts is an admin endpoint to clean up duplicate carts
+func (h *CartHandler) CleanupDuplicateCarts(c *gin.Context) {
+	h.logger.Info("Admin initiated cart cleanup request")
+
+	ctx := c.Request.Context()
+
+	// Call the service to cleanup duplicates
+	if err := h.cartService.CleanupDuplicateCarts(ctx); err != nil {
+		h.logger.Error("Cart cleanup failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to cleanup duplicate carts",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	h.logger.Info("Cart cleanup completed successfully")
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Duplicate carts cleaned up successfully",
+		"data": gin.H{
+			"operation": "cleanup_duplicate_carts",
+			"timestamp": time.Now().Unix(),
+		},
+	})
+}
+
+// PrepareCheckout validates the cart and returns data ready for checkout
+func (h *CartHandler) PrepareCheckout(c *gin.Context) {
+	userID, ok := h.authenticateUser(c)
+	if !ok {
+		return
+	}
+
+	result, err := h.cartService.ValidateCart(c.Request.Context(), userID)
+	if err != nil {
+		h.handleCartServiceError(c, err, "prepare checkout", userID)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+		"message": "Checkout data prepared",
+	})
+}
+
+// EstimateShipping returns shipping options via delivery service
+func (h *CartHandler) EstimateShipping(c *gin.Context) {
+	userID, ok := h.authenticateUser(c)
+	if !ok {
+		return
+	}
+
+	var req requests.EstimateShippingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	if h.deliverySvc == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"success": false, "error": "Delivery service not configured"})
+		return
+	}
+
+	est, err := h.deliverySvc.Estimate(c.Request.Context(), userID, req)
+	if err != nil {
+		h.logger.Error("Estimate shipping failed", zap.Error(err), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to estimate shipping", "details": err.Error()})
+		return
+	}
+
+	// Transform the DeliveryEstimate response to match expected format
+	response := gin.H{
+		"success": true,
+		"data": gin.H{
+			"shipping_options": transformDeliveryOptions(est.Options),
+			"subtotal":         est.Subtotal,
+			"user_id":          est.UserID,
+		},
+		"message": "Shipping estimated successfully",
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// transformDeliveryOptions converts DeliveryOption slice to the expected format
+func transformDeliveryOptions(options []models.DeliveryOption) []gin.H {
+	result := make([]gin.H, len(options))
+	for i, opt := range options {
+		result[i] = gin.H{
+			"method":            string(opt.Method),
+			"carrier":           opt.Carrier,
+			"service_level":     opt.ServiceLevel,
+			"cost":              opt.Price,
+			"currency":          opt.Currency,
+			"delivery_days_min": opt.EtaDaysMin,
+			"delivery_days_max": opt.EtaDaysMax,
+			"description":       fmt.Sprintf("%s %s (%d-%d business days)", opt.Carrier, opt.ServiceLevel, opt.EtaDaysMin, opt.EtaDaysMax),
+		}
+	}
+	return result
+}
+
+// ApplyCoupon validates and applies a coupon logically (no persistence)
+func (h *CartHandler) ApplyCoupon(c *gin.Context) {
+	userID, ok := h.authenticateUser(c)
+	if !ok {
+		return
+	}
+
+	var req requests.ApplyCouponRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request: " + err.Error()})
+		return
+	}
+	req.Sanitize()
+
+	cart, discount, err := h.cartService.ApplyCoupon(c.Request.Context(), userID, req.CouponCode)
+	if err != nil {
+		h.handleCartServiceError(c, err, "apply coupon", userID)
+		return
+	}
+	total := round2(cart.TotalPrice)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"cart_total":       total,
+			"discount_amount":  discount,
+			"discounted_total": round2(total - discount),
+			"coupon":           cart.CouponCode,
+		},
+		"message": "Coupon applied",
+	})
+}
+
+// RemoveCoupon returns the original cart totals (since coupons aren't persisted)
+func (h *CartHandler) RemoveCoupon(c *gin.Context) {
+	userID, ok := h.authenticateUser(c)
+	if !ok {
+		return
+	}
+
+	cart, err := h.cartService.RemoveCoupon(c.Request.Context(), userID)
+	if err != nil {
+		h.handleCartServiceError(c, err, "remove coupon", userID)
+		return
+	}
+	total := round2(cart.TotalPrice)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"cart_total":       total,
+			"discount_amount":  0,
+			"discounted_total": total,
+			"coupon":           nil,
+		},
+		"message": "Coupon removed",
 	})
 }

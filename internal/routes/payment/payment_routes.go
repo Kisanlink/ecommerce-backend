@@ -1,31 +1,66 @@
 package payment
 
 import (
-	// "github.com/Kisanlink/ecommerce-backend/internal/handlers"
+	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
-	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // RegisterPaymentRoutes registers all payment related routes
-func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
-	// TODO: Create PaymentRepository and NewPaymentHandler when payment_handler.go is implemented
-	// paymentHandler := handlers.NewPaymentHandler(repoManager.PaymentRepository)
+func RegisterPaymentRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager) {
+	// Initialize logger
+	logger, _ := zap.NewProduction()
 
-	// Payment routes (requires authentication)
+	// Create payment service and handler
+	paymentService := services.NewPaymentService(logger)
+	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, logger) // Payment routes (requires authentication)
 	payments := r.Group("/payments")
 	payments.Use(middleware.FirebaseAuthMiddleware())
 	{
-		// Placeholder routes until handler is implemented
-		payments.POST("/process", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Payment handler not implemented yet"}) })
-		payments.POST("/intent", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Payment handler not implemented yet"}) })
-		payments.POST("/confirm", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Payment handler not implemented yet"}) })
-		payments.POST("/cancel", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Payment handler not implemented yet"}) })
-		payments.GET("/:paymentId/status", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Payment handler not implemented yet"}) })
-		payments.GET("/history", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Payment handler not implemented yet"}) })
+		// Core payment functionality
+		payments.POST("/create-order", paymentHandler.CreateOrder)           // Create Razorpay order
+		payments.POST("/verify", paymentHandler.VerifyPayment)               // Verify payment signature
+		payments.GET("/:payment_id/status", paymentHandler.GetPaymentStatus) // Get payment status
+		// Simple hosted checkout helper (requires auth to prevent abuse)
+		payments.GET("/checkout", paymentHandler.CheckoutPage) // ?order_id=order_xxx
 	}
 
-	// Future route groups (commented until handlers are implemented)
+	// Webhooks (public endpoints for payment providers)
+	webhooks := r.Group("/webhooks")
+	{
+		webhooks.POST("/razorpay", paymentHandler.ProcessWebhook) // Razorpay webhook
+	}
+
+	// Legacy routes for compatibility (deprecated)
+	payments.POST("/process", func(c *gin.Context) {
+		c.JSON(501, gin.H{
+			"error": "This endpoint is deprecated. Use POST /payments/create-order instead",
+		})
+	})
+	payments.POST("/intent", func(c *gin.Context) {
+		c.JSON(501, gin.H{
+			"error": "This endpoint is deprecated. Use POST /payments/create-order instead",
+		})
+	})
+	payments.POST("/confirm", func(c *gin.Context) {
+		c.JSON(501, gin.H{
+			"error": "This endpoint is deprecated. Use POST /payments/verify instead",
+		})
+	})
+	payments.POST("/cancel", func(c *gin.Context) {
+		c.JSON(501, gin.H{
+			"error": "Payment cancellation not implemented yet",
+		})
+	})
+	payments.GET("/history", func(c *gin.Context) {
+		c.JSON(501, gin.H{
+			"error": "Payment history not implemented yet",
+		})
+	})
+
+	// Future route groups (commented until fully implemented)
 	/*
 		// Payment methods management
 		methods := payments.Group("/methods")
@@ -35,14 +70,6 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 			methods.PUT("/:methodId", paymentHandler.UpdatePaymentMethod)         // Update payment method
 			methods.DELETE("/:methodId", paymentHandler.DeletePaymentMethod)      // Delete payment method
 			methods.PUT("/:methodId/default", paymentHandler.SetDefaultPaymentMethod) // Set default payment method
-		}
-
-		// Webhooks (public endpoints for payment providers)
-		webhooks := r.Group("/webhooks/payments")
-		{
-			webhooks.POST("/stripe", paymentHandler.StripeWebhook)                // Stripe webhook
-			webhooks.POST("/paypal", paymentHandler.PayPalWebhook)               // PayPal webhook
-			webhooks.POST("/razorpay", paymentHandler.RazorPayWebhook)            // RazorPay webhook
 		}
 
 		// Payment refunds (admin functionality)

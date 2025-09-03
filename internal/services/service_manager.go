@@ -14,8 +14,8 @@ type ServiceManager struct {
 	FavoriteService *FavoriteService
 	CartService     CartServiceInterface
 	S3Service       *S3Service
-	// TODO: Add other services as they are implemented
-	// OrderService   *OrderService
+	DeliveryService DeliveryServiceInterface
+	OrderService    OrderServiceInterface
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -31,8 +31,10 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		s3Service = NewS3Service(nil)
 	}
 
-	// Create cart service
-	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, logger)
+	// Create services
+	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.GetDBManager(), logger)
+	deliveryService := NewDeliveryService(repoManager, logger)
+	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, s3Service, logger)
 
 	return &ServiceManager{
 		UserService:     NewUserService(repoManager.UserRepository),
@@ -41,7 +43,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		FavoriteService: NewFavoriteService(repoManager),
 		CartService:     cartService,
 		S3Service:       s3Service,
-		// TODO: Initialize other services as they are implemented
-		// OrderService:   NewOrderService(repoManager.OrderRepository),
+		DeliveryService: deliveryService,
+		OrderService:    orderService,
 	}
 }

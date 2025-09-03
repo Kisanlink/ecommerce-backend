@@ -1,29 +1,26 @@
 package delivery
 
 import (
-	// "github.com/Kisanlink/ecommerce-backend/internal/handlers"
+	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // RegisterDeliveryRoutes registers all delivery related routes
 func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
-	// TODO: Create DeliveryRepository and NewDeliveryHandler when delivery_handler.go is implemented
-	// deliveryHandler := handlers.NewDeliveryHandler(repoManager.DeliveryRepository)
+	// Initialize logger and handler with service
+	logger, _ := zap.NewProduction()
+	deliveryService := services.NewDeliveryService(repoManager, logger)
+	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, logger)
 
 	// Delivery routes (requires authentication)
 	delivery := r.Group("/delivery")
 	delivery.Use(middleware.FirebaseAuthMiddleware())
 	{
-		// Placeholder routes until handler is implemented
-		delivery.POST("/estimate", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
-		delivery.POST("/schedule", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
-		delivery.GET("/slots", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
-		delivery.GET("/:deliveryId/track", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
-		delivery.GET("/:deliveryId/status", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
-		delivery.PUT("/:deliveryId/reschedule", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
-		delivery.PUT("/:deliveryId/cancel", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Delivery handler not implemented yet"}) })
+		delivery.POST("/estimate", deliveryHandler.Estimate)
 	}
 
 	// Future route groups (commented until handlers are implemented)

@@ -108,6 +108,19 @@ func main() {
 		log.Fatalf("Failed to get DB: %v", err)
 	}
 
+	// Ensure carts table has coupon fields with sane defaults and no NULLs
+	// 1) Add columns if missing
+	_ = dbConn.Exec(`ALTER TABLE "carts" ADD COLUMN IF NOT EXISTS "coupon_code" VARCHAR(50);`).Error
+	_ = dbConn.Exec(`ALTER TABLE "carts" ADD COLUMN IF NOT EXISTS "discount_amount" DOUBLE PRECISION;`).Error
+	// 2) Backfill NULLs
+	_ = dbConn.Exec(`UPDATE "carts" SET "coupon_code" = '' WHERE "coupon_code" IS NULL;`).Error
+	_ = dbConn.Exec(`UPDATE "carts" SET "discount_amount" = 0 WHERE "discount_amount" IS NULL;`).Error
+	// 3) Apply defaults and NOT NULL constraints
+	_ = dbConn.Exec(`ALTER TABLE "carts" ALTER COLUMN "coupon_code" SET DEFAULT '';`).Error
+	_ = dbConn.Exec(`ALTER TABLE "carts" ALTER COLUMN "coupon_code" SET NOT NULL;`).Error
+	_ = dbConn.Exec(`ALTER TABLE "carts" ALTER COLUMN "discount_amount" SET DEFAULT 0;`).Error
+	_ = dbConn.Exec(`ALTER TABLE "carts" ALTER COLUMN "discount_amount" SET NOT NULL;`).Error
+
 	var tables []string
 	dbConn.Raw("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").Scan(&tables)
 	fmt.Println("Postgres tables:", tables)

@@ -16,10 +16,11 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/users"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // RegisterRoutes registers all application routes by delegating to specific route modules
-func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
+func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
 	// Health check endpoint
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -43,10 +44,10 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		products.RegisterProductRoutes(v1, serviceManager, repoManager)
 		profiles.RegisterProfileRoutes(v1, repoManager, serviceManager)
 		favorites.RegisterFavoriteRoutes(v1, repoManager, serviceManager)
-		orders.RegisterOrderRoutes(v1, repoManager)
+		orders.RegisterOrderRoutes(v1, repoManager, serviceManager, logger) // Updated with logger
 		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)
-		payment.RegisterPaymentRoutes(v1, repoManager)
+		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager)
 	}
 

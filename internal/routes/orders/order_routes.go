@@ -1,28 +1,28 @@
 package orders
 
 import (
-	// "github.com/Kisanlink/ecommerce-backend/internal/handlers"
+	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // RegisterOrderRoutes registers all order related routes
-func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
-	// TODO: Create NewOrderHandler when order_handler.go is implemented
-	// orderHandler := handlers.NewOrderHandler(repoManager.OrderRepository)
+func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
+	// Create order handler with dependencies
+	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, logger)
 
 	// Protected order routes (requires authentication)
 	orders := r.Group("/orders")
 	orders.Use(middleware.FirebaseAuthMiddleware())
 	{
-		// Placeholder routes until handler is implemented
-		orders.POST("", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Order handler not implemented yet"}) })
-		orders.GET("", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Order handler not implemented yet"}) })
-		orders.GET("/:id", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Order handler not implemented yet"}) })
-		orders.PUT("/:id/cancel", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Order handler not implemented yet"}) })
-		orders.GET("/:id/status", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Order handler not implemented yet"}) })
-		orders.GET("/:id/tracking", func(c *gin.Context) { c.JSON(501, gin.H{"error": "Order handler not implemented yet"}) })
+		orders.POST("", orderHandler.CreateOrder)                  // Create new order manually
+		orders.GET("", orderHandler.GetUserOrders)                 // Get all user orders
+		orders.GET("/:id", orderHandler.GetOrderDetails)           // Get specific order details
+		orders.GET("/:id/status", orderHandler.GetOrderStatus)     // Get order status
+		orders.GET("/:id/tracking", orderHandler.GetOrderTracking) // Get order tracking
 	}
 
 	// Future route groups (commented until handlers are implemented)

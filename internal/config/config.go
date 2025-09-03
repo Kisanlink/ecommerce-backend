@@ -1,5 +1,3 @@
-// config.go - Loads environment variables from .env
-// Author: Mani-KisanLink
 package config
 
 import (

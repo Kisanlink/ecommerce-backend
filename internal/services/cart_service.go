@@ -3,10 +3,14 @@ package services
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
+	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
 )
 
@@ -20,22 +24,32 @@ type CartServiceInterface interface {
 	DecrementCartItem(ctx context.Context, userID, productID string, amount int) (*models.Cart, error)
 	RemoveCartItem(ctx context.Context, userID, productID string) (*models.Cart, error)
 	ClearCart(ctx context.Context, userID string) error
+	ClearUserCart(ctx context.Context, userID string) error // Alias for ClearCart
 	GetCartSummary(ctx context.Context, userID string) (*models.CartSummary, error)
 	ValidateCart(ctx context.Context, userID string) (map[string]interface{}, error)
+
+	// Admin/maintenance operations
+	CleanupDuplicateCarts(ctx context.Context) error
+
+	// Coupons (persisted on cart)
+	ApplyCoupon(ctx context.Context, userID, couponCode string) (*models.Cart, float64, error)
+	RemoveCoupon(ctx context.Context, userID string) (*models.Cart, error)
 }
 
-// CartService implements CartServiceInterface
+// CartService implements cart business logic
 type CartService struct {
 	cartRepo    repositories.CartRepositoryInterface
 	productRepo repositories.ProductRepositoryInterface
+	dbManager   db.DBManager
 	logger      *zap.Logger
 }
 
 // NewCartService creates a new cart service
-func NewCartService(cartRepo repositories.CartRepositoryInterface, productRepo repositories.ProductRepositoryInterface, logger *zap.Logger) CartServiceInterface {
+func NewCartService(cartRepo repositories.CartRepositoryInterface, productRepo repositories.ProductRepositoryInterface, dbManager db.DBManager, logger *zap.Logger) CartServiceInterface {
 	service := &CartService{
 		cartRepo:    cartRepo,
 		productRepo: productRepo,
+		dbManager:   dbManager,
 		logger:      logger,
 	}
 
@@ -60,9 +74,40 @@ func (s *CartService) initializeIDGenerators() {
 func (s *CartService) initializeCartIDGenerator(ctx context.Context) {
 	s.logger.Info("Initializing cart ID generator")
 
-	// For now, just initialize with empty list to avoid conflicts
-	// In a proper implementation, we would query all existing cart IDs
-	hash.InitializeGlobalCountersFromDatabase("CART", []string{}, hash.Medium)
+	// Check if cartRepo can be cast to access BaseFilterableRepository
+	if cartRepoImpl, ok := s.cartRepo.(*repositories.CartRepositoryImpl); ok {
+		// Query all existing cart IDs to prevent conflicts (exclude soft-deleted)
+		filter := &base.Filter{
+			Group: base.FilterGroup{
+				Conditions: []base.FilterCondition{
+					{Field: "deleted_at", Operator: base.OpIsNull, Value: nil},
+				},
+				Logic: base.LogicAnd,
+			},
+			Page:     1,
+			PageSize: 10000,
+		}
+
+		carts, err := cartRepoImpl.BaseFilterableRepository.Find(ctx, filter)
+		if err != nil {
+			s.logger.Error("Failed to get existing carts for ID initialization", zap.Error(err))
+			// Fallback to empty initialization
+			hash.InitializeGlobalCountersFromDatabase("CART", []string{}, hash.Medium)
+		} else {
+			// Extract IDs
+			existingIDs := make([]string, len(carts))
+			for i, cart := range carts {
+				if cart != nil {
+					existingIDs[i] = cart.GetID()
+				}
+			}
+			s.logger.Info("Found existing cart IDs", zap.Int("count", len(existingIDs)))
+			hash.InitializeGlobalCountersFromDatabase("CART", existingIDs, hash.Medium)
+		}
+	} else {
+		s.logger.Warn("Cannot cast cart repository to access base repository, using default initialization")
+		hash.InitializeGlobalCountersFromDatabase("CART", []string{}, hash.Medium)
+	}
 	s.logger.Info("Cart ID generator initialized")
 }
 
@@ -70,9 +115,32 @@ func (s *CartService) initializeCartIDGenerator(ctx context.Context) {
 func (s *CartService) initializeCartItemIDGenerator(ctx context.Context) {
 	s.logger.Info("Initializing cart item ID generator")
 
-	// For now, just initialize with empty list to avoid conflicts
-	// In a proper implementation, we would query all existing cart item IDs
-	hash.InitializeGlobalCountersFromDatabase("CITM", []string{}, hash.Large)
+	// Query all existing cart item IDs to prevent conflicts
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{},
+			Logic:      base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	var cartItems []*models.CartItem
+	if err := s.dbManager.List(ctx, filter, &cartItems); err != nil {
+		s.logger.Error("Failed to get existing cart items for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("CITM", []string{}, hash.Large)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, 0, len(cartItems))
+		for _, item := range cartItems {
+			if item != nil && item.GetID() != "" {
+				existingIDs = append(existingIDs, item.GetID())
+			}
+		}
+		s.logger.Info("Found existing cart item IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("CITM", existingIDs, hash.Large)
+	}
 	s.logger.Info("Cart item ID generator initialized")
 }
 
@@ -85,7 +153,7 @@ func (s *CartService) GetUserCart(ctx context.Context, userID string) (*models.C
 	cart, err := s.cartRepo.GetUserCart(ctx, userID)
 	if err != nil {
 		s.logger.Error("Failed to get user cart", zap.Error(err), zap.String("user_id", userID))
-		return nil, err
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
 	}
 
 	return cart, nil
@@ -106,7 +174,11 @@ func (s *CartService) AddItemToCart(ctx context.Context, userID, productID strin
 	// Validate product exists and get current price
 	var product models.Product
 	result, err := s.productRepo.GetByID(ctx, productID, &product)
-	if err != nil || result == nil {
+	if err != nil {
+		s.logger.Error("Failed to get product", zap.Error(err), zap.String("product_id", productID))
+		return nil, fmt.Errorf("product not found")
+	}
+	if result == nil {
 		return nil, fmt.Errorf("product not found")
 	}
 
@@ -123,7 +195,7 @@ func (s *CartService) AddItemToCart(ctx context.Context, userID, productID strin
 			zap.String("user_id", userID),
 			zap.String("product_id", productID),
 			zap.Int("quantity", quantity))
-		return nil, err
+		return nil, fmt.Errorf("failed to add item to cart: %w", err)
 	}
 
 	s.logger.Info("Item added to cart successfully",
@@ -155,7 +227,11 @@ func (s *CartService) UpdateCartItem(ctx context.Context, userID, productID stri
 	// Validate product exists and check stock
 	var product models.Product
 	result, err := s.productRepo.GetByID(ctx, productID, &product)
-	if err != nil || result == nil {
+	if err != nil {
+		s.logger.Error("Failed to get product", zap.Error(err), zap.String("product_id", productID))
+		return nil, fmt.Errorf("product not found")
+	}
+	if result == nil {
 		return nil, fmt.Errorf("product not found")
 	}
 
@@ -171,7 +247,7 @@ func (s *CartService) UpdateCartItem(ctx context.Context, userID, productID stri
 			zap.String("user_id", userID),
 			zap.String("product_id", productID),
 			zap.Int("quantity", quantity))
-		return nil, err
+		return nil, fmt.Errorf("failed to update cart item: %w", err)
 	}
 
 	s.logger.Info("Cart item updated successfully",
@@ -197,7 +273,7 @@ func (s *CartService) IncrementCartItem(ctx context.Context, userID, productID s
 	// Get current cart to find existing item quantity
 	cart, err := s.cartRepo.GetUserCart(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
 	}
 
 	// Find the current item quantity
@@ -222,7 +298,11 @@ func (s *CartService) IncrementCartItem(ctx context.Context, userID, productID s
 	// Validate product exists and check stock
 	var product models.Product
 	result, err := s.productRepo.GetByID(ctx, productID, &product)
-	if err != nil || result == nil {
+	if err != nil {
+		s.logger.Error("Failed to get product", zap.Error(err), zap.String("product_id", productID))
+		return nil, fmt.Errorf("product not found")
+	}
+	if result == nil {
 		return nil, fmt.Errorf("product not found")
 	}
 
@@ -238,7 +318,7 @@ func (s *CartService) IncrementCartItem(ctx context.Context, userID, productID s
 			zap.String("user_id", userID),
 			zap.String("product_id", productID),
 			zap.Int("amount", amount))
-		return nil, err
+		return nil, fmt.Errorf("failed to increment cart item: %w", err)
 	}
 
 	s.logger.Info("Cart item incremented successfully",
@@ -265,7 +345,7 @@ func (s *CartService) DecrementCartItem(ctx context.Context, userID, productID s
 	// Get current cart to find existing item quantity
 	cart, err := s.cartRepo.GetUserCart(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
 	}
 
 	// Find the current item quantity
@@ -300,7 +380,7 @@ func (s *CartService) DecrementCartItem(ctx context.Context, userID, productID s
 			zap.String("user_id", userID),
 			zap.String("product_id", productID),
 			zap.Int("amount", amount))
-		return nil, err
+		return nil, fmt.Errorf("failed to decrement cart item: %w", err)
 	}
 
 	s.logger.Info("Cart item decremented successfully",
@@ -327,7 +407,7 @@ func (s *CartService) RemoveCartItem(ctx context.Context, userID, productID stri
 			zap.Error(err),
 			zap.String("user_id", userID),
 			zap.String("product_id", productID))
-		return nil, err
+		return nil, fmt.Errorf("failed to remove cart item: %w", err)
 	}
 
 	s.logger.Info("Cart item removed successfully",
@@ -347,11 +427,16 @@ func (s *CartService) ClearCart(ctx context.Context, userID string) error {
 		s.logger.Error("Failed to clear cart",
 			zap.Error(err),
 			zap.String("user_id", userID))
-		return err
+		return fmt.Errorf("failed to clear cart: %w", err)
 	}
 
 	s.logger.Info("Cart cleared successfully", zap.String("user_id", userID))
 	return nil
+}
+
+// ClearUserCart is an alias for ClearCart for consistency
+func (s *CartService) ClearUserCart(ctx context.Context, userID string) error {
+	return s.ClearCart(ctx, userID)
 }
 
 // GetCartSummary retrieves the cart summary
@@ -362,16 +447,22 @@ func (s *CartService) GetCartSummary(ctx context.Context, userID string) (*model
 
 	cart, err := s.cartRepo.GetUserCart(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get cart summary: %w", err)
 	}
 
+	discounted := cart.TotalPrice - cart.DiscountAmount
+	if discounted < 0 {
+		discounted = 0
+	}
 	summary := &models.CartSummary{
-		UserID:      cart.UserID,
-		TotalItems:  cart.TotalItems,
-		TotalPrice:  cart.TotalPrice,
-		ItemsCount:  len(cart.Items),
-		LastUpdated: cart.UpdatedAt,
-		IsFromCache: false, // Always from service layer
+		UserID:          cart.UserID,
+		TotalItems:      cart.TotalItems,
+		TotalPrice:      cart.TotalPrice,
+		DiscountAmount:  cart.DiscountAmount,
+		DiscountedTotal: discounted,
+		ItemsCount:      len(cart.Items),
+		LastUpdated:     cart.UpdatedAt,
+		IsFromCache:     false, // Always from service layer
 	}
 
 	return summary, nil
@@ -385,7 +476,7 @@ func (s *CartService) ValidateCart(ctx context.Context, userID string) (map[stri
 
 	cart, err := s.cartRepo.GetUserCart(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to validate cart: %w", err)
 	}
 
 	validationIssues := []map[string]interface{}{}
@@ -458,4 +549,97 @@ func (s *CartService) ValidateCart(ctx context.Context, userID string) (map[stri
 	}
 
 	return result, nil
+}
+
+// --- Coupons persistence ---
+type couponCfg struct {
+	Type         string
+	Value        float64
+	MinCartTotal float64
+	MaxDiscount  float64
+}
+
+var coupons = map[string]couponCfg{
+	"SUMMER10":   {Type: "percent", Value: 10, MinCartTotal: 500, MaxDiscount: 500},
+	"WELCOME100": {Type: "fixed", Value: 100, MinCartTotal: 299, MaxDiscount: 0},
+}
+
+func round2(f float64) float64 { return math.Round(f*100) / 100 }
+
+func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string) (*models.Cart, float64, error) {
+	if userID == "" {
+		return nil, 0, fmt.Errorf("user ID is required")
+	}
+	code := strings.TrimSpace(strings.ToUpper(couponCode))
+	cfg, ok := coupons[code]
+	if !ok {
+		return nil, 0, fmt.Errorf("invalid coupon code")
+	}
+
+	cart, err := s.cartRepo.GetUserCart(ctx, userID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get user cart: %w", err)
+	}
+	if cart == nil || len(cart.Items) == 0 || cart.TotalPrice <= 0 {
+		return nil, 0, fmt.Errorf("cart is empty")
+	}
+	if cart.TotalPrice < cfg.MinCartTotal {
+		return nil, 0, fmt.Errorf("minimum cart total not met")
+	}
+
+	var discount float64
+	switch strings.ToLower(cfg.Type) {
+	case "percent":
+		discount = cart.TotalPrice * (cfg.Value / 100)
+	case "fixed":
+		discount = cfg.Value
+	}
+	if cfg.MaxDiscount > 0 && discount > cfg.MaxDiscount {
+		discount = cfg.MaxDiscount
+	}
+	if discount > cart.TotalPrice {
+		discount = cart.TotalPrice
+	}
+	discount = round2(discount)
+
+	cart.CouponCode = code
+	cart.DiscountAmount = discount
+	if err := s.cartRepo.UpdateCart(ctx, cart); err != nil {
+		return nil, 0, fmt.Errorf("failed to update cart with coupon: %w", err)
+	}
+	return cart, discount, nil
+}
+
+func (s *CartService) RemoveCoupon(ctx context.Context, userID string) (*models.Cart, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+	cart, err := s.cartRepo.GetUserCart(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
+	}
+	cart.CouponCode = ""
+	cart.DiscountAmount = 0
+	if err := s.cartRepo.UpdateCart(ctx, cart); err != nil {
+		return nil, fmt.Errorf("failed to update cart: %w", err)
+	}
+	return cart, nil
+}
+
+// CleanupDuplicateCarts removes duplicate carts ensuring each user has only one cart
+func (s *CartService) CleanupDuplicateCarts(ctx context.Context) error {
+	s.logger.Info("Starting cart cleanup process to ensure one cart per user")
+
+	if s.cartRepo == nil {
+		return fmt.Errorf("cart repository is not available")
+	}
+
+	// Call the repository method to clean up duplicates
+	if err := s.cartRepo.CleanupDuplicateCarts(ctx); err != nil {
+		s.logger.Error("Failed to cleanup duplicate carts", zap.Error(err))
+		return fmt.Errorf("cleanup failed: %w", err)
+	}
+
+	s.logger.Info("Cart cleanup completed successfully")
+	return nil
 }

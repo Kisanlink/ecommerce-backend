@@ -18,7 +18,7 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 	{
 		// Public auth endpoints
 		auth.POST("/signup", firebaseAuth.Signup)
-		auth.POST("/signin", firebaseAuth.Login) // Fixed: now uses Login method
+		auth.POST("/signin", firebaseAuth.Login) 
 		auth.POST("/login", firebaseAuth.Login)  // Alternative login endpoint
 		auth.POST("/verify-token", firebaseAuth.VerifyToken)
 		auth.POST("/refresh-token", firebaseAuth.RefreshToken) // Now uses proper RefreshToken method
@@ -34,7 +34,7 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 			protected.GET("/profile", firebaseAuth.GetProfile)
 			protected.PUT("/profile", firebaseAuth.UpdateProfile)
 			protected.DELETE("/account", firebaseAuth.DeleteAccount)
-			protected.POST("/logout", firebaseAuth.Logout) // Proper logout: revoke refresh tokens, do not delete account
+			protected.POST("/logout", firebaseAuth.Logout) 
 		}
 	}
 

@@ -13,7 +13,6 @@ const (
 	OrderStatusConfirmed OrderStatus = "confirmed"
 	OrderStatusShipped   OrderStatus = "shipped"
 	OrderStatusDelivered OrderStatus = "delivered"
-	OrderStatusCancelled OrderStatus = "cancelled"
 )
 
 // Order represents an order in the system
@@ -26,6 +25,20 @@ type Order struct {
 	PaymentMethod   string      `json:"payment_method"`
 	PaymentStatus   string      `json:"payment_status" gorm:"default:'pending'"`
 	Notes           string      `json:"notes"`
+	// Payment metadata (Razorpay)
+	RazorpayOrderID     string `json:"razorpay_order_id" gorm:"index"`
+	RazorpayReceipt     string `json:"razorpay_receipt"`
+	RazorpayAmountPaisa int    `json:"razorpay_amount_paisa"`
+	RazorpayNotesJSON   string `json:"razorpay_notes_json"`
+	// Shipping metadata
+	ShippingCarrier string  `json:"shipping_carrier"`
+	ShippingMode    string  `json:"shipping_mode"`
+	ShippingCharge  float64 `json:"shipping_charge"`
+	EtaMinDays      int     `json:"eta_min_days"`
+	EtaMaxDays      int     `json:"eta_max_days"`
+
+	// Invoice metadata
+	InvoiceURL string `json:"invoice_url"`
 }
 
 // OrderItem represents an item in an order

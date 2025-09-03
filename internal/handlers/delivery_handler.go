@@ -1,1 +1,43 @@
 package handlers
+
+import (
+	"net/http"
+
+	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+)
+
+type DeliveryHandler struct {
+	service services.DeliveryServiceInterface
+	logger  *zap.Logger
+	authCtx *auth.AuthContext
+}
+
+func NewDeliveryHandler(service services.DeliveryServiceInterface, logger *zap.Logger) *DeliveryHandler {
+	return &DeliveryHandler{service: service, logger: logger, authCtx: auth.NewAuthContext()}
+}
+
+func (h *DeliveryHandler) Estimate(c *gin.Context) {
+	userID, ok := h.authCtx.GetAuthenticatedUserID(c)
+	if !ok {
+		return
+	}
+
+	var req requests.EstimateShippingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid request: " + err.Error()})
+		return
+	}
+
+	est, err := h.service.Estimate(c.Request.Context(), userID, req)
+	if err != nil {
+		h.logger.Error("delivery estimate failed", zap.Error(err), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to estimate delivery"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": est})
+}
