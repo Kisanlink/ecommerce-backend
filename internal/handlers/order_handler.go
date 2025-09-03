@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
+	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -13,6 +14,7 @@ import (
 // OrderHandler handles order-related HTTP requests
 type OrderHandler struct {
 	orderService services.OrderServiceInterface
+	authContext  *auth.AuthContext
 	logger       *zap.Logger
 }
 
@@ -20,6 +22,7 @@ type OrderHandler struct {
 func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Logger) *OrderHandler {
 	return &OrderHandler{
 		orderService: orderService,
+		authContext:  auth.NewAuthContext(),
 		logger:       logger,
 	}
 }
@@ -27,7 +30,7 @@ func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Lo
 // CreateOrder creates a new order manually (alternative to payment flow)
 // POST /api/v1/orders
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
@@ -47,7 +50,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 	order, err := h.orderService.CreateOrderFromCart(
 		c.Request.Context(),
-		userID.(string),
+		userID,
 		req.CartID,
 		req.ShippingAddress,
 		req.PaymentMethod,
@@ -61,7 +64,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 	h.logger.Info("Order created via direct API",
 		zap.String("order_id", order.ID),
-		zap.String("user_id", userID.(string)))
+		zap.String("user_id", userID))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Order created successfully",
@@ -72,7 +75,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 // GetUserOrders retrieves all orders for the authenticated user
 // GET /api/v1/orders
 func (h *OrderHandler) GetUserOrders(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
@@ -92,7 +95,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 		}
 	}
 
-	orders, err := h.orderService.GetUserOrders(c.Request.Context(), userID.(string))
+	orders, err := h.orderService.GetUserOrders(c.Request.Context(), userID)
 	if err != nil {
 		h.logger.Error("Failed to get user orders", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve orders"})
@@ -124,7 +127,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 // GetOrderDetails retrieves details of a specific order
 // GET /api/v1/orders/:id
 func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
@@ -145,7 +148,7 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 	}
 
 	// Verify the order belongs to the authenticated user
-	if order.UserID != userID.(string) {
+	if order.UserID != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
@@ -159,7 +162,7 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 // GetOrderStatus retrieves the current status of an order
 // GET /api/v1/orders/:id/status
 func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
@@ -179,7 +182,7 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 	}
 
 	// Verify the order belongs to the authenticated user
-	if order.UserID != userID.(string) {
+	if order.UserID != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
@@ -196,7 +199,7 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 // GetOrderTracking retrieves tracking information for an order
 // GET /api/v1/orders/:id/tracking
 func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
@@ -216,7 +219,7 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 	}
 
 	// Verify the order belongs to the authenticated user
-	if order.UserID != userID.(string) {
+	if order.UserID != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}

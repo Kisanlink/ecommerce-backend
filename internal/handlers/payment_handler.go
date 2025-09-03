@@ -17,6 +17,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// Compile regex once for better performance
+var pincodeRegex = regexp.MustCompile(`^\d{6}$`)
+
 // PaymentHandler handles payment-related HTTP requests
 type PaymentHandler struct {
 	paymentService  services.PaymentServiceInterface
@@ -551,7 +554,8 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				// Update order with Delhivery waybill number
 				orderWithItems.DelhiveryWaybill = waybill
 				orderWithItems.DelhiveryStatus = "Created"
-				orderWithItems.TrackingURL = fmt.Sprintf("https://track.delhivery.com/p/%s", waybill)
+				// Public tracking URL
+				orderWithItems.TrackingURL = fmt.Sprintf("https://www.delhivery.com/track/package/%s", waybill)
 
 				// Store for response
 				awbNumber = waybill
@@ -714,7 +718,7 @@ func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
 		PostalCode string `json:"postal_code" binding:"required" validate:"required,min=1,max=20"`
 		Country    string `json:"country" binding:"required" validate:"required,min=1,max=100"`
 	}
-	
+
 	if addressStr == "" {
 		return address, fmt.Errorf("shipping address cannot be empty")
 	}
@@ -732,19 +736,19 @@ func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
 
 	// Extract components (assuming format: street, city, state, postal_code, country)
 	address.Street = parts[0]
-	
+
 	if len(parts) >= 2 {
 		address.City = parts[1]
 	}
-	
+
 	if len(parts) >= 3 {
 		address.State = parts[2]
 	}
-	
+
 	if len(parts) >= 4 {
 		address.PostalCode = parts[3]
 	}
-	
+
 	if len(parts) >= 5 {
 		address.Country = parts[4]
 	} else {
@@ -755,7 +759,7 @@ func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
 	if address.PostalCode == "" {
 		// Try to find postal code in any part (6 digits)
 		for _, part := range parts {
-			if matched, _ := regexp.MatchString(`^\d{6}$`, part); matched {
+			if pincodeRegex.MatchString(part) {
 				address.PostalCode = part
 				break
 			}

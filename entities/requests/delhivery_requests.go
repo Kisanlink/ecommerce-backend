@@ -80,6 +80,12 @@ type DelhiveryPickupLocation struct {
 	Name string `json:"name" validate:"required"`
 }
 
+// DelhiveryCreateShipmentPayload wraps the create shipment request with the required format key
+type DelhiveryCreateShipmentPayload struct {
+	Format string                   `json:"format"` // should be "json"
+	Data   DelhiveryShipmentRequest `json:"data"`
+}
+
 // BuildServiceabilityURL constructs the serviceability check URL with query parameters
 func (r *DelhiveryServiceabilityRequest) BuildServiceabilityURL(baseURL string) string {
 	params := url.Values{}
@@ -188,6 +194,14 @@ func (r *DelhiveryShipmentRequest) AddShipmentDetail(detail DelhiveryShipmentDet
 // BuildShipmentURL returns the shipment creation endpoint
 func (r *DelhiveryShipmentRequest) BuildShipmentURL(baseURL string) string {
 	return fmt.Sprintf("%s/api/cmu/create.json", baseURL)
+}
+
+// NewCreateShipmentPayload creates a payload wrapper with format=json
+func NewCreateShipmentPayload(req DelhiveryShipmentRequest) *DelhiveryCreateShipmentPayload {
+	return &DelhiveryCreateShipmentPayload{
+		Format: "json",
+		Data:   req,
+	}
 }
 
 // Validation methods

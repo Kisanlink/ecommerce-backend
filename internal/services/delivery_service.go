@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -597,20 +598,25 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		zap.String("endpoint", endpoint),
 		zap.String("order_id", order.ID))
 
-	// Marshal request body
-	reqBody, err := json.Marshal(shipmentReq)
+	// Marshal shipment data to JSON (Delhivery expects form data with format=json&data=<json>)
+	dataJSON, err := json.Marshal(shipmentReq)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal shipment request: %w", err)
 	}
 
+	// Create form-encoded body: format=json&data=<json>
+	formData := url.Values{}
+	formData.Set("format", "json")
+	formData.Set("data", string(dataJSON))
+
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(reqBody)))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Token "+s.config.APIToken)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	// Make API call

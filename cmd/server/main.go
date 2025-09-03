@@ -164,7 +164,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
-	
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

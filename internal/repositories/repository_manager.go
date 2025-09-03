@@ -64,21 +64,21 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 // Close closes all repository connections properly
 func (rm *RepositoryManager) Close() error {
 	var errs []error
-	
+
 	// Close Redis connection if available
 	if rm.RedisManager != nil {
 		if err := rm.RedisManager.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close Redis: %w", err))
 		}
 	}
-	
+
 	// Note: Database manager is closed by the main application
 	// as it may be shared across multiple repository managers
-	
+
 	if len(errs) > 0 {
 		return fmt.Errorf("errors closing repository connections: %v", errs)
 	}
-	
+
 	return nil
 }
 
