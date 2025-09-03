@@ -13,7 +13,7 @@ func main() {
 	log.Println("Starting product data seeding...")
 
 	// Database connection string - using the same credentials as .env file
-	dsn := "host=localhost user=postgres password=12345678 dbname=DemoDB port=5432 sslmode=disable TimeZone=Asia/Kolkata"
+	dsn := "host=localhost user=amrti password=1234 dbname=amrti port=5432 sslmode=disable TimeZone=Asia/Kolkata"
 
 	// Initialize GORM database connection
 	database, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
