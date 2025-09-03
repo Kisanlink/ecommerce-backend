@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -30,6 +34,14 @@ func main() {
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
 
+	// Setup graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Listen for interrupt signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	// Get Postgres config from env
 	pgEnv := config.GetPostgresEnvConfig()
 	pgConfig := &db.Config{
@@ -46,11 +58,19 @@ func main() {
 		S3Bucket: os.Getenv("DB_S3_BUCKET"),
 	}
 
-	ctx := context.Background()
+	ctx = context.Background()
 	pgManager := db.NewPostgresManager(pgConfig, logger)
 	if err := pgManager.Connect(ctx); err != nil {
 		log.Fatalf("Failed to connect to Postgres via plugin: %v", err)
 	}
+	defer func() {
+		logger.Info("Closing database connections...")
+		if err := pgManager.Close(); err != nil {
+			logger.Error("Failed to close Postgres connection", zap.Error(err))
+		} else {
+			logger.Info("Database connections closed successfully")
+		}
+	}()
 
 	// Initialize S3Manager
 	var s3Manager *db.S3Manager
@@ -61,6 +81,14 @@ func main() {
 			log.Println("S3 image upload will not be available")
 		} else {
 			log.Println("Successfully connected to S3")
+			defer func() {
+				logger.Info("Closing S3 connections...")
+				if err := s3Manager.Close(); err != nil {
+					logger.Error("Failed to close S3 connection", zap.Error(err))
+				} else {
+					logger.Info("S3 connections closed successfully")
+				}
+			}()
 		}
 	}
 
@@ -136,11 +164,40 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
+	
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	if err := srv.Run(":" + port); err != nil {
-		log.Fatalf("Server failed: %v", err)
+
+	// Create HTTP server
+	httpServer := &http.Server{
+		Addr:    ":" + port,
+		Handler: srv,
 	}
+
+	// Start server in a goroutine
+	go func() {
+		logger.Info("Starting server", zap.String("port", port))
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Server failed to start", zap.Error(err))
+		}
+	}()
+
+	// Wait for interrupt signal
+	<-sigChan
+	logger.Info("Shutdown signal received, initiating graceful shutdown...")
+
+	// Create shutdown context with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	// Shutdown HTTP server gracefully
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Server forced to shutdown", zap.Error(err))
+	} else {
+		logger.Info("Server exited gracefully")
+	}
+
+	logger.Info("Application shutdown complete")
 }

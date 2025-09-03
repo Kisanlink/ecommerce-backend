@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"fmt"
 	"html/template"
 
+	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -61,9 +65,12 @@ type VerifyPaymentRequest struct {
 
 // VerifyPaymentResponse represents payment verification response
 type VerifyPaymentResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message"`
-	PaymentID string `json:"payment_id,omitempty"`
+	Success     bool   `json:"success"`
+	Message     string `json:"message"`
+	PaymentID   string `json:"payment_id,omitempty"`
+	OrderID     string `json:"order_id,omitempty"`
+	AWBNumber   string `json:"awb_number,omitempty"`
+	TrackingURL string `json:"tracking_url,omitempty"`
 }
 
 // CheckoutPage serves a minimal Razorpay Checkout HTML to initiate payment
@@ -164,19 +171,29 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Prefer last delivery estimate for address and totals to avoid re-entry
-	useCurrency := "INR" // hardcode
-	shippingAddress := req.ShippingAddress
+	// Always use INR currency and prefer last delivery estimate for address and totals
+	useCurrency := "INR" // Always INR for all transactions
+	shippingAddress := ""
 	finalAmount := 0.0
 	shippingCharges := 0.0
+
+	// First priority: Use cached estimate from shipping estimation if available
 	if h.deliveryService != nil {
 		if last, err := h.deliveryService.GetLastEstimate(c.Request.Context(), userID); err == nil && last != nil {
 			shippingAddress = last.ShippingAddress
 			shippingCharges = last.ShippingCharges
-			finalAmount = last.Total
-			useCurrency = last.Currency
+			finalAmount = last.Total // This includes subtotal + shipping
+			// Currency is always INR from estimate, but force it anyway
+			useCurrency = "INR"
+
+			h.logger.Info("Using cached delivery estimate",
+				zap.String("user_id", userID),
+				zap.String("cached_address", shippingAddress),
+				zap.Float64("cached_total", finalAmount),
+				zap.Float64("cached_shipping", shippingCharges))
 		}
 	}
+
 	// Fallback to provided address or address ID if cache not present
 	if shippingAddress == "" {
 		if req.ShippingAddressID != "" {
@@ -214,18 +231,19 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Step 2: Calculate totals
+	// Step 2: Calculate totals - prefer cached estimate, fallback to dynamic calculation
 	cartTotal := 0.0
 	for _, item := range cart.Items {
 		cartTotal += item.TotalPrice
 	}
 
-	// Prefer cached subtotal (includes shipping). If not, compute from cart + dynamic shipping.
-	subtotal := req.Subtotal
-	req.Currency = useCurrency // force INR
+	// Force INR currency always
+	req.Currency = useCurrency // Always "INR"
 
-	// Compute shipping charges from subtotal - cartTotal when subtotal provided
+	// Use cached estimate totals if available, otherwise calculate dynamically
 	if finalAmount <= 0 {
+		// No cached estimate available - calculate from request or fallback
+		subtotal := req.Subtotal
 		if subtotal > 0 {
 			shippingCharges = subtotal - cartTotal
 			if shippingCharges < 0 {
@@ -233,10 +251,27 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			}
 			finalAmount = subtotal
 		} else {
-			// Last-resort fallback: fixed shipping
-			shippingCharges = 50.0
+			// Get shipping charges dynamically from delivery service API
+			if h.deliveryService != nil {
+				// Try to get real shipping charges from API
+				if dynamicCharges, err := h.calculateShippingFromAddress(c.Request.Context(), userID, shippingAddress, cartTotal, len(cart.Items)); err == nil {
+					shippingCharges = dynamicCharges
+				} else {
+					h.logger.Warn("Failed to get dynamic shipping charges, using fallback", zap.Error(err))
+					shippingCharges = 50.0 // Keep fallback for safety
+				}
+			} else {
+				h.logger.Warn("Delivery service not available, using fallback shipping charges")
+				shippingCharges = 50.0 // Keep fallback for safety
+			}
 			finalAmount = cartTotal + shippingCharges
 		}
+
+		h.logger.Info("Using dynamic calculation (no cached estimate)",
+			zap.String("user_id", userID),
+			zap.Float64("cart_total", cartTotal),
+			zap.Float64("calculated_shipping", shippingCharges),
+			zap.Float64("final_amount", finalAmount))
 	}
 
 	h.logger.Info("Calculated payment amounts",
@@ -246,15 +281,16 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Step 3: Create ONLY Razorpay payment order (NO database order!)
-	// We'll store cart info and shipping address in notes for later use
+	// Store all necessary information in notes for later order creation
 	notes := map[string]interface{}{
 		"user_id":             userID,
 		"shipping_address":    shippingAddress,
 		"shipping_address_id": req.ShippingAddressID,
 		"cart_total":          cartTotal,
 		"shipping_charges":    shippingCharges,
-		"subtotal":            finalAmount,
+		"subtotal":            finalAmount, // Total including shipping
 		"cart_items_count":    len(cart.Items),
+		"currency":            "INR", // Always INR
 	}
 
 	razorpayOrder, err := h.paymentService.CreateOrder(c.Request.Context(), userID, finalAmount, req.Currency, "payment_intent_"+userID, notes)
@@ -337,6 +373,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID))
 
+		// Check if this payment has already been processed to avoid duplicate orders
+		existingOrders, getOrdersErr := h.orderService.GetUserOrders(c.Request.Context(), userID)
+		if getOrdersErr == nil {
+			for _, existingOrder := range existingOrders {
+				if existingOrder.RazorpayOrderID == req.OrderID {
+					h.logger.Warn("Order already exists for this Razorpay order ID",
+						zap.String("user_id", userID),
+						zap.String("existing_order_id", existingOrder.ID),
+						zap.String("razorpay_order_id", req.OrderID))
+
+					// Return the existing order details instead of creating new one
+					response = VerifyPaymentResponse{
+						Success:     true,
+						Message:     "Payment already processed - returning existing order",
+						PaymentID:   req.PaymentID,
+						OrderID:     existingOrder.ID,
+						AWBNumber:   existingOrder.DelhiveryWaybill,
+						TrackingURL: existingOrder.TrackingURL,
+					}
+					c.JSON(http.StatusOK, response)
+					return
+				}
+			}
+		}
+
 		// Fetch Razorpay order to get notes (subtotal, cart_total, shipping_charges, shipping_address)
 		rzpOrder, getErr := h.paymentService.GetOrder(c.Request.Context(), req.OrderID)
 		if getErr != nil {
@@ -410,7 +471,19 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.Error(err),
 				zap.String("user_id", userID),
 				zap.String("payment_id", req.PaymentID))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verified but failed to create order"})
+
+			// Check if this is a duplicate key error
+			if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+				h.logger.Error("Duplicate order creation attempted - this payment may have already been processed",
+					zap.String("user_id", userID),
+					zap.String("payment_id", req.PaymentID),
+					zap.String("razorpay_order_id", req.OrderID))
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "This payment has already been processed. Please check your order history.",
+					"code":  "PAYMENT_ALREADY_PROCESSED"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verified but failed to create order"})
+			}
 			return
 		}
 
@@ -458,15 +531,58 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			h.logger.Info("Invoice generated", zap.String("order_id", order.ID), zap.String("invoice_url", url))
 		}
 
+		// Create Delhivery shipment after successful order creation
+		var awbNumber, trackingURL string
+		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
+		if getOrderErr != nil {
+			h.logger.Error("Failed to get order items for shipment creation",
+				zap.Error(getOrderErr),
+				zap.String("order_id", order.ID))
+		} else {
+			// Create Delhivery shipment
+			waybill, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
+			if shipmentErr != nil {
+				h.logger.Error("Failed to create Delhivery shipment",
+					zap.Error(shipmentErr),
+					zap.String("order_id", order.ID),
+					zap.String("user_id", userID))
+				// Don't fail the payment verification, just log the error
+			} else if waybill != "" {
+				// Update order with Delhivery waybill number
+				orderWithItems.DelhiveryWaybill = waybill
+				orderWithItems.DelhiveryStatus = "Created"
+				orderWithItems.TrackingURL = fmt.Sprintf("https://track.delhivery.com/p/%s", waybill)
+
+				// Store for response
+				awbNumber = waybill
+				trackingURL = orderWithItems.TrackingURL
+
+				if updateErr := h.orderService.UpdateOrder(c.Request.Context(), orderWithItems); updateErr != nil {
+					h.logger.Error("Failed to update order with Delhivery waybill",
+						zap.Error(updateErr),
+						zap.String("order_id", order.ID),
+						zap.String("waybill", waybill))
+				} else {
+					h.logger.Info("Delhivery shipment created successfully",
+						zap.String("order_id", order.ID),
+						zap.String("waybill", waybill),
+						zap.String("tracking_url", orderWithItems.TrackingURL))
+				}
+			}
+		}
+
 		// Clear user's cart after successful order creation
 		if err := h.orderService.ClearUserCart(c.Request.Context(), userID); err != nil {
 			h.logger.Warn("Failed to clear cart after payment", zap.Error(err), zap.String("user_id", userID))
 		}
 
 		response = VerifyPaymentResponse{
-			Success:   true,
-			Message:   "Payment verified and order created successfully",
-			PaymentID: req.PaymentID,
+			Success:     true,
+			Message:     "Payment verified and order created successfully",
+			PaymentID:   req.PaymentID,
+			OrderID:     order.ID,
+			AWBNumber:   awbNumber,
+			TrackingURL: trackingURL,
 		}
 
 		h.logger.Info("Order created successfully after payment verification",
@@ -554,4 +670,100 @@ func (h *PaymentHandler) GetPaymentStatus(c *gin.Context) {
 		zap.String("status", payment.Status))
 
 	c.JSON(http.StatusOK, payment)
+}
+
+// calculateShippingFromAddress calculates shipping charges using delivery service API
+func (h *PaymentHandler) calculateShippingFromAddress(ctx context.Context, userID, shippingAddress string, cartTotal float64, itemCount int) (float64, error) {
+	// Parse address to extract required components
+	address, err := h.parseShippingAddress(shippingAddress)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse shipping address: %w", err)
+	}
+
+	// Create shipping estimate request
+	estimateReq := requests.EstimateShippingRequest{
+		Address: address,
+	}
+
+	// Get shipping estimate from delivery service
+	estimate, err := h.deliveryService.Estimate(ctx, userID, estimateReq)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get shipping estimate: %w", err)
+	}
+
+	// Extract shipping charges from the first available option
+	if len(estimate.Options) > 0 {
+		return estimate.Options[0].Price, nil
+	}
+
+	return 0, fmt.Errorf("no shipping options available")
+}
+
+// parseShippingAddress parses a formatted address string into components
+func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
+	Street     string `json:"street" binding:"required" validate:"required,min=1,max=200"`
+	City       string `json:"city" binding:"required" validate:"required,min=1,max=100"`
+	State      string `json:"state" binding:"required" validate:"required,min=1,max=100"`
+	PostalCode string `json:"postal_code" binding:"required" validate:"required,min=1,max=20"`
+	Country    string `json:"country" binding:"required" validate:"required,min=1,max=100"`
+}, error) {
+	var address struct {
+		Street     string `json:"street" binding:"required" validate:"required,min=1,max=200"`
+		City       string `json:"city" binding:"required" validate:"required,min=1,max=100"`
+		State      string `json:"state" binding:"required" validate:"required,min=1,max=100"`
+		PostalCode string `json:"postal_code" binding:"required" validate:"required,min=1,max=20"`
+		Country    string `json:"country" binding:"required" validate:"required,min=1,max=100"`
+	}
+	
+	if addressStr == "" {
+		return address, fmt.Errorf("shipping address cannot be empty")
+	}
+
+	// Split address by comma and extract components
+	parts := strings.Split(addressStr, ",")
+	if len(parts) < 3 {
+		return address, fmt.Errorf("address format invalid, expected at least 3 parts separated by commas")
+	}
+
+	// Trim whitespace from all parts
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+
+	// Extract components (assuming format: street, city, state, postal_code, country)
+	address.Street = parts[0]
+	
+	if len(parts) >= 2 {
+		address.City = parts[1]
+	}
+	
+	if len(parts) >= 3 {
+		address.State = parts[2]
+	}
+	
+	if len(parts) >= 4 {
+		address.PostalCode = parts[3]
+	}
+	
+	if len(parts) >= 5 {
+		address.Country = parts[4]
+	} else {
+		address.Country = "India" // Default to India
+	}
+
+	// Validate that we have the essential components
+	if address.PostalCode == "" {
+		// Try to find postal code in any part (6 digits)
+		for _, part := range parts {
+			if matched, _ := regexp.MatchString(`^\d{6}$`, part); matched {
+				address.PostalCode = part
+				break
+			}
+		}
+		if address.PostalCode == "" {
+			return address, fmt.Errorf("postal code not found in address")
+		}
+	}
+
+	return address, nil
 }

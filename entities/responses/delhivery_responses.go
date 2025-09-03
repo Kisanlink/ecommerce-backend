@@ -353,3 +353,59 @@ func ParseTATResponse(data []byte) (*DelhiveryTATResponse, error) {
 	}
 	return &response, nil
 }
+
+// DelhiveryShipmentResponse represents response from shipment creation
+type DelhiveryShipmentResponse struct {
+	PackageData []DelhiveryPackageInfo `json:"packages"`
+	CashTotal   float64                `json:"cash_total"`
+	CODTotal    float64                `json:"cod_total"`
+	Success     bool                   `json:"success"`
+	Prepaid     float64                `json:"prepaid"`
+	RMK         string                 `json:"rmk"`
+}
+
+// DelhiveryPackageInfo represents individual package information in response
+type DelhiveryPackageInfo struct {
+	Status      string `json:"status"`
+	Client      string `json:"client"`
+	SortCode    string `json:"sort_code"`
+	Remarks     string `json:"remarks"`
+	Waybill     string `json:"waybill"`
+	RefNum      string `json:"refnum"`
+	CODAmount   string `json:"cod_amount"`
+	PaymentMode string `json:"payment_mode"`
+}
+
+// GetWaybill extracts the first waybill number from the response
+func (r *DelhiveryShipmentResponse) GetWaybill() string {
+	if len(r.PackageData) > 0 {
+		return r.PackageData[0].Waybill
+	}
+	return ""
+}
+
+// GetStatus extracts the first package status from the response
+func (r *DelhiveryShipmentResponse) GetStatus() string {
+	if len(r.PackageData) > 0 {
+		return r.PackageData[0].Status
+	}
+	return ""
+}
+
+// GetTrackingURL generates Delhivery tracking URL
+func (r *DelhiveryShipmentResponse) GetTrackingURL() string {
+	waybill := r.GetWaybill()
+	if waybill == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://www.delhivery.com/track/package/%s", waybill)
+}
+
+// ParseShipmentResponse parses raw JSON response into shipment response
+func ParseShipmentResponse(data []byte) (*DelhiveryShipmentResponse, error) {
+	var response DelhiveryShipmentResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse shipment response: %w", err)
+	}
+	return &response, nil
+}

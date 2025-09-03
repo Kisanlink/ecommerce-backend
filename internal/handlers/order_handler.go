@@ -299,3 +299,38 @@ func (h *OrderHandler) GetOrderStats(c *gin.Context) {
 	// TODO: Implement order statistics
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
 }
+
+// GetOrderDetailsDebug retrieves order details without authentication (debug only)
+func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil {
+		h.logger.Error("Failed to get order for debug", zap.Error(err), zap.String("order_id", orderID))
+		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		return
+	}
+
+	// Return detailed order info including Delhivery fields
+	response := gin.H{
+		"order_id":          order.ID,
+		"user_id":           order.UserID,
+		"total_amount":      order.TotalAmount,
+		"status":            order.Status,
+		"payment_status":    order.PaymentStatus,
+		"shipping_address":  order.ShippingAddr,
+		"razorpay_order_id": order.RazorpayOrderID,
+		"delhivery_waybill": order.DelhiveryWaybill, // Check this field
+		"delhivery_status":  order.DelhiveryStatus,  // Check this field
+		"tracking_url":      order.TrackingURL,      // Check this field
+		"created_at":        order.CreatedAt,
+		"updated_at":        order.UpdatedAt,
+		"debug_note":        "This is a debug endpoint without authentication",
+	}
+
+	c.JSON(http.StatusOK, response)
+}

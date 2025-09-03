@@ -8,6 +8,8 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
+	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"go.uber.org/zap"
 )
 
@@ -43,7 +45,7 @@ type OrderService struct {
 
 // NewOrderService creates a new order service
 func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, s3Service *S3Service, logger *zap.Logger) OrderServiceInterface {
-	return &OrderService{
+	service := &OrderService{
 		orderRepo:   orderRepo,
 		cartService: cartService,
 		productRepo: productRepo,
@@ -51,6 +53,48 @@ func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartSe
 		s3Service:   s3Service,
 		logger:      logger,
 	}
+
+	// Initialize order ID counter from existing database records
+	service.initializeOrderIDCounter()
+
+	return service
+}
+
+// initializeOrderIDCounter initializes the order ID counter from existing database records
+func (s *OrderService) initializeOrderIDCounter() {
+	ctx := context.Background()
+	s.logger.Info("Initializing order ID counter")
+
+	// Query all existing order IDs to prevent conflicts (exclude soft-deleted)
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "deleted_at", Operator: base.OpIsNull, Value: nil},
+			},
+			Logic: base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	orders, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		s.logger.Error("Failed to get existing orders for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("ORDR", []string{}, hash.Large)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, len(orders))
+		for i, order := range orders {
+			if order != nil {
+				existingIDs[i] = order.GetID()
+			}
+		}
+		s.logger.Info("Found existing order IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("ORDR", existingIDs, hash.Large)
+	}
+
+	s.logger.Info("Order ID counter initialized")
 }
 
 // GetUserCart retrieves the user's cart via cart service

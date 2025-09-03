@@ -24,6 +24,7 @@ type DeliveryServiceInterface interface {
 	Estimate(ctx context.Context, userID string, req requests.EstimateShippingRequest) (*models.DeliveryEstimate, error)
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
 	GetLastEstimate(ctx context.Context, userID string) (*LastEstimate, error)
+	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (string, error)
 }
 
 type DeliveryService struct {
@@ -423,15 +424,12 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		return nil, fmt.Errorf("delivery service is not available to pincode %s. We currently don't deliver to this location", pincode)
 	}
 
-	// Calculate weight based on cart items (100g per product minimum)
+	// Calculate weight based on total quantity of items (100g per item)
 	const PRODUCT_WEIGHT_GRAMS = 100
 	weight := totalItems * PRODUCT_WEIGHT_GRAMS
-	if weight < 100 {
-		weight = 100 // Minimum 100g
-	}
 
 	s.logger.Info("Weight calculation",
-		zap.Int("total_items", totalItems),
+		zap.Int("total_quantity", totalItems),
 		zap.Int("weight_per_item_grams", PRODUCT_WEIGHT_GRAMS),
 		zap.Int("total_weight_grams", weight))
 
@@ -478,13 +476,30 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 	}
 
 	// Save compact estimate for payment flow reuse
-	addressStr := fmt.Sprintf("%s, %s, %s %s, %s", strings.TrimSpace(req.Address.Street), strings.TrimSpace(req.Address.City), strings.TrimSpace(req.Address.State), strings.TrimSpace(req.Address.PostalCode), strings.TrimSpace(req.Address.Country))
+	// Build address string from available parts gracefully
+	parts := []string{}
+	if s := strings.TrimSpace(req.Address.Street); s != "" {
+		parts = append(parts, s)
+	}
+	cityState := strings.TrimSpace(strings.TrimSpace(req.Address.City) + ", " + strings.TrimSpace(req.Address.State))
+	cityState = strings.Trim(cityState, ", ")
+	if cityState != "" {
+		parts = append(parts, cityState)
+	}
+	if p := strings.TrimSpace(req.Address.PostalCode); p != "" {
+		parts = append(parts, p)
+	}
+	if c := strings.TrimSpace(req.Address.Country); c != "" {
+		parts = append(parts, c)
+	}
+	addressStr := strings.Join(parts, ", ")
+
 	cached := &LastEstimate{
 		ShippingAddress: addressStr,
 		ShippingCharges: surfaceCharges,
 		Subtotal:        subtotal,
 		Total:           subtotal + surfaceCharges,
-		Currency:        "INR",
+		Currency:        "INR", // Always INR
 		EtaMinDays:      deliveryDays,
 		EtaMaxDays:      deliveryDays + 2,
 		Pincode:         pincode,
@@ -500,4 +515,177 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		zap.Float64("total_with_shipping", subtotal+surfaceCharges))
 
 	return result, nil
+}
+
+// CreateShipment creates a Delhivery shipment after successful payment
+func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (string, error) {
+	if order == nil {
+		return "", fmt.Errorf("order cannot be nil")
+	}
+
+	// Parse shipping address to extract delivery details
+	addressParts := strings.Split(order.ShippingAddr, ",")
+	if len(addressParts) < 3 {
+		return "", fmt.Errorf("invalid shipping address format")
+	}
+
+	// Extract pincode from shipping address (assuming it's at the end)
+	pincode := s.extractPincode(order.ShippingAddr)
+	if pincode == "" {
+		return "", fmt.Errorf("could not extract pincode from shipping address")
+	}
+
+	// Build products description
+	productDescs := []string{}
+	totalWeight := 0
+	for _, item := range orderItems {
+		productDescs = append(productDescs, fmt.Sprintf("Product %s (Qty: %d)", item.ProductID, item.Quantity))
+		totalWeight += item.Quantity * 100 // 100g per item
+	}
+	if totalWeight < 100 {
+		totalWeight = 100 // Minimum weight
+	}
+
+	// Create shipment request
+	shipmentReq := requests.NewShipmentRequest(s.config.WarehouseName)
+
+	// Parse customer details from shipping address
+	customerName := "Customer"    // Default, could be extracted from address
+	customerPhone := "9999999999" // Default, should come from user profile
+
+	// Create shipment detail
+	shipmentDetail := requests.DelhiveryShipmentDetail{
+		Name:          customerName,
+		Add:           order.ShippingAddr,
+		Pin:           pincode,
+		City:          s.extractCityFromAddress(order.ShippingAddr),
+		State:         s.extractStateFromAddress(order.ShippingAddr),
+		Country:       "India",
+		Phone:         customerPhone,
+		Order:         order.ID,
+		PaymentMode:   "Prepaid", // Assuming prepaid since payment is already done
+		ReturnPin:     s.config.OriginPincode,
+		ReturnCity:    s.config.OriginCity,
+		ReturnName:    s.config.WarehouseName,
+		ReturnAdd:     s.config.OriginAddress,
+		ReturnState:   s.config.OriginState,
+		ReturnCountry: "India",
+		ReturnPhone:   s.config.OriginPhone,
+		ProductsDesc:  strings.Join(productDescs, ", "),
+		HsnCode:       "1234", // Default HSN code
+		TotalAmount:   fmt.Sprintf("%.0f", order.TotalAmount),
+		SellerName:    "Kisanlink",
+		SellerInv:     order.ID,
+		Quantity:      fmt.Sprintf("%d", len(orderItems)),
+		Weight:        fmt.Sprintf("%d", totalWeight),
+		ShippingMode:  "Surface",
+		AddressType:   "home",
+		ShipWidth:     "10",
+		ShipHeight:    "10",
+	}
+
+	shipmentReq.AddShipmentDetail(shipmentDetail)
+
+	// Validate request
+	if err := shipmentReq.IsValid(); err != nil {
+		return "", fmt.Errorf("invalid shipment request: %w", err)
+	}
+
+	// Build endpoint URL
+	endpoint := shipmentReq.BuildShipmentURL(s.config.BaseURL)
+	s.logger.Info("Creating Delhivery shipment",
+		zap.String("endpoint", endpoint),
+		zap.String("order_id", order.ID))
+
+	// Marshal request body
+	reqBody, err := json.Marshal(shipmentReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal shipment request: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(reqBody)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Token "+s.config.APIToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Make API call
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.logger.Error("Delhivery shipment API failed", zap.Error(err))
+		return "", fmt.Errorf("failed to create shipment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	s.logger.Info("Delhivery shipment API response",
+		zap.String("response", string(body)),
+		zap.Int("status_code", resp.StatusCode))
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("Delhivery shipment API error",
+			zap.Int("status", resp.StatusCode),
+			zap.String("body", string(body)))
+		return "", fmt.Errorf("shipment API failed: HTTP %d - %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	shipmentResp, err := responses.ParseShipmentResponse(body)
+	if err != nil {
+		s.logger.Error("Failed to parse shipment response", zap.Error(err))
+		return "", fmt.Errorf("failed to parse shipment response: %w", err)
+	}
+
+	// Extract waybill (AWB)
+	waybill := shipmentResp.GetWaybill()
+	if waybill == "" {
+		return "", fmt.Errorf("no waybill received from Delhivery")
+	}
+
+	s.logger.Info("Delhivery shipment created successfully",
+		zap.String("order_id", order.ID),
+		zap.String("waybill", waybill),
+		zap.String("status", shipmentResp.GetStatus()))
+
+	return waybill, nil
+}
+
+// Helper methods for address parsing
+func (s *DeliveryService) extractCityFromAddress(address string) string {
+	parts := strings.Split(address, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) > 2 && !s.isNumeric(part) {
+			return part
+		}
+	}
+	return "Unknown"
+}
+
+func (s *DeliveryService) extractStateFromAddress(address string) string {
+	parts := strings.Split(address, ",")
+	for i := len(parts) - 2; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if len(part) > 2 && !s.isNumeric(part) && !strings.Contains(part, "India") {
+			return part
+		}
+	}
+	return "Unknown"
+}
+
+func (s *DeliveryService) isNumeric(str string) bool {
+	for _, char := range str {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
