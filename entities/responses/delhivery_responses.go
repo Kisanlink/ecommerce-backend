@@ -364,6 +364,33 @@ type DelhiveryShipmentResponse struct {
 	RMK         string                 `json:"rmk"`
 }
 
+// Packages returns the package data (alias for compatibility)
+func (r *DelhiveryShipmentResponse) Packages() []DelhiveryPackageInfo {
+	return r.PackageData
+}
+
+// IsSuccessful checks if the shipment creation was successful
+func (r *DelhiveryShipmentResponse) IsSuccessful() bool {
+	return r.Success && len(r.PackageData) > 0 && r.GetWaybill() != ""
+}
+
+// GetErrorMessage returns error message from RMK field or a generic message
+func (r *DelhiveryShipmentResponse) GetErrorMessage() string {
+	if r.RMK != "" {
+		return r.RMK
+	}
+	if !r.Success {
+		return "Shipment creation failed - no success status from Delhivery"
+	}
+	if len(r.PackageData) == 0 {
+		return "Shipment creation failed - no package data received"
+	}
+	if r.GetWaybill() == "" {
+		return "Shipment creation failed - no waybill number received"
+	}
+	return "Unknown error occurred during shipment creation"
+}
+
 // DelhiveryPackageInfo represents individual package information in response
 type DelhiveryPackageInfo struct {
 	Status      string `json:"status"`

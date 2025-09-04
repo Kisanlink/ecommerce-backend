@@ -543,33 +543,33 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("order_id", order.ID))
 		} else {
 			// Create Delhivery shipment
-			waybill, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
+			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
 			if shipmentErr != nil {
 				h.logger.Error("Failed to create Delhivery shipment",
 					zap.Error(shipmentErr),
 					zap.String("order_id", order.ID),
 					zap.String("user_id", userID))
 				// Don't fail the payment verification, just log the error
-			} else if waybill != "" {
+			} else if shipmentResult != nil && shipmentResult.Success && shipmentResult.Waybill != "" {
 				// Update order with Delhivery waybill number
-				orderWithItems.DelhiveryWaybill = waybill
-				orderWithItems.DelhiveryStatus = "Created"
-				// Public tracking URL
-				orderWithItems.TrackingURL = fmt.Sprintf("https://www.delhivery.com/track/package/%s", waybill)
+				orderWithItems.DelhiveryWaybill = shipmentResult.Waybill
+				orderWithItems.DelhiveryStatus = shipmentResult.Status
+				// Use tracking URL from shipment result
+				orderWithItems.TrackingURL = shipmentResult.TrackingURL
 
 				// Store for response
-				awbNumber = waybill
-				trackingURL = orderWithItems.TrackingURL
+				awbNumber = shipmentResult.Waybill
+				trackingURL = shipmentResult.TrackingURL
 
 				if updateErr := h.orderService.UpdateOrder(c.Request.Context(), orderWithItems); updateErr != nil {
 					h.logger.Error("Failed to update order with Delhivery waybill",
 						zap.Error(updateErr),
 						zap.String("order_id", order.ID),
-						zap.String("waybill", waybill))
+						zap.String("waybill", shipmentResult.Waybill))
 				} else {
 					h.logger.Info("Delhivery shipment created successfully",
 						zap.String("order_id", order.ID),
-						zap.String("waybill", waybill),
+						zap.String("waybill", shipmentResult.Waybill),
 						zap.String("tracking_url", orderWithItems.TrackingURL))
 				}
 			}

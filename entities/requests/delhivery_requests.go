@@ -176,6 +176,8 @@ func NewTATRequest(originPin, destinationPin string) *DelhiveryTATRequest {
 	}
 }
 
+const warehouseName = "My Warehouse"
+
 // NewShipmentRequest creates a new shipment creation request
 func NewShipmentRequest(warehouseName string) *DelhiveryShipmentRequest {
 	return &DelhiveryShipmentRequest{

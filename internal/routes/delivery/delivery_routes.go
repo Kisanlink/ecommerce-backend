@@ -21,7 +21,6 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 	delivery.Use(middleware.FirebaseAuthMiddleware())
 	{
 		delivery.POST("/estimate", deliveryHandler.Estimate)
-		delivery.POST("/test-shipment", deliveryHandler.TestShipmentCreation) // Debug endpoint
 	}
 
 	// Future route groups (commented until handlers are implemented)

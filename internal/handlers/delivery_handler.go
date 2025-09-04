@@ -41,30 +41,3 @@ func (h *DeliveryHandler) Estimate(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": est})
 }
-
-// TestShipmentCreation manually creates a Delhivery shipment for testing
-func (h *DeliveryHandler) TestShipmentCreation(c *gin.Context) {
-	userID, ok := h.authCtx.GetAuthenticatedUserID(c)
-	if !ok {
-		return
-	}
-
-	var req struct {
-		OrderID string `json:"order_id" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid request: " + err.Error()})
-		return
-	}
-
-	h.logger.Info("Manual Delhivery shipment test requested",
-		zap.String("user_id", userID),
-		zap.String("order_id", req.OrderID))
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":  true,
-		"message":  "Manual shipment creation is not yet implemented. Check server logs for Delhivery integration details.",
-		"order_id": req.OrderID,
-		"note":     "This endpoint is for debugging. The actual shipment creation happens during payment verification."})
-}
