@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -34,9 +34,6 @@ WORKDIR /app
 
 # Copy the binary from builder stage
 COPY --from=builder /app/main .
-
-# Copy any additional files if needed
-COPY --from=builder /app/.env.example ./.env.example
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
