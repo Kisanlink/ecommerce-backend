@@ -1,0 +1,148 @@
+{
+  "family": "ecommerce-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "ecommerce-backend",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/IMAGE_REPO_NAME:latest",
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        {
+          "name": "PORT",
+          "value": "8080"
+        },
+        {
+          "name": "GIN_MODE",
+          "value": "release"
+        },
+        {
+          "name": "DB_HOST",
+          "value": "DB_HOST_PLACEHOLDER"
+        },
+        {
+          "name": "DB_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "DB_USER",
+          "value": "DB_USER_PLACEHOLDER"
+        },
+        {
+          "name": "DB_PASSWORD",
+          "value": "DB_PASSWORD_PLACEHOLDER"
+        },
+        {
+          "name": "DB_NAME",
+          "value": "DB_NAME_PLACEHOLDER"
+        },
+        {
+          "name": "DB_SSL_MODE",
+          "value": "require"
+        },
+        {
+          "name": "DB_TIMEZONE",
+          "value": "Asia/Kolkata"
+        },
+        {
+          "name": "REDIS_HOST",
+          "value": "REDIS_HOST_PLACEHOLDER"
+        },
+        {
+          "name": "REDIS_PORT",
+          "value": "6379"
+        },
+        {
+          "name": "REDIS_PASSWORD",
+          "value": "REDIS_PASSWORD_PLACEHOLDER"
+        },
+        {
+          "name": "REDIS_DB",
+          "value": "0"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "FIREBASE_PROJECT_ID",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/firebase/project-id"
+        },
+        {
+          "name": "FIREBASE_PRIVATE_KEY",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/firebase/private-key"
+        },
+        {
+          "name": "FIREBASE_CLIENT_EMAIL",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/firebase/client-email"
+        },
+        {
+          "name": "RAZORPAY_KEY_ID",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/razorpay/key-id"
+        },
+        {
+          "name": "RAZORPAY_KEY_SECRET",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/razorpay/key-secret"
+        },
+        {
+          "name": "RAZORPAY_WEBHOOK_SECRET",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/razorpay/webhook-secret"
+        },
+        {
+          "name": "DELHIVERY_API_TOKEN",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/delhivery/api-token"
+        },
+        {
+          "name": "DELHIVERY_BASE_URL",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/delhivery/base-url"
+        },
+        {
+          "name": "DELHIVERY_ORIGIN_PIN",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/delhivery/origin-pin"
+        },
+        {
+          "name": "AWS_REGION",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/aws/region"
+        },
+        {
+          "name": "AWS_ACCESS_KEY_ID",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/aws/access-key-id"
+        },
+        {
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/aws/secret-access-key"
+        },
+        {
+          "name": "S3_BUCKET_NAME",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/ecommerce/s3/bucket-name"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ecommerce-backend",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "serviceName": "ecommerce-backend-service",
+  "cluster": "ecommerce-cluster",
+  "taskDefinition": "ecommerce-backend",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "platformVersion": "LATEST",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-12345678",
+        "subnet-87654321"
+      ],
+      "securityGroups": [
+        "sg-12345678"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:REGION:ACCOUNT_ID:targetgroup/ecommerce-backend-tg/1234567890123456",
+      "containerName": "ecommerce-backend",
+      "containerPort": 8080
+    }
+  ],
+  "serviceRegistries": [],
+  "deploymentConfiguration": {
+    "maximumPercent": 200,
+    "minimumHealthyPercent": 50,
+    "deploymentCircuitBreaker": {
+      "enable": true,
+      "rollback": true
+    }
+  },
+  "placementStrategy": [
+    {
+      "type": "spread",
+      "field": "attribute:ecs.availability-zone"
+    }
+  ],
+  "healthCheckGracePeriodSeconds": 300,
+  "schedulingStrategy": "REPLICA",
+  "enableExecuteCommand": true,
+  "enableLogging": true,
+  "tags": [
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Application",
+      "value": "ecommerce-backend"
+    },
+    {
+      "key": "ManagedBy",
+      "value": "CodePipeline"
+    }
+  ]
+}
