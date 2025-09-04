@@ -65,6 +65,7 @@ type ListRecipesRequest struct {
 
 // RecipeListResponse represents a simplified response for listing recipes
 type RecipeListResponse struct {
+	ID              string  `json:"id"` // Add ID field to match get recipe by ID
 	Name            string  `json:"name"`
 	DemoDescription string  `json:"demo_description"`
 	Reviews         int     `json:"reviews"`

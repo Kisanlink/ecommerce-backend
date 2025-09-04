@@ -64,6 +64,7 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 	simplifiedRecipes := make([]requests.RecipeListResponse, len(recipes))
 	for i, recipe := range recipes {
 		simplifiedRecipes[i] = requests.RecipeListResponse{
+			ID:              recipe.ID, // Include the ID field
 			Name:            recipe.Name,
 			DemoDescription: recipe.DemoDescription,
 			Reviews:         recipe.Reviews,
