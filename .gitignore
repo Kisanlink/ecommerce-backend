@@ -1,18 +1,25 @@
+# Golang .gitignore - Comprehensive version
 # If you prefer the allow list template instead of the deny list, see community template:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+main.exe
+server.exe
+main
+server
 
 # Test binary, built with `go test -c`
 *.test
-.env
-# Code coverage profiles and other test artifacts
+
+# Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+
+# Code coverage profiles and other test artifacts
 coverage.*
 *.coverprofile
 profile.cov
@@ -23,11 +30,91 @@ profile.cov
 # Go workspace file
 go.work
 go.work.sum
-firebase_service_account.json
-# env file
+
+# Environment variables and configuration files
 .env
-server.exe
-main.exe
-# Editor/IDE
-# .idea/
-# .vscode/
+.env.local
+.env.production
+.env.staging
+*.env
+firebase_service_account.json
+config.json
+secrets.json
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+log/
+*.log.*
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+dump.rdb
+
+# Redis dump
+dump.rdb
+
+# Archives and compressed files
+*.zip
+*.tar.gz
+*.tgz
+*.tar
+*.rar
+*.7z
+
+# PowerShell scripts (if they contain sensitive info)
+*.ps1
+
+# Documentation build artifacts
+docs/_build/
+site/
+
+# Node.js dependencies (if you have any frontend assets)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts and output directories
+build/
+dist/
+out/
+bin/
+
+# Test artifacts
+*.test
+test-results/
+coverage/
+
+# Profiling files
+*.prof
+*.pprof
+mem.prof
+cpu.prof
