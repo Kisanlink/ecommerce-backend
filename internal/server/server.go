@@ -3,6 +3,7 @@
 package server
 
 import (
+	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -13,6 +14,10 @@ import (
 // NewServer initializes and returns a Gin Engine with dependency injection
 func NewServer(repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) (*gin.Engine, error) {
 	r := gin.Default()
+	
+	// Add CORS middleware to allow frontend access
+	r.Use(middleware.CORSMiddleware())
+	
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
