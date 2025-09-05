@@ -10,8 +10,11 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	authctx "github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // ShipmentHandler handles shipment-related APIs
@@ -93,4 +96,151 @@ func (h *ShipmentHandler) CreateShipment(c *gin.Context) {
 		"status":       shipmentResp.GetStatus(),
 		"tracking_url": shipmentResp.GetTrackingURL(),
 	})
+}
+
+// DeliveryHandler wires HTTP routes to DeliveryService and OrderService
+type DeliveryHandler struct {
+	deliveryService services.DeliveryServiceInterface
+	orderService    services.OrderServiceInterface
+	logger          *zap.Logger
+	auth            *authctx.AuthContext
+}
+
+// NewDeliveryHandler constructs a DeliveryHandler
+func NewDeliveryHandler(deliveryService services.DeliveryServiceInterface, orderService services.OrderServiceInterface, logger *zap.Logger) *DeliveryHandler {
+	if logger == nil {
+		logger, _ = zap.NewProduction()
+	}
+	return &DeliveryHandler{
+		deliveryService: deliveryService,
+		orderService:    orderService,
+		logger:          logger,
+		auth:            authctx.NewAuthContext(),
+	}
+}
+
+// CheckServiceability handles GET /serviceability/:pincode
+func (h *DeliveryHandler) CheckServiceability(c *gin.Context) {
+	pincode := c.Param("pincode")
+	ok, err := h.deliveryService.CheckServiceability(c.Request.Context(), pincode)
+	if err != nil {
+		h.logger.Warn("Serviceability check failed", zap.Error(err), zap.String("pincode", pincode))
+		c.JSON(http.StatusBadRequest, gin.H{"serviceable": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"serviceable": ok, "pincode": pincode})
+}
+
+// Estimate handles POST /estimate
+func (h *DeliveryHandler) Estimate(c *gin.Context) {
+	userID, ok := h.auth.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	var req requests.EstimateShippingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	est, err := h.deliveryService.Estimate(c.Request.Context(), userID, req)
+	if err != nil {
+		h.logger.Warn("Estimate failed", zap.Error(err), zap.String("user_id", userID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, est)
+}
+
+// GetLastEstimate handles GET /estimate/last
+func (h *DeliveryHandler) GetLastEstimate(c *gin.Context) {
+	userID, ok := h.auth.GetAuthenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	last, err := h.deliveryService.GetLastEstimate(c.Request.Context(), userID)
+	if err != nil || last == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No cached estimate"})
+		return
+	}
+	c.JSON(http.StatusOK, last)
+}
+
+// GetTrackingInfo handles GET /track/:waybill
+func (h *DeliveryHandler) GetTrackingInfo(c *gin.Context) {
+	waybill := c.Param("waybill")
+	info, err := h.deliveryService.GetTrackingInfo(c.Request.Context(), waybill)
+	if err != nil {
+		h.logger.Warn("Tracking fetch failed", zap.Error(err), zap.String("waybill", waybill))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, info)
+}
+
+// CreateOrderShipment handles POST /orders/:id/shipment
+func (h *DeliveryHandler) CreateOrderShipment(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order id is required"})
+		return
+	}
+	order, items, err := h.orderService.GetOrderWithItems(c.Request.Context(), orderID)
+	if err != nil || order == nil {
+		h.logger.Warn("Order not found for shipment", zap.Error(err), zap.String("order_id", orderID))
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+	res, err := h.deliveryService.CreateShipment(c.Request.Context(), order, items)
+	if err != nil || res == nil || !res.Success {
+		msg := "shipment creation failed"
+		if res != nil && res.Message != "" {
+			msg = res.Message
+		}
+		if err != nil {
+			h.logger.Error("Create shipment error", zap.Error(err), zap.String("order_id", orderID))
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": msg})
+		return
+	}
+	// Update order with shipment details
+	order.DelhiveryWaybill = res.Waybill
+	order.DelhiveryStatus = res.Status
+	order.TrackingURL = res.TrackingURL
+	if uerr := h.orderService.UpdateOrder(c.Request.Context(), order); uerr != nil {
+		h.logger.Warn("Failed to persist order shipment fields", zap.Error(uerr), zap.String("order_id", orderID))
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"order_id":     order.ID,
+		"waybill":      res.Waybill,
+		"status":       res.Status,
+		"tracking_url": res.TrackingURL,
+	})
+}
+
+// GetOrderShipment handles GET /orders/:id/shipment
+func (h *DeliveryHandler) GetOrderShipment(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order id is required"})
+		return
+	}
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil || order == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+	resp := gin.H{
+		"order_id":     order.ID,
+		"waybill":      order.DelhiveryWaybill,
+		"status":       order.DelhiveryStatus,
+		"tracking_url": order.TrackingURL,
+	}
+	// If no waybill, hint to create
+	if strings.TrimSpace(order.DelhiveryWaybill) == "" {
+		resp["hint"] = "No shipment yet. POST /api/v1/delivery/orders/:id/shipment to create."
+	}
+	c.JSON(http.StatusOK, resp)
 }

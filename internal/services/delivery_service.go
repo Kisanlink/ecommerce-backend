@@ -182,22 +182,22 @@ func (s *DeliveryService) getPincodeInfo(ctx context.Context, pincode string) (c
 		return "", "", err
 	}
 	defer resp.Body.Close()
-	
+
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("serviceability HTTP %d", resp.StatusCode)
 	}
-	
+
 	serviceabilityResp, err := responses.ParseServiceabilityResponse(body)
 	if err != nil {
 		return "", "", err
 	}
-	
+
 	info := serviceabilityResp.GetServiceabilityInfo(pincode)
 	if info == nil {
 		return "", "", fmt.Errorf("pincode not found")
 	}
-	
+
 	return strings.TrimSpace(info.City), strings.TrimSpace(info.State), nil
 }
 
@@ -445,51 +445,27 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 			Message: "Could not extract valid pincode from shipping address",
 		}, fmt.Errorf("could not extract pincode from shipping address")
 	}
-
-	// Get customer details (best-effort). Fall back to address or safe defaults.
-	customerName := "Customer"
-	customerPhone := ""
-	// Prefer order-level fields captured at checkout
-	if strings.TrimSpace(order.CustomerFirstName) != "" || strings.TrimSpace(order.CustomerLastName) != "" {
-		fn := strings.TrimSpace(order.CustomerFirstName)
-		ln := strings.TrimSpace(order.CustomerLastName)
-		name := strings.TrimSpace(strings.TrimSpace(fn+" "+ln))
-		if name != "" { customerName = name }
+	// Use only order-level customer fields (no fallbacks)
+	custName := strings.TrimSpace(strings.TrimSpace(order.CustomerFirstName + " " + order.CustomerLastName))
+	custPhone := strings.TrimSpace(order.CustomerPhone)
+	if custName == "" || custPhone == "" {
+		return &ShipmentResult{Success: false, Message: "Customer name and phone are required on the order"}, fmt.Errorf("missing customer name/phone on order")
 	}
-	if strings.TrimSpace(order.CustomerPhone) != "" {
-		ph := strings.TrimSpace(order.CustomerPhone)
-		if len(ph) > 10 { ph = ph[len(ph)-10:] }
-		customerPhone = ph
-	}
-	if s.repoManager != nil && s.repoManager.UserRepository != nil {
-		user := &models.User{}
-		if res, err := s.repoManager.UserRepository.GetByID(ctx, order.UserID, user); err == nil && res != nil {
-			if strings.TrimSpace(res.Name) != "" {
-				customerName = strings.TrimSpace(res.Name)
+	// Normalize phone to last 10 digits
+	{
+		var digits strings.Builder
+		digits.Grow(len(custPhone))
+		for _, ch := range custPhone {
+			if ch >= '0' && ch <= '9' {
+				digits.WriteRune(ch)
 			}
-			if strings.TrimSpace(res.PhoneNumber) != "" {
-				customerPhone = strings.TrimSpace(res.PhoneNumber)
-			}
+		}
+		d := digits.String()
+		if len(d) >= 10 {
+			custPhone = d[len(d)-10:]
 		} else {
-			s.logger.Warn("Proceeding without user record for shipment", zap.String("order_id", order.ID), zap.Error(err))
+			return &ShipmentResult{Success: false, Message: "Customer phone must contain at least 10 digits"}, fmt.Errorf("invalid customer phone")
 		}
-	} else {
-		s.logger.Warn("User repository unavailable; falling back to address for contact details", zap.String("order_id", order.ID))
-	}
-	// Try name/phone from the formatted shipping address
-	if customerName == "Customer" {
-		if n := s.extractNameFromAddress(order.ShippingAddr); n != "" {
-			customerName = n
-		}
-	}
-	if customerPhone == "" {
-		if p := s.extractPhoneFromText(order.ShippingAddr); p != "" {
-			customerPhone = p
-		}
-	}
-	// Final fallback for phone: use a generic 10-digit placeholder acceptable by Delhivery
-	if customerPhone == "" {
-		customerPhone = "9999999999"
 	}
 
 	// Get city and state from API
@@ -519,13 +495,13 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	uniqueOrderID := fmt.Sprintf("%s_%d", order.ID, time.Now().Unix())
 
 	shipmentDetail := requests.DelhiveryShipmentDetail{
-		Name:          customerName,
+		Name:          custName,
 		Add:           order.ShippingAddr,
 		Pin:           pincode,
 		City:          destCity,
 		State:         destState,
 		Country:       "India",
-		Phone:         customerPhone,
+		Phone:         custPhone,
 		Order:         uniqueOrderID,
 		PaymentMode:   "Prepaid",
 		ReturnPin:     s.config.OriginPincode,
@@ -649,7 +625,7 @@ func (s *DeliveryService) GetTrackingInfo(ctx context.Context, waybill string) (
 		return nil, fmt.Errorf("waybill cannot be empty")
 	}
 
-	trackingURL := fmt.Sprintf("https://track.delhivery.com/p/%s", waybill)
+	trackingURL := fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", waybill)
 
 	return &TrackingInfo{
 		Waybill:     waybill,
@@ -657,37 +633,4 @@ func (s *DeliveryService) GetTrackingInfo(ctx context.Context, waybill string) (
 		TrackingURL: trackingURL,
 		LastUpdate:  time.Now().Format("2006-01-02 15:04:05"),
 	}, nil
-}
-
-// extractPhoneFromText scans a string and returns the last 10-digit sequence it finds
-func (s *DeliveryService) extractPhoneFromText(text string) string {
-	digits := make([]rune, 0, 16)
-	var last10 string
-	for _, ch := range text {
-		if ch >= '0' && ch <= '9' {
-			digits = append(digits, ch)
-			if len(digits) >= 10 {
-				// Keep only the last 10 digits window as candidate
-				last10 = string(digits[len(digits)-10:])
-			}
-		}
-	}
-	if len(last10) == 10 {
-		return last10
-	}
-	return ""
-}
-
-// extractNameFromAddress tries to extract the name as the token before the first comma
-func (s *DeliveryService) extractNameFromAddress(address string) string {
-	parts := strings.Split(address, ",")
-	if len(parts) == 0 {
-		return ""
-	}
-	name := strings.TrimSpace(parts[0])
-	// Avoid taking generic labels
-	if strings.EqualFold(name, "address") || strings.EqualFold(name, "addr") || strings.EqualFold(name, "home") {
-		return ""
-	}
-	return name
 }
