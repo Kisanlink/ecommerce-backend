@@ -22,6 +22,19 @@ func NewProductHandler(productService *services.ProductService) *ProductHandler 
 }
 
 // CreateProduct handles POST /api/v1/products
+
+// @Summary Create a new product
+// @Description Create a new product (Admin only)
+// @Tags Products
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.CreateProductRequest true "Product information"
+// @Success 201 {object} map[string]interface{} "Product created successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products [post]
 func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	var req requests.CreateProductRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -49,6 +62,17 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 }
 
 // GetProduct handles GET /api/v1/products/:id
+// @Summary Get product by ID
+// @Description Get a specific product by its ID
+// @Tags Products
+// @Accept json
+// @Produce json
+// @Param id path string true "Product ID"
+// @Success 200 {object} map[string]interface{} "Product retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid product ID"
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products/{id} [get]
 func (h *ProductHandler) GetProduct(c *gin.Context) {
 	var req requests.GetProductRequest
 	req.ID = c.Param("id")
@@ -75,6 +99,21 @@ func (h *ProductHandler) GetProduct(c *gin.Context) {
 }
 
 // GetProducts handles GET /api/v1/products
+// @Summary Get all products
+// @Description Get a paginated list of all products with optional filtering
+// @Tags Products
+// @Accept json
+// @Produce json
+// @Param page query int false "Page number" default(1)
+// @Param per_page query int false "Items per page" default(20)
+// @Param category query string false "Filter by category"
+// @Param search query string false "Search term"
+// @Param min_price query number false "Minimum price filter"
+// @Param max_price query number false "Maximum price filter"
+// @Success 200 {object} map[string]interface{} "Products retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid query parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products [get]
 func (h *ProductHandler) GetProducts(c *gin.Context) {
 	var req requests.ListProductsRequest
 
@@ -195,6 +234,18 @@ func (h *ProductHandler) GetProductsByCategory(c *gin.Context) {
 }
 
 // SearchProducts handles GET /api/v1/products/search
+// @Summary Search products
+// @Description Search products by name, description, or other fields
+// @Tags Products
+// @Accept json
+// @Produce json
+// @Param q query string true "Search query"
+// @Param page query int false "Page number" default(1)
+// @Param per_page query int false "Items per page" default(20)
+// @Success 200 {object} map[string]interface{} "Search results retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid query parameters"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products/search [get]
 func (h *ProductHandler) SearchProducts(c *gin.Context) {
 	var req requests.ListProductsRequest
 	req.Search = c.Query("q")

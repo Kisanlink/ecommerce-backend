@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Kisanlink/ecommerce-backend/docs"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/server"
@@ -20,9 +21,42 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 )
 
+// @title Ecommerce Backend API
+// @version 1.0.0
+// @description A comprehensive ecommerce backend API with authentication, product management, cart, orders, and payment integration.
+// @termsOfService http://swagger.io/terms/
+
+// @contact.name API Support
+// @contact.url http://www.kisanlink.com/support
+// @contact.email support@kisanlink.com
+
+// @license.name MIT
+// @license.url https://opensource.org/licenses/MIT
+
+// @host localhost:8080
+// @BasePath /api/v1
+
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Type "Bearer" followed by a space and JWT token.
+
+// @securityDefinitions.apikey FirebaseAuth
+// @in header
+// @name Authorization
+// @description Firebase ID token for authentication
+
 func main() {
 	config.LoadEnv()
 	fmt.Println("Starting amrti-backend server...")
+
+	// Initialize Swagger documentation
+	docs.SwaggerInfo.Title = "Ecommerce Backend API"
+	docs.SwaggerInfo.Description = "A comprehensive ecommerce backend API with authentication, product management, cart, orders, and payment integration."
+	docs.SwaggerInfo.Version = "1.0.0"
+	docs.SwaggerInfo.Host = "localhost:8080"
+	docs.SwaggerInfo.BasePath = "/api/v1"
+	docs.SwaggerInfo.Schemes = []string{"http", "https"}
 
 	// Initialize Firebase
 	if err := config.InitFirebase(); err != nil {

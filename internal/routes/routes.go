@@ -15,6 +15,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/recipes"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/users"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/internal/swagger"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -33,6 +34,9 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 	// Debug endpoint to check Firebase status
 	debugHandler := handlers.NewDebugHandler()
 	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
+
+	// Register Swagger documentation routes
+	swagger.RegisterSwaggerRoutes(r)
 
 	// API versioning
 	v1 := r.Group("/api/v1")
