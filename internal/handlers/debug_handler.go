@@ -13,6 +13,12 @@ func NewDebugHandler() *DebugHandler {
 }
 
 // CheckFirebaseStatus checks if Firebase is properly initialized
+// @Summary Firebase status
+// @Description Check if Firebase Admin SDK is initialized on server
+// @Tags Debug
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Firebase status"
+// @Router /debug/firebase [get]
 func (h *DebugHandler) CheckFirebaseStatus(c *gin.Context) {
 	client := config.GetFirebaseAuth()
 

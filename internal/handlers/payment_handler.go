@@ -49,7 +49,7 @@ type CreateOrderRequest struct {
 	Subtotal          float64 `json:"subtotal,omitempty"`            // Ignored if cached estimate available
 	FirstName         string  `json:"first_name"`                    // Required
 	LastName          string  `json:"last_name,omitempty"`
-	Mobile            string  `json:"mobile"`                        // Required (primary)
+	Mobile            string  `json:"mobile"` // Required (primary)
 	MobileSecondary   string  `json:"mobile_secondary,omitempty"`
 }
 
@@ -82,6 +82,16 @@ type VerifyPaymentResponse struct {
 }
 
 // CheckoutPage serves a minimal Razorpay Checkout HTML to initiate payment
+// @Summary Hosted checkout page
+// @Description Render a minimal Razorpay Checkout page for a given Razorpay order
+// @Tags Payments
+// @Produce html
+// @Security FirebaseAuth
+// @Param order_id query string true "Razorpay Order ID"
+// @Success 200 {string} string "HTML checkout page"
+// @Failure 400 {string} string "Missing order_id"
+// @Failure 500 {string} string "Failed to fetch order"
+// @Router /payments/checkout [get]
 func (h *PaymentHandler) CheckoutPage(c *gin.Context) {
 	orderID := c.Query("order_id")
 	if orderID == "" {
@@ -163,6 +173,18 @@ func (h *PaymentHandler) CheckoutPage(c *gin.Context) {
 
 // CreateOrder creates ONLY a Razorpay payment intent - NO database order yet!
 // Database order will be created only after payment verification
+// @Summary Create Razorpay order (payment intent)
+// @Description Create a Razorpay order for the current user's cart; no DB order yet
+// @Tags Payments
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body handlers.CreateOrderRequest true "Payment intent request"
+// @Success 200 {object} handlers.CreateOrderResponse "Payment order created"
+// @Failure 400 {object} map[string]interface{} "Invalid request or empty cart"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Failed to create payment order"
+// @Router /payments/create-order [post]
 func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	// Get user ID from context (works with both Firebase and JWT auth)
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
@@ -303,6 +325,19 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Float64("final_amount", finalAmount))
 	}
 
+	// Apply business rule: Free delivery on cart total strictly above 500
+	// Assumption: threshold is exclusive (> 500, not >= 500)
+	freeDelivery := false
+	if cartTotal > 500 {
+		freeDelivery = true
+		shippingCharges = 0
+		finalAmount = cartTotal
+		h.logger.Info("Applied free delivery threshold (>500)",
+			zap.String("user_id", userID),
+			zap.Float64("cart_total", cartTotal),
+			zap.Float64("final_amount", finalAmount))
+	}
+
 	h.logger.Info("Calculated payment amounts",
 		zap.Float64("cart_total", cartTotal),
 		zap.Float64("shipping_charges", shippingCharges),
@@ -321,10 +356,14 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		"cart_items_count":    len(cart.Items),
 		"currency":            "INR", // Always INR
 		// Customer details for order + shipping label
-		"first_name":          req.FirstName,
-		"last_name":           req.LastName,
-		"mobile":              req.Mobile,
-		"mobile_secondary":    req.MobileSecondary,
+		"first_name":       req.FirstName,
+		"last_name":        req.LastName,
+		"mobile":           req.Mobile,
+		"mobile_secondary": req.MobileSecondary,
+	}
+	if freeDelivery {
+		notes["free_delivery"] = true
+		notes["free_delivery_threshold"] = 500
 	}
 
 	razorpayOrder, err := h.paymentService.CreateOrder(c.Request.Context(), userID, finalAmount, req.Currency, "payment_intent_"+userID, notes)
@@ -352,12 +391,17 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	host := c.Request.Host
 	checkoutURL := fmt.Sprintf("%s://%s/api/v1/payments/checkout?order_id=%s", scheme, host, razorpayOrder.ID)
 
+	description := "Kisanlink Order Payment"
+	if freeDelivery {
+		description = "Kisanlink Order Payment - Free Delivery"
+	}
+
 	response := CreateOrderResponse{
 		OrderID:     razorpayOrder.ID,
 		Amount:      amountInRupees,
 		Currency:    razorpayOrder.Currency,
 		KeyID:       cfg.KeyID,
-		Description: "Kisanlink Order Payment",
+		Description: description,
 		Notes:       notes,
 		CheckoutURL: checkoutURL,
 	}
@@ -372,6 +416,18 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 }
 
 // VerifyPayment verifies Razorpay payment signature
+// @Summary Verify payment and create order
+// @Description Verify Razorpay signature, create DB order, and create shipment
+// @Tags Payments
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body handlers.VerifyPaymentRequest true "Verify payment payload"
+// @Success 200 {object} handlers.VerifyPaymentResponse "Order created (and shipment if successful)"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Verification failed"
+// @Router /payments/verify [post]
 func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 	// Get user ID from context
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
@@ -483,10 +539,18 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			} else if v, ok := notes["eta_max_days"].(float64); ok {
 				etaMax = int(v)
 			}
-			if v, ok := notes["first_name"].(string); ok { firstName = strings.TrimSpace(v) }
-			if v, ok := notes["last_name"].(string); ok { lastName = strings.TrimSpace(v) }
-			if v, ok := notes["mobile"].(string); ok { mobile = strings.TrimSpace(v) }
-			if v, ok := notes["mobile_secondary"].(string); ok { mobileSecondary = strings.TrimSpace(v) }
+			if v, ok := notes["first_name"].(string); ok {
+				firstName = strings.TrimSpace(v)
+			}
+			if v, ok := notes["last_name"].(string); ok {
+				lastName = strings.TrimSpace(v)
+			}
+			if v, ok := notes["mobile"].(string); ok {
+				mobile = strings.TrimSpace(v)
+			}
+			if v, ok := notes["mobile_secondary"].(string); ok {
+				mobileSecondary = strings.TrimSpace(v)
+			}
 		}
 		// If address string missing but address ID present, resolve again (safety)
 		if shippingAddress == "" && shippingAddressID != "" {
@@ -560,10 +624,18 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				order.ShippingAddr = shippingAddress
 			}
 			// Persist customer checkout identity for shipment label
-			if firstName != "" { order.CustomerFirstName = firstName }
-			if lastName != "" { order.CustomerLastName = lastName }
-			if mobile != "" { order.CustomerPhone = mobile }
-			if mobileSecondary != "" { order.CustomerPhoneAlt = mobileSecondary }
+			if firstName != "" {
+				order.CustomerFirstName = firstName
+			}
+			if lastName != "" {
+				order.CustomerLastName = lastName
+			}
+			if mobile != "" {
+				order.CustomerPhone = mobile
+			}
+			if mobileSecondary != "" {
+				order.CustomerPhoneAlt = mobileSecondary
+			}
 			if updErr := h.orderService.UpdateOrder(c.Request.Context(), order); updErr != nil {
 				h.logger.Warn("Failed to persist order metadata", zap.Error(updErr), zap.String("order_id", order.ID))
 			}
@@ -656,6 +728,15 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 }
 
 // ProcessWebhook handles Razorpay webhook events
+// @Summary Razorpay webhook
+// @Description Handle Razorpay webhook events (public endpoint)
+// @Tags Payments
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Webhook processed"
+// @Failure 400 {object} map[string]interface{} "Missing signature or invalid payload"
+// @Failure 500 {object} map[string]interface{} "Processing failed"
+// @Router /webhooks/razorpay [post]
 func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 	// Get webhook signature from header
 	signature := c.GetHeader("X-Razorpay-Signature")
@@ -685,6 +766,17 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 }
 
 // GetPaymentStatus retrieves payment status from Razorpay
+// @Summary Get payment status
+// @Description Get Razorpay payment status by payment ID
+// @Tags Payments
+// @Produce json
+// @Security FirebaseAuth
+// @Param payment_id path string true "Razorpay Payment ID"
+// @Success 200 {object} services.RazorpayPayment "Payment status"
+// @Failure 400 {object} map[string]interface{} "Payment ID is required"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Failed to get payment status"
+// @Router /payments/{payment_id}/status [get]
 func (h *PaymentHandler) GetPaymentStatus(c *gin.Context) {
 	// Get user ID from context
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)

@@ -461,7 +461,7 @@ func (r *DelhiveryShipmentResponse) GetTrackingURL() string {
 		return ""
 	}
 	// Use B2C tracking URL pattern
-	return fmt.Sprintf("https://track.delhivery.com/p/%s", waybill)
+	return fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", waybill)
 }
 
 // ParseShipmentResponse parses raw JSON response into shipment response

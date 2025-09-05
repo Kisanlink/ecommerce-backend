@@ -22,16 +22,16 @@
 
 <body>
     <h2>Razorpay Payment</h2>
-    <p>Order: <strong id="orderId">order_RDp3k8dtkKM30o</strong></p>
-    <p>Amount: <strong id="amount">647.86</strong> <span id="currency">INR</span></p>
+    <p>Order: <strong id="orderId">order_RDsZIgWo24ESUz</strong></p>
+    <p>Amount: <strong id="amount">130.93</strong> <span id="currency">INR</span></p>
     <button id="payBtn">Pay Now</button>
     <pre id="out" style="margin-top:16px;background:#f7f7f7;padding:12px;overflow:auto"></pre>
     <script>
         const out = document.getElementById('out');
 		const options = {
 			key: 'rzp_test_RD9Sm9rzmAeNcN',
-			order_id: 'order_RDp3k8dtkKM30o',
-				amount:  64786 ,
+			order_id: 'order_RDsZIgWo24ESUz',
+				amount:  13093 ,
 				currency: 'INR',
 			handler: function (response){
 				out.textContent = JSON.stringify(response, null, 2);
@@ -48,3 +48,4 @@
 </body>
 
 </html>
+

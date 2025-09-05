@@ -22,62 +22,8 @@ type CartHandler struct {
 }
 
 // Coupon represents a simple coupon configuration for runtime validation
-type Coupon struct {
-	Code         string
-	Type         string  // "percent" or "fixed"
-	Value        float64 // percent value (e.g., 10 for 10%) or fixed amount
-	MinCartTotal float64 // minimum cart total to apply
-	MaxDiscount  float64 // optional cap for discount; 0 means no cap
-	ExpiresAt    time.Time
-	Description  string
-}
-
-// In-memory coupon registry (no persistence) — extend as needed
-var availableCoupons = map[string]Coupon{
-	"SUMMER10": {
-		Code:         "SUMMER10",
-		Type:         "percent",
-		Value:        10,
-		MinCartTotal: 500,
-		MaxDiscount:  500,
-		ExpiresAt:    time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC),
-		Description:  "10% off on orders above ₹500 (max ₹500)",
-	},
-	"WELCOME100": {
-		Code:         "WELCOME100",
-		Type:         "fixed",
-		Value:        100,
-		MinCartTotal: 299,
-		MaxDiscount:  0,
-		ExpiresAt:    time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC),
-		Description:  "Flat ₹100 off on orders above ₹299",
-	},
-}
-
 func round2(f float64) float64 {
 	return math.Round(f*100) / 100
-}
-
-func calculateDiscount(total float64, c Coupon) float64 {
-	if total <= 0 {
-		return 0
-	}
-	var discount float64
-	switch strings.ToLower(c.Type) {
-	case "percent":
-		discount = total * (c.Value / 100.0)
-	case "fixed":
-		discount = c.Value
-	default:
-		discount = 0
-	}
-	if c.MaxDiscount > 0 && discount > c.MaxDiscount {
-		discount = c.MaxDiscount
-	}
-	if discount > total {
-		discount = total
-	}
-	return round2(discount)
 }
 
 // NewCartHandler creates a new cart handler with cart service
@@ -235,6 +181,19 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 }
 
 // UpdateCartItem updates the quantity of an item in the cart
+// @Summary Update cart item
+// @Description Update quantity for a specific product in the cart
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param product_id path string true "Product ID"
+// @Param request body requests.UpdateCartItemRequest true "Update payload"
+// @Success 200 {object} map[string]interface{} "Cart item updated"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/items/{product_id} [put]
 func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -284,6 +243,18 @@ func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 }
 
 // IncrementCartItem increments the quantity of an item in the cart by a specified amount (default: 1)
+// @Summary Increment cart item
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param product_id path string true "Product ID"
+// @Param request body requests.IncrementCartItemRequest true "Increment payload"
+// @Success 200 {object} map[string]interface{} "Item incremented"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/items/{product_id}/increment [post]
 func (h *CartHandler) IncrementCartItem(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -321,6 +292,18 @@ func (h *CartHandler) IncrementCartItem(c *gin.Context) {
 }
 
 // DecrementCartItem decrements the quantity of an item in the cart by a specified amount (default: 1)
+// @Summary Decrement cart item
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param product_id path string true "Product ID"
+// @Param request body requests.DecrementCartItemRequest true "Decrement payload"
+// @Success 200 {object} map[string]interface{} "Item decremented"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/items/{product_id}/decrement [post]
 func (h *CartHandler) DecrementCartItem(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -358,6 +341,16 @@ func (h *CartHandler) DecrementCartItem(c *gin.Context) {
 }
 
 // RemoveFromCart removes an item from the cart
+// @Summary Remove item from cart
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Param product_id path string true "Product ID"
+// @Success 200 {object} map[string]interface{} "Item removed"
+// @Failure 400 {object} map[string]interface{} "Product ID is required"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/items/{product_id} [delete]
 func (h *CartHandler) RemoveFromCart(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -388,6 +381,14 @@ func (h *CartHandler) RemoveFromCart(c *gin.Context) {
 }
 
 // ClearCart removes all items from the user's cart
+// @Summary Clear cart
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Cart cleared"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/clear [delete]
 func (h *CartHandler) ClearCart(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -406,6 +407,14 @@ func (h *CartHandler) ClearCart(c *gin.Context) {
 }
 
 // GetCartSummary retrieves cart summary (total items, total price)
+// @Summary Cart summary
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Cart summary"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/summary [get]
 func (h *CartHandler) GetCartSummary(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -426,6 +435,14 @@ func (h *CartHandler) GetCartSummary(c *gin.Context) {
 }
 
 // GetCartItemCount retrieves the total number of items in the cart
+// @Summary Cart item count
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Item count"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/count [get]
 func (h *CartHandler) GetCartItemCount(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -446,6 +463,14 @@ func (h *CartHandler) GetCartItemCount(c *gin.Context) {
 }
 
 // ValidateCart validates all items in the cart (stock availability, price changes)
+// @Summary Validate cart
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Cart validated"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/validate [get]
 func (h *CartHandler) ValidateCart(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -466,6 +491,11 @@ func (h *CartHandler) ValidateCart(c *gin.Context) {
 }
 
 // HealthCheck checks cart service health
+// @Summary Cart service health
+// @Tags Cart
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Service health"
+// @Router /cart/health [get]
 func (h *CartHandler) HealthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -479,6 +509,11 @@ func (h *CartHandler) HealthCheck(c *gin.Context) {
 }
 
 // CleanupDuplicateCarts is an admin endpoint to clean up duplicate carts
+// @Summary Admin: cleanup duplicate carts
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Router /cart/admin/cleanup-duplicates [post]
 func (h *CartHandler) CleanupDuplicateCarts(c *gin.Context) {
 	h.logger.Info("Admin initiated cart cleanup request")
 
@@ -507,6 +542,14 @@ func (h *CartHandler) CleanupDuplicateCarts(c *gin.Context) {
 }
 
 // PrepareCheckout validates the cart and returns data ready for checkout
+// @Summary Prepare checkout
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Checkout prepared"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/checkout/prepare [get]
 func (h *CartHandler) PrepareCheckout(c *gin.Context) {
 	userID, ok := h.authenticateUser(c)
 	if !ok {
@@ -527,6 +570,17 @@ func (h *CartHandler) PrepareCheckout(c *gin.Context) {
 }
 
 // EstimateShipping returns shipping options via delivery service
+// @Summary Estimate shipping (cart)
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.EstimateShippingRequest true "Address"
+// @Success 200 {object} map[string]interface{} "Shipping estimated"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/checkout/estimate-shipping [post]
 func (h *CartHandler) EstimateShipping(c *gin.Context) {
 	userID, ok := h.authenticateUser(c)
 	if !ok {
@@ -584,6 +638,17 @@ func transformDeliveryOptions(options []models.DeliveryOption) []gin.H {
 }
 
 // ApplyCoupon validates and applies a coupon logically (no persistence)
+// @Summary Apply coupon
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.ApplyCouponRequest true "Coupon request"
+// @Success 200 {object} map[string]interface{} "Coupon applied"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/checkout/apply-coupon [post]
 func (h *CartHandler) ApplyCoupon(c *gin.Context) {
 	userID, ok := h.authenticateUser(c)
 	if !ok {
@@ -616,6 +681,14 @@ func (h *CartHandler) ApplyCoupon(c *gin.Context) {
 }
 
 // RemoveCoupon returns the original cart totals (since coupons aren't persisted)
+// @Summary Remove coupon
+// @Tags Cart
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Coupon removed"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/checkout/remove-coupon [delete]
 func (h *CartHandler) RemoveCoupon(c *gin.Context) {
 	userID, ok := h.authenticateUser(c)
 	if !ok {

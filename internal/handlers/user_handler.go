@@ -23,6 +23,15 @@ func NewUserHandler(userService *services.UserService) *UserHandler {
 }
 
 // GetUserByID gets a user by ID
+// @Summary Get user by ID
+// @Tags Users
+// @Produce json
+// @Param id path string true "User ID"
+// @Success 200 {object} map[string]interface{} "User retrieved"
+// @Failure 400 {object} map[string]interface{} "User ID is required"
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /users/{id} [get]
 func (h *UserHandler) GetUserByID(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -46,6 +55,14 @@ func (h *UserHandler) GetUserByID(c *gin.Context) {
 }
 
 // GetCurrentUserProfile gets the current authenticated user's profile
+// @Summary Get current user profile
+// @Tags Users
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Profile retrieved"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Router /users/me [get]
 func (h *UserHandler) GetCurrentUserProfile(c *gin.Context) {
 	// Get user ID from Firebase middleware
 	firebaseUID, exists := c.Get("firebase_uid")
@@ -70,6 +87,16 @@ func (h *UserHandler) GetCurrentUserProfile(c *gin.Context) {
 }
 
 // UpdateUser updates a user by ID
+// @Summary Update user
+// @Tags Users
+// @Accept json
+// @Produce json
+// @Param id path string true "User ID"
+// @Param request body object true "Fields to update"
+// @Success 200 {object} map[string]interface{} "User updated"
+// @Failure 400 {object} map[string]interface{} "Invalid request or user ID"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /users/{id} [put]
 func (h *UserHandler) UpdateUser(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -99,6 +126,17 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 }
 
 // UpdateCurrentUser updates the current authenticated user's profile
+// @Summary Update current user
+// @Tags Users
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body object true "Fields to update"
+// @Success 200 {object} map[string]interface{} "Profile updated"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Router /users/me [put]
 func (h *UserHandler) UpdateCurrentUser(c *gin.Context) {
 	// Get user ID from Firebase middleware
 	firebaseUID, exists := c.Get("firebase_uid")
@@ -149,6 +187,14 @@ func (h *UserHandler) UpdateCurrentUser(c *gin.Context) {
 }
 
 // ListUsers lists all users with pagination
+// @Summary List users
+// @Tags Users
+// @Produce json
+// @Param page query int false "Page number" default(1)
+// @Param page_size query int false "Items per page" default(20)
+// @Success 200 {object} map[string]interface{} "Users listed"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /users [get]
 func (h *UserHandler) ListUsers(c *gin.Context) {
 	// Get pagination parameters
 	pageStr := c.DefaultQuery("page", "1")
@@ -179,6 +225,14 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 }
 
 // DeleteUser soft deletes a user by ID
+// @Summary Delete user
+// @Tags Users
+// @Produce json
+// @Param id path string true "User ID"
+// @Success 200 {object} map[string]interface{} "User deleted"
+// @Failure 400 {object} map[string]interface{} "User ID is required"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /users/{id} [delete]
 func (h *UserHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -208,6 +262,14 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 }
 
 // DeleteCurrentUser soft deletes the current authenticated user
+// @Summary Delete current user
+// @Tags Users
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Account deleted"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Router /users/me [delete]
 func (h *UserHandler) DeleteCurrentUser(c *gin.Context) {
 	// Get user ID from Firebase middleware
 	firebaseUID, exists := c.Get("firebase_uid")

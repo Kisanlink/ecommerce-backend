@@ -22,6 +22,19 @@ func NewRecipeHandler(repoManager *repositories.RepositoryManager) *RecipeHandle
 	}
 }
 
+// GetRecipes handles GET /api/v1/recipes
+// @Summary Get recipes
+// @Description Get a paginated list of recipes with optional filters
+// @Tags Recipes
+// @Produce json
+// @Param page query int false "Page number" default(1)
+// @Param page_size query int false "Items per page" default(10)
+// @Param category query string false "Filter by category"
+// @Param search query string false "Search term"
+// @Param ingredient query string false "Filter by ingredient"
+// @Success 200 {object} map[string]interface{} "Recipes retrieved"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /recipes [get]
 func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 	// Parse query parameters for pagination and filtering
 	page := 1
@@ -86,6 +99,15 @@ func (h *RecipeHandler) GetRecipes(c *gin.Context) {
 	})
 }
 
+// GetRecipeByID handles GET /api/v1/recipes/{id}
+// @Summary Get recipe by ID
+// @Tags Recipes
+// @Produce json
+// @Param id path string true "Recipe ID"
+// @Success 200 {object} map[string]interface{} "Recipe retrieved"
+// @Failure 400 {object} map[string]interface{} "Recipe ID is required"
+// @Failure 404 {object} map[string]interface{} "Recipe not found"
+// @Router /recipes/{id} [get]
 func (h *RecipeHandler) GetRecipeByID(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -107,6 +129,16 @@ func (h *RecipeHandler) GetRecipeByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"recipe": recipe})
 }
 
+// CreateRecipe handles POST /api/v1/recipes
+// @Summary Create recipe
+// @Tags Recipes
+// @Accept json
+// @Produce json
+// @Param request body models.Recipe true "Recipe"
+// @Success 201 {object} map[string]interface{} "Recipe created"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 500 {object} map[string]interface{} "Failed to create recipe"
+// @Router /recipes [post]
 func (h *RecipeHandler) CreateRecipe(c *gin.Context) {
 	var recipe models.Recipe
 	if err := c.ShouldBindJSON(&recipe); err != nil {
@@ -150,6 +182,18 @@ func (h *RecipeHandler) CreateRecipe(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"recipe": newRecipe})
 }
 
+// UpdateRecipe handles PUT /api/v1/recipes/{id}
+// @Summary Update recipe
+// @Tags Recipes
+// @Accept json
+// @Produce json
+// @Param id path string true "Recipe ID"
+// @Param request body object true "Partial recipe fields"
+// @Success 200 {object} map[string]interface{} "Recipe updated"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 404 {object} map[string]interface{} "Recipe not found"
+// @Failure 500 {object} map[string]interface{} "Failed to update recipe"
+// @Router /recipes/{id} [put]
 func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -256,6 +300,15 @@ func (h *RecipeHandler) UpdateRecipe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"recipe": existingRecipe})
 }
 
+// DeleteRecipe handles DELETE /api/v1/recipes/{id}
+// @Summary Delete recipe
+// @Tags Recipes
+// @Produce json
+// @Param id path string true "Recipe ID"
+// @Success 200 {object} map[string]interface{} "Recipe deleted"
+// @Failure 400 {object} map[string]interface{} "Recipe ID is required"
+// @Failure 500 {object} map[string]interface{} "Failed to delete recipe"
+// @Router /recipes/{id} [delete]
 func (h *RecipeHandler) DeleteRecipe(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {

@@ -47,6 +47,16 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 }
 
 // CreateAutoProfile automatically creates a profile using user information
+// @Summary Create profile (auto)
+// @Description Create a profile for the authenticated user using Firebase info
+// @Tags Profile
+// @Produce json
+// @Security FirebaseAuth
+// @Success 201 {object} map[string]interface{} "Profile created"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 409 {object} map[string]interface{} "Profile already exists"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /profile/auto [post]
 func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 	userID, err := h.getUserID(c)
 	if err != nil {
@@ -79,6 +89,16 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 }
 
 // GetProfile retrieves the user's profile
+// @Summary Get profile
+// @Description Get the authenticated user's profile
+// @Tags Profile
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Profile retrieved"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "Profile not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /profile [get]
 func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	userID, err := h.getUserID(c)
 	if err != nil {
@@ -103,6 +123,19 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 }
 
 // UpdateProfile updates the user's profile
+// @Summary Update profile
+// @Description Update profile fields for the authenticated user
+// @Tags Profile
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.UpdateProfileRequest true "Profile update"
+// @Success 200 {object} map[string]interface{} "Profile updated"
+// @Failure 400 {object} map[string]interface{} "Invalid request data"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "Profile not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /profile [put]
 func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	userID, err := h.getUserID(c)
 	if err != nil {
@@ -137,6 +170,18 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 }
 
 // UploadProfileImage uploads a profile image file to S3
+// @Summary Upload profile image
+// @Description Upload a profile image file to S3 and update the profile
+// @Tags Profile
+// @Accept multipart/form-data
+// @Produce json
+// @Security FirebaseAuth
+// @Param image formData file true "Profile image file"
+// @Success 200 {object} map[string]interface{} "Image uploaded"
+// @Failure 400 {object} map[string]interface{} "No image or bad request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /profile/image [post]
 func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 	userID, err := h.getUserID(c)
 	if err != nil {
@@ -182,6 +227,17 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 }
 
 // GetProfileImageURL generates a presigned URL for the profile image
+// @Summary Get profile image URL
+// @Description Generate a presigned URL for the profile image
+// @Tags Profile
+// @Produce json
+// @Security FirebaseAuth
+// @Param expires_in_hours query int false "Expiry in hours" default(1)
+// @Success 200 {object} map[string]interface{} "Image URL generated"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "No profile image"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /profile/image/url [get]
 func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 	userID, err := h.getUserID(c)
 	if err != nil {

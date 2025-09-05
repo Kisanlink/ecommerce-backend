@@ -30,6 +30,18 @@ func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Lo
 
 // CreateOrder creates a new order manually (alternative to payment flow)
 // POST /api/v1/orders
+// @Summary Create order from cart (manual)
+// @Description Create an order directly from the user's cart without Razorpay flow
+// @Tags Orders
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body object{cart_id=string,shipping_address=string,payment_method=string,notes=string} true "Order creation payload"
+// @Success 201 {object} map[string]interface{} "Order created successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request data"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Failed to create order"
+// @Router /orders [post]
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -75,6 +87,18 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 // GetUserOrders retrieves all orders for the authenticated user
 // GET /api/v1/orders
+// @Summary List user's orders
+// @Description Get a paginated list of orders for the authenticated user
+// @Tags Orders
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param page query int false "Page number" default(1)
+// @Param limit query int false "Items per page" default(10)
+// @Success 200 {object} map[string]interface{} "Orders retrieved successfully"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /orders [get]
 func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -127,6 +151,20 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 
 // GetOrderDetails retrieves details of a specific order
 // GET /api/v1/orders/:id
+// @Summary Get order details
+// @Description Get details and items of a specific order
+// @Tags Orders
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Order ID"
+// @Success 200 {object} map[string]interface{} "Order details retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Order ID is required"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 403 {object} map[string]interface{} "Access denied"
+// @Failure 404 {object} map[string]interface{} "Order not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /orders/{id} [get]
 func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -175,6 +213,19 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 
 // GetOrderStatus retrieves the current status of an order
 // GET /api/v1/orders/:id/status
+// @Summary Get order status
+// @Description Get current status and payment status of an order
+// @Tags Orders
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Order ID"
+// @Success 200 {object} map[string]interface{} "Order status retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Order ID is required"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 403 {object} map[string]interface{} "Access denied"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /orders/{id}/status [get]
 func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -212,6 +263,19 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 
 // GetOrderTracking retrieves tracking information for an order
 // GET /api/v1/orders/:id/tracking
+// @Summary Get order tracking info
+// @Description Get tracking timeline and basic shipment info for an order
+// @Tags Orders
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Order ID"
+// @Success 200 {object} map[string]interface{} "Order tracking retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Order ID is required"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 403 {object} map[string]interface{} "Access denied"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /orders/{id}/tracking [get]
 func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -300,24 +364,42 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 // These can be added later when admin middleware is implemented
 
 // GetAllOrders retrieves all orders (admin only)
+// @Summary Admin: list all orders
+// @Tags Orders
+// @Produce json
+// @Router /admin/orders [get]
 func (h *OrderHandler) GetAllOrders(c *gin.Context) {
 	// TODO: Implement admin-only order retrieval
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
 }
 
 // UpdateOrderStatus updates order status (admin only)
+// @Summary Admin: update order status
+// @Tags Orders
+// @Accept json
+// @Produce json
+// @Router /admin/orders/{id}/status [put]
 func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
 	// TODO: Implement admin order status updates
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
 }
 
 // GetOrderStats retrieves order statistics (admin only)
+// @Summary Admin: get order statistics
+// @Tags Orders
+// @Produce json
+// @Router /admin/orders/stats [get]
 func (h *OrderHandler) GetOrderStats(c *gin.Context) {
 	// TODO: Implement order statistics
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
 }
 
 // GetOrderDetailsDebug retrieves order details without authentication (debug only)
+// @Summary Debug: get order details (no auth)
+// @Tags Debug
+// @Produce json
+// @Param id path string true "Order ID"
+// @Router /debug/order/{id} [get]
 func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
 	orderID := c.Param("id")
 	if orderID == "" {

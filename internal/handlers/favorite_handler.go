@@ -24,6 +24,19 @@ func NewFavoriteHandler(serviceManager *services.ServiceManager) *FavoriteHandle
 }
 
 // AddFavorite handles adding a product to favorites
+// @Summary Add product to favorites
+// @Description Add a product to the authenticated user's favorites
+// @Tags Favorites
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.AddFavoriteRequest true "Favorite request"
+// @Success 201 {object} map[string]interface{} "Added to favorites"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Failure 409 {object} map[string]interface{} "Already in favorites"
+// @Router /favorites [post]
 func (h *FavoriteHandler) AddFavorite(c *gin.Context) {
 	var request requests.AddFavoriteRequest
 
@@ -74,6 +87,15 @@ func (h *FavoriteHandler) AddFavorite(c *gin.Context) {
 }
 
 // GetFavorites handles retrieving user's favorites
+// @Summary List favorites
+// @Description Get the authenticated user's favorites with product details
+// @Tags Favorites
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Favorites retrieved"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /favorites [get]
 func (h *FavoriteHandler) GetFavorites(c *gin.Context) {
 	// Get authenticated user ID
 	userIDStr, authenticated := h.authContext.GetAuthenticatedUserID(c)
@@ -102,6 +124,18 @@ func (h *FavoriteHandler) GetFavorites(c *gin.Context) {
 }
 
 // RemoveFavorite handles removing a product from favorites
+// @Summary Remove product from favorites
+// @Description Remove a product from the authenticated user's favorites
+// @Tags Favorites
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.RemoveFavoriteRequest true "Remove favorite request"
+// @Success 200 {object} map[string]interface{} "Removed from favorites"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "Favorite not found"
+// @Router /favorites [delete]
 func (h *FavoriteHandler) RemoveFavorite(c *gin.Context) {
 	var request requests.RemoveFavoriteRequest
 
@@ -145,6 +179,17 @@ func (h *FavoriteHandler) RemoveFavorite(c *gin.Context) {
 }
 
 // CheckFavorite handles checking if a product is in favorites
+// @Summary Check favorite status
+// @Description Check if a product is in the authenticated user's favorites
+// @Tags Favorites
+// @Produce json
+// @Security FirebaseAuth
+// @Param product_id query string true "Product ID"
+// @Success 200 {object} map[string]interface{} "Favorite status"
+// @Failure 400 {object} map[string]interface{} "Product ID is required"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /favorites/check [get]
 func (h *FavoriteHandler) CheckFavorite(c *gin.Context) {
 	productID := c.Query("product_id")
 	if productID == "" {
