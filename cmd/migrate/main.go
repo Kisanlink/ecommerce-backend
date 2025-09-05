@@ -4,10 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/Kisanlink/ecommerce-backend/internal/database"
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -45,7 +44,7 @@ func main() {
 		fmt.Print("⚠️  WARNING: This will drop ALL tables. Are you sure? (yes/no): ")
 		var confirmation string
 		fmt.Scanln(&confirmation)
-		
+
 		if confirmation == "yes" {
 			if err := database.DropAllTablesWithDB(); err != nil {
 				log.Fatalf("Failed to drop tables: %v", err)
@@ -60,7 +59,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to get migration status: %v", err)
 		}
-		
+
 		fmt.Println("\n📊 Database Migration Status:")
 		fmt.Println("================================")
 		for tableName, exists := range status {

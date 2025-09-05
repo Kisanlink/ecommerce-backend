@@ -69,7 +69,8 @@ func GetDelhiveryConfig() DelhiveryConfig {
 		OriginState:   getEnvOrDefault("DELHIVERY_ORIGIN_STATE", "Telangana"),
 		OriginAddress: getEnvOrDefault("DELHIVERY_ORIGIN_ADDRESS", "Default Address"),
 		OriginPhone:   getEnvOrDefault("DELHIVERY_ORIGIN_PHONE", "6300868001"),
-		WarehouseName: getEnvOrDefault("DELHIVERY_WAREHOUSE_NAME", "main_warehouse"),
+		// IMPORTANT: Must exactly match the Pickup Location (Facility Name) in Delhivery dashboard (case-sensitive)
+		WarehouseName: getEnvOrDefault("DELHIVERY_WAREHOUSE_NAME", "Amrti"),
 		DefaultWeight: defaultWeight,
 		ServiceStatus: serviceStatus,
 	}

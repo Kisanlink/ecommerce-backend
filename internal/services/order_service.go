@@ -22,6 +22,7 @@ type OrderServiceInterface interface {
 	GetUserOrders(ctx context.Context, userID string) ([]*models.Order, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
 	UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error
+	UpdatePaymentStatusAndOrderStatus(ctx context.Context, orderID string, paymentStatus, paymentID string, orderStatus models.OrderStatus) error
 	GetOrderWithItems(ctx context.Context, orderID string) (*models.Order, []models.OrderItem, error)
 	ConfirmOrderPayment(ctx context.Context, razorpayOrderID, paymentID string) error
 	UpdateOrderNotes(ctx context.Context, orderID string, notes string) error
@@ -459,6 +460,26 @@ func (s *OrderService) UpdatePaymentStatus(ctx context.Context, orderID string, 
 		zap.String("order_id", orderID),
 		zap.String("payment_status", paymentStatus),
 		zap.String("payment_id", paymentID))
+
+	return nil
+}
+
+// UpdatePaymentStatusAndOrderStatus updates both payment status and order status
+func (s *OrderService) UpdatePaymentStatusAndOrderStatus(ctx context.Context, orderID string, paymentStatus, paymentID string, orderStatus models.OrderStatus) error {
+	// Update payment status first
+	if err := s.UpdatePaymentStatus(ctx, orderID, paymentStatus, paymentID); err != nil {
+		return err
+	}
+
+	// Update order status
+	if err := s.orderRepo.UpdateOrderStatus(ctx, orderID, orderStatus); err != nil {
+		return fmt.Errorf("failed to update order status: %w", err)
+	}
+
+	s.logger.Info("Order status updated after payment",
+		zap.String("order_id", orderID),
+		zap.String("order_status", string(orderStatus)),
+		zap.String("payment_status", paymentStatus))
 
 	return nil
 }

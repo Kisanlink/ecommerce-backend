@@ -48,7 +48,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
-		delivery.RegisterDeliveryRoutes(v1, repoManager)
+		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

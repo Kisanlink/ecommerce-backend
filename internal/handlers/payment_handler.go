@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 
+	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
@@ -46,6 +47,10 @@ type CreateOrderRequest struct {
 	ShippingAddress   string  `json:"shipping_address,omitempty"`    // Optional: if providing new address
 	Currency          string  `json:"currency,omitempty"`            // Ignored (hardcoded to INR)
 	Subtotal          float64 `json:"subtotal,omitempty"`            // Ignored if cached estimate available
+	FirstName         string  `json:"first_name"`                    // Required
+	LastName          string  `json:"last_name,omitempty"`
+	Mobile            string  `json:"mobile"`                        // Required (primary)
+	MobileSecondary   string  `json:"mobile_secondary,omitempty"`
 }
 
 // CreateOrderResponse represents the response with order details
@@ -174,6 +179,27 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// Validate required customer fields
+	req.FirstName = strings.TrimSpace(req.FirstName)
+	req.LastName = strings.TrimSpace(req.LastName)
+	req.Mobile = strings.TrimSpace(req.Mobile)
+	req.MobileSecondary = strings.TrimSpace(req.MobileSecondary)
+	if req.FirstName == "" || req.Mobile == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "first_name and mobile are required"})
+		return
+	}
+	// Normalize mobile: keep last 10 digits if prefixed
+	if len(req.Mobile) > 10 {
+		if digits := onlyDigits(req.Mobile); len(digits) >= 10 {
+			req.Mobile = digits[len(digits)-10:]
+		}
+	}
+	if req.MobileSecondary != "" && len(req.MobileSecondary) > 10 {
+		if digits := onlyDigits(req.MobileSecondary); len(digits) >= 10 {
+			req.MobileSecondary = digits[len(digits)-10:]
+		}
+	}
+
 	// Always use INR currency and prefer last delivery estimate for address and totals
 	useCurrency := "INR" // Always INR for all transactions
 	shippingAddress := ""
@@ -294,6 +320,11 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		"subtotal":            finalAmount, // Total including shipping
 		"cart_items_count":    len(cart.Items),
 		"currency":            "INR", // Always INR
+		// Customer details for order + shipping label
+		"first_name":          req.FirstName,
+		"last_name":           req.LastName,
+		"mobile":              req.Mobile,
+		"mobile_secondary":    req.MobileSecondary,
 	}
 
 	razorpayOrder, err := h.paymentService.CreateOrder(c.Request.Context(), userID, finalAmount, req.Currency, "payment_intent_"+userID, notes)
@@ -415,6 +446,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		var cartTotal float64 = 0
 		var shippingCharges float64 = 0
 		var etaMin, etaMax int = 0, 0
+		var firstName, lastName, mobile, mobileSecondary string
 		if rzpOrder != nil && rzpOrder.Notes != nil {
 			notes = rzpOrder.Notes
 			if v, ok := notes["shipping_address"].(string); ok {
@@ -451,6 +483,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			} else if v, ok := notes["eta_max_days"].(float64); ok {
 				etaMax = int(v)
 			}
+			if v, ok := notes["first_name"].(string); ok { firstName = strings.TrimSpace(v) }
+			if v, ok := notes["last_name"].(string); ok { lastName = strings.TrimSpace(v) }
+			if v, ok := notes["mobile"].(string); ok { mobile = strings.TrimSpace(v) }
+			if v, ok := notes["mobile_secondary"].(string); ok { mobileSecondary = strings.TrimSpace(v) }
 		}
 		// If address string missing but address ID present, resolve again (safety)
 		if shippingAddress == "" && shippingAddressID != "" {
@@ -490,13 +526,19 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			return
 		}
 
-		// Update order with payment details
-		if err := h.orderService.UpdatePaymentStatus(c.Request.Context(), order.ID, "paid", req.PaymentID); err != nil {
-			h.logger.Error("Failed to update payment status",
+		// Update order with payment details and confirm the order
+		if err := h.orderService.UpdatePaymentStatusAndOrderStatus(c.Request.Context(), order.ID, "successful", req.PaymentID, models.OrderStatusConfirmed); err != nil {
+			h.logger.Error("Failed to update payment and order status",
 				zap.Error(err),
 				zap.String("order_id", order.ID),
 				zap.String("payment_id", req.PaymentID))
 			// Don't fail the verification, but log the error
+		} else {
+			h.logger.Info("Order confirmed after successful payment",
+				zap.String("order_id", order.ID),
+				zap.String("payment_id", req.PaymentID),
+				zap.String("order_status", "confirmed"),
+				zap.String("payment_status", "successful"))
 		}
 
 		// Persist full payment and shipping metadata on order and notes
@@ -517,6 +559,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			if order.ShippingAddr == "" {
 				order.ShippingAddr = shippingAddress
 			}
+			// Persist customer checkout identity for shipment label
+			if firstName != "" { order.CustomerFirstName = firstName }
+			if lastName != "" { order.CustomerLastName = lastName }
+			if mobile != "" { order.CustomerPhone = mobile }
+			if mobileSecondary != "" { order.CustomerPhoneAlt = mobileSecondary }
 			if updErr := h.orderService.UpdateOrder(c.Request.Context(), order); updErr != nil {
 				h.logger.Warn("Failed to persist order metadata", zap.Error(updErr), zap.String("order_id", order.ID))
 			}
@@ -770,4 +817,16 @@ func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
 	}
 
 	return address, nil
+}
+
+// onlyDigits returns a string containing only 0-9 digits
+func onlyDigits(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, ch := range s {
+		if ch >= '0' && ch <= '9' {
+			b.WriteRune(ch)
+		}
+	}
+	return b.String()
 }

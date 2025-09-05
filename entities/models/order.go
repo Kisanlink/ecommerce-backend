@@ -22,6 +22,11 @@ type Order struct {
 	TotalAmount     float64     `json:"total_amount" gorm:"not null"`
 	Status          OrderStatus `json:"status" gorm:"default:'pending'"`
 	ShippingAddr    string      `json:"shipping_address"`
+	// Customer contact captured at checkout (used for shipping label)
+	CustomerFirstName string `json:"customer_first_name"`
+	CustomerLastName  string `json:"customer_last_name"`
+	CustomerPhone     string `json:"customer_phone"`
+	CustomerPhoneAlt  string `json:"customer_phone_alt"`
 	PaymentMethod   string      `json:"payment_method"`
 	PaymentStatus   string      `json:"payment_status" gorm:"default:'pending'"`
 	Notes           string      `json:"notes"`
