@@ -3,7 +3,9 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,10 +25,43 @@ func (s *StringOrInt) UnmarshalJSON(b []byte) error {
 		*s = StringOrInt(strconv.Itoa(i))
 		return nil
 	}
+	// Try float
+	var f float64
+	if err := json.Unmarshal(b, &f); err == nil {
+		// If it is an integer-like float, format without decimal
+		if f == math.Trunc(f) {
+			*s = StringOrInt(strconv.FormatInt(int64(f), 10))
+		} else {
+			// Use 'g' to avoid trailing zeros and scientific notation for typical values
+			*s = StringOrInt(strconv.FormatFloat(f, 'f', -1, 64))
+		}
+		return nil
+	}
 	return fmt.Errorf("StringOrInt: unsupported JSON: %s", string(b))
 }
 
 func (s StringOrInt) String() string { return string(s) }
+
+// StringOrSlice handles fields that may be a single string or an array of strings
+type StringOrSlice []string
+
+func (s *StringOrSlice) UnmarshalJSON(b []byte) error {
+	// Try single string
+	var single string
+	if err := json.Unmarshal(b, &single); err == nil {
+		*s = []string{single}
+		return nil
+	}
+	// Try array of strings
+	var arr []string
+	if err := json.Unmarshal(b, &arr); err == nil {
+		*s = arr
+		return nil
+	}
+	return fmt.Errorf("StringOrSlice: unsupported JSON: %s", string(b))
+}
+
+func (s StringOrSlice) String() string { return strings.Join([]string(s), "; ") }
 
 // DelhiveryServiceabilityResponse represents Delhivery pincode serviceability check response
 // This matches the production API format: /c/api/pin-codes/json/
@@ -364,16 +399,43 @@ type DelhiveryShipmentResponse struct {
 	RMK         string                 `json:"rmk"`
 }
 
+// Packages returns the package data (alias for compatibility)
+func (r *DelhiveryShipmentResponse) Packages() []DelhiveryPackageInfo {
+	return r.PackageData
+}
+
+// IsSuccessful checks if the shipment creation was successful
+func (r *DelhiveryShipmentResponse) IsSuccessful() bool {
+	return r.Success && len(r.PackageData) > 0 && r.GetWaybill() != ""
+}
+
+// GetErrorMessage returns error message from RMK field or a generic message
+func (r *DelhiveryShipmentResponse) GetErrorMessage() string {
+	if r.RMK != "" {
+		return r.RMK
+	}
+	if !r.Success {
+		return "Shipment creation failed - no success status from Delhivery"
+	}
+	if len(r.PackageData) == 0 {
+		return "Shipment creation failed - no package data received"
+	}
+	if r.GetWaybill() == "" {
+		return "Shipment creation failed - no waybill number received"
+	}
+	return "Unknown error occurred during shipment creation"
+}
+
 // DelhiveryPackageInfo represents individual package information in response
 type DelhiveryPackageInfo struct {
-	Status      string `json:"status"`
-	Client      string `json:"client"`
-	SortCode    string `json:"sort_code"`
-	Remarks     string `json:"remarks"`
-	Waybill     string `json:"waybill"`
-	RefNum      string `json:"refnum"`
-	CODAmount   string `json:"cod_amount"`
-	PaymentMode string `json:"payment_mode"`
+	Status      string        `json:"status"`
+	Client      string        `json:"client"`
+	SortCode    string        `json:"sort_code"`
+	Remarks     StringOrSlice `json:"remarks"`
+	Waybill     string        `json:"waybill"`
+	RefNum      string        `json:"refnum"`
+	CODAmount   StringOrInt   `json:"cod_amount"`
+	PaymentMode string        `json:"payment_mode"`
 }
 
 // GetWaybill extracts the first waybill number from the response
@@ -398,7 +460,8 @@ func (r *DelhiveryShipmentResponse) GetTrackingURL() string {
 	if waybill == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://www.delhivery.com/track/package/%s", waybill)
+	// Use B2C tracking URL pattern
+	return fmt.Sprintf("https://track.delhivery.com/p/%s", waybill)
 }
 
 // ParseShipmentResponse parses raw JSON response into shipment response

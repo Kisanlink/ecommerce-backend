@@ -15,6 +15,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/recipes"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/users"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/internal/swagger"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -34,6 +35,9 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 	debugHandler := handlers.NewDebugHandler()
 	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
 
+	// Register Swagger documentation routes
+	swagger.RegisterSwaggerRoutes(r)
+
 	// API versioning
 	v1 := r.Group("/api/v1")
 	{
@@ -48,7 +52,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
-		delivery.RegisterDeliveryRoutes(v1, repoManager)
+		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

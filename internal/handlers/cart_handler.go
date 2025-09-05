@@ -143,6 +143,17 @@ func (h *CartHandler) handleCartServiceError(c *gin.Context, err error, operatio
 }
 
 // GetCart retrieves the user's cart
+// GetCart handles GET /api/v1/cart
+// @Summary Get user's cart
+// @Description Get the current user's shopping cart with all items
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "Cart retrieved successfully"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart [get]
 func (h *CartHandler) GetCart(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {
@@ -171,6 +182,19 @@ func (h *CartHandler) GetCart(c *gin.Context) {
 }
 
 // AddToCart adds an item to the user's cart
+// AddToCart handles POST /api/v1/cart/items
+// @Summary Add item to cart
+// @Description Add a product to the user's shopping cart
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param request body requests.AddToCartRequest true "Cart item information"
+// @Success 200 {object} map[string]interface{} "Item added to cart successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/items [post]
 func (h *CartHandler) AddToCart(c *gin.Context) {
 	userID, authenticated := h.authenticateUser(c)
 	if !authenticated {

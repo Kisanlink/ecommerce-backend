@@ -60,6 +60,16 @@ type FirebaseErrorResponse struct {
 }
 
 // Signup creates a new user in Firebase and stores their details in local database
+// @Summary Create a new user account
+// @Description Register a new user with email and password, creating accounts in both local database and Firebase
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body requests.SignupRequest true "User signup information"
+// @Success 201 {object} map[string]interface{} "User created successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request or user already exists"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/signup [post]
 func (h *FirebaseAuthHandler) Signup(c *gin.Context) {
 	var req requests.SignupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -235,6 +245,17 @@ func (h *FirebaseAuthHandler) Signup(c *gin.Context) {
 }
 
 // Login authenticates a user using Firebase Auth REST API and returns proper Firebase tokens
+// @Summary Authenticate user
+// @Description Login with email and password to get Firebase authentication tokens
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body requests.LoginRequest true "User login credentials"
+// @Success 200 {object} map[string]interface{} "Login successful"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Invalid credentials"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/login [post]
 func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 	var req requests.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -408,6 +429,17 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 }
 
 // VerifyToken verifies a Firebase ID token
+// @Summary Verify Firebase ID token
+// @Description Verify the validity of a Firebase ID token and return user information
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body requests.VerifyTokenRequest true "Firebase ID token to verify"
+// @Success 200 {object} map[string]interface{} "Token verified successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Invalid or expired token"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/verify-token [post]
 func (h *FirebaseAuthHandler) VerifyToken(c *gin.Context) {
 	var req requests.VerifyTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -452,6 +484,16 @@ func (h *FirebaseAuthHandler) VerifyToken(c *gin.Context) {
 }
 
 // GetProfile gets the current user's profile
+// @Summary Get user profile
+// @Description Get the current authenticated user's profile information
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Success 200 {object} map[string]interface{} "User profile retrieved successfully"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/profile [get]
 func (h *FirebaseAuthHandler) GetProfile(c *gin.Context) {
 	uid, exists := c.Get("firebase_uid")
 	if !exists {
@@ -584,6 +626,17 @@ func (h *FirebaseAuthHandler) Logout(c *gin.Context) {
 }
 
 // RefreshToken refreshes a Firebase refresh token to get a new ID token
+// @Summary Refresh authentication token
+// @Description Refresh a Firebase refresh token to get a new ID token
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body object{refresh_token string} true "Refresh token"
+// @Success 200 {object} map[string]interface{} "Token refreshed successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Invalid or expired refresh token"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/refresh-token [post]
 func (h *FirebaseAuthHandler) RefreshToken(c *gin.Context) {
 	var req struct {
 		RefreshToken string `json:"refresh_token" binding:"required"`

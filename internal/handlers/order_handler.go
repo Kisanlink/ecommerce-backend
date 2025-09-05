@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
@@ -142,8 +143,21 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 	// Get order with items
 	order, orderItems, err := h.orderService.GetOrderWithItems(c.Request.Context(), orderID)
 	if err != nil {
-		h.logger.Error("Failed to get order details", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order details"})
+		h.logger.Error("Failed to get order details",
+			zap.Error(err),
+			zap.String("order_id", orderID),
+			zap.String("user_id", userID))
+
+		// Check if it's a "not found" error
+		if strings.Contains(err.Error(), "not found") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Order not found. Please check the order ID and try again.",
+				"code":  "ORDER_NOT_FOUND"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve order details. Please try again later.",
+				"code":  "INTERNAL_ERROR"})
+		}
 		return
 	}
 

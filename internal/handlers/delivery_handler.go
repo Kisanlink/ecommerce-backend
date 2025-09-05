@@ -1,70 +1,96 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
-	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
-	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
-type DeliveryHandler struct {
-	service services.DeliveryServiceInterface
-	logger  *zap.Logger
-	authCtx *auth.AuthContext
+// ShipmentHandler handles shipment-related APIs
+type ShipmentHandler struct {
+	DelhiveryBaseURL string
+	DelhiveryToken   string
 }
 
-func NewDeliveryHandler(service services.DeliveryServiceInterface, logger *zap.Logger) *DeliveryHandler {
-	return &DeliveryHandler{service: service, logger: logger, authCtx: auth.NewAuthContext()}
+// NewShipmentHandler creates new shipment handler
+func NewShipmentHandler(baseURL, token string) *ShipmentHandler {
+	return &ShipmentHandler{
+		DelhiveryBaseURL: baseURL,
+		DelhiveryToken:   token,
+	}
 }
 
-func (h *DeliveryHandler) Estimate(c *gin.Context) {
-	userID, ok := h.authCtx.GetAuthenticatedUserID(c)
-	if !ok {
+// CreateShipment godoc
+// @Summary Create shipment in Delhivery
+// @Description Creates an order shipment and returns waybill + tracking URL
+// @Tags Shipment
+// @Accept json
+// @Produce json
+// @Param shipment body requests.Shipment true "Shipment Request"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Router /shipment [post]
+func (h *ShipmentHandler) CreateShipment(c *gin.Context) {
+	var shipmentReq requests.DelhiveryShipmentRequest
+	if err := c.ShouldBindJSON(&shipmentReq); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid shipment payload"})
 		return
 	}
 
-	var req requests.EstimateShippingRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid request: " + err.Error()})
-		return
-	}
+	// Prepare payload: Delhivery expects format=json&data=<json> (x-www-form-urlencoded)
+	payload := requests.NewCreateShipmentPayload(shipmentReq)
+	dataJSON, _ := json.Marshal(payload.Data)
 
-	est, err := h.service.Estimate(c.Request.Context(), userID, req)
+	form := url.Values{}
+	form.Set("format", "json")
+	form.Set("data", string(dataJSON))
+
+	// Send request to Delhivery
+	apiURL := fmt.Sprintf("%s/api/cmu/create.json", h.DelhiveryBaseURL)
+	req, _ := http.NewRequest("POST", apiURL, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Token "+h.DelhiveryToken)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		h.logger.Error("delivery estimate failed", zap.Error(err), zap.String("user_id", userID))
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to estimate delivery"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to call Delhivery API"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Parse response
+	shipmentResp, err := responses.ParseShipmentResponse(body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse Delhivery response"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": est})
-}
-
-// TestShipmentCreation manually creates a Delhivery shipment for testing
-func (h *DeliveryHandler) TestShipmentCreation(c *gin.Context) {
-	userID, ok := h.authCtx.GetAuthenticatedUserID(c)
-	if !ok {
+	// Validate success
+	if !shipmentResp.IsSuccessful() {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "shipment creation failed",
+			"message": shipmentResp.GetErrorMessage(),
+		})
 		return
 	}
 
-	var req struct {
-		OrderID string `json:"order_id" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid request: " + err.Error()})
-		return
-	}
-
-	h.logger.Info("Manual Delhivery shipment test requested",
-		zap.String("user_id", userID),
-		zap.String("order_id", req.OrderID))
-
+	// Success → return waybill + tracking URL
 	c.JSON(http.StatusOK, gin.H{
-		"success":  true,
-		"message":  "Manual shipment creation is not yet implemented. Check server logs for Delhivery integration details.",
-		"order_id": req.OrderID,
-		"note":     "This endpoint is for debugging. The actual shipment creation happens during payment verification."})
+		"success":      true,
+		"waybill":      shipmentResp.GetWaybill(),
+		"status":       shipmentResp.GetStatus(),
+		"tracking_url": shipmentResp.GetTrackingURL(),
+	})
 }

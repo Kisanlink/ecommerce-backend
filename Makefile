@@ -1,6 +1,6 @@
 # Ecommerce Backend Makefile
 
-.PHONY: help build run test clean migrate migrate-status migrate-drop
+.PHONY: help build run test clean migrate migrate-status migrate-drop docs docs-serve
 
 # Default target
 help:
@@ -12,6 +12,8 @@ help:
 	@echo "  migrate        - Run database migrations"
 	@echo "  migrate-status - Check migration status"
 	@echo "  migrate-drop   - Drop all tables (⚠️  DESTRUCTIVE)"
+	@echo "  docs           - Generate Swagger documentation"
+	@echo "  docs-serve     - Generate docs and start server"
 	@echo "  help           - Show this help message"
 
 # Build the application
@@ -75,3 +77,15 @@ db-setup: migrate
 # Full development setup
 dev-setup: deps db-setup
 	@echo "✅ Development environment setup completed!"
+
+# Swagger documentation targets
+
+# Generate Swagger documentation
+docs:
+	@echo "📚 Generating Swagger documentation..."
+	swag init -g cmd/server/main.go -o docs/
+	@echo "✅ Documentation generated successfully!"
+
+# Generate docs and start server
+docs-serve: docs run
+	@echo "🚀 Server started with documentation at http://localhost:8080/docs"

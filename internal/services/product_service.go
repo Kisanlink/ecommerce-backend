@@ -57,12 +57,19 @@ func (s *ProductService) initializeIDGenerator() {
 
 // CreateProduct creates a new product
 func (s *ProductService) CreateProduct(ctx context.Context, req *requests.CreateProductRequest) (*base.BaseResponse, error) {
+	// Get effective images from request
+	imageUrls := req.GetEffectiveImages()
+	primaryImage := ""
+	if len(imageUrls) > 0 {
+		primaryImage = imageUrls[0]
+	}
+
 	// Create product model
 	product := models.NewProduct(
 		req.Name,
 		req.Description,
 		req.Category,
-		req.ImageURL,
+		primaryImage, // Use first image as primary
 		req.Price,
 		req.ActualPrice,
 		req.Stock,
@@ -70,6 +77,9 @@ func (s *ProductService) CreateProduct(ctx context.Context, req *requests.Create
 		req.DiscountPercent,
 		req.Rating,
 	)
+
+	// Set all images using the new method
+	product.SetImages(imageUrls)
 
 	// Set created by from request context
 	product.SetCreatedBy(req.GetUserID())
@@ -174,17 +184,27 @@ func (s *ProductService) UpdateProduct(ctx context.Context, req *requests.Update
 			base.NewNotFoundError("Product", req.ID)), nil
 	}
 
-	// Update fields
+	// Update basic fields
 	existing.Name = req.Name
 	existing.Description = req.Description
 	existing.Category = req.Category
 	existing.Price = req.Price
 	existing.ActualPrice = req.ActualPrice
 	existing.DiscountPercent = req.DiscountPercent
-	existing.ImageURL = req.ImageURL
 	existing.Stock = req.Stock
 	existing.ReviewCount = req.ReviewCount
 	existing.Rating = req.Rating
+
+	// Handle image updates
+	imageUrls := req.GetEffectiveImages()
+	existing.SetImages(imageUrls)
+	
+	// Update primary ImageURL for backward compatibility
+	if len(imageUrls) > 0 {
+		existing.ImageURL = imageUrls[0]
+	} else {
+		existing.ImageURL = ""
+	}
 
 	// Update stock status based on stock
 	if existing.Stock <= 0 {

@@ -10,56 +10,51 @@ import (
 )
 
 // RegisterDeliveryRoutes registers all delivery related routes
-func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
-	// Initialize logger and handler with service
-	logger, _ := zap.NewProduction()
-	deliveryService := services.NewDeliveryService(repoManager, logger)
-	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, logger)
+func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
+	// Validate inputs
+	if r == nil || repoManager == nil || serviceManager == nil {
+		if logger != nil {
+			logger.Error("Invalid parameters for delivery routes registration")
+		}
+		return
+	}
 
-	// Delivery routes (requires authentication)
+	// Initialize logger if not provided
+	if logger == nil {
+		logger, _ = zap.NewProduction()
+	}
+
+	// Validate required services
+	if serviceManager.OrderService == nil {
+		logger.Error("OrderService is required for delivery routes but not available")
+		return
+	}
+
+	// Initialize services and handler
+	deliveryService := services.NewDeliveryService(repoManager, logger)
+	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, serviceManager.OrderService, logger)
+
+	// All delivery routes require authentication
 	delivery := r.Group("/delivery")
 	delivery.Use(middleware.FirebaseAuthMiddleware())
 	{
+		// Serviceability check (authenticated)
+		delivery.GET("/serviceability/:pincode", deliveryHandler.CheckServiceability)
+		
+		// Shipping estimation
 		delivery.POST("/estimate", deliveryHandler.Estimate)
-		delivery.POST("/test-shipment", deliveryHandler.TestShipmentCreation) // Debug endpoint
+		delivery.GET("/estimate/last", deliveryHandler.GetLastEstimate)
+
+		// Tracking by waybill (authenticated)
+		delivery.GET("/track/:waybill", deliveryHandler.GetTrackingInfo)
+
+		// Order shipment operations
+		orders := delivery.Group("/orders/:id")
+		{
+			orders.POST("/shipment", deliveryHandler.CreateOrderShipment)
+			orders.GET("/shipment", deliveryHandler.GetOrderShipment)
+		}
 	}
 
-	// Future route groups (commented until handlers are implemented)
-	/*
-		// Delivery address management
-		addresses := delivery.Group("/addresses")
-		{
-			addresses.GET("", deliveryHandler.GetDeliveryAddresses)               // Get user's delivery addresses
-			addresses.POST("", deliveryHandler.AddDeliveryAddress)                // Add new delivery address
-			addresses.PUT("/:addressId", deliveryHandler.UpdateDeliveryAddress)   // Update delivery address
-			addresses.DELETE("/:addressId", deliveryHandler.DeleteDeliveryAddress) // Delete delivery address
-			addresses.PUT("/:addressId/default", deliveryHandler.SetDefaultAddress) // Set default delivery address
-			addresses.POST("/:addressId/validate", deliveryHandler.ValidateAddress) // Validate delivery address
-		}
-
-		// Delivery zones and availability
-		zones := r.Group("/delivery-zones")
-		{
-			zones.GET("", deliveryHandler.GetDeliveryZones)                       // Get available delivery zones
-			zones.POST("/check", deliveryHandler.CheckDeliveryAvailability)       // Check if delivery available in area
-			zones.GET("/:zoneId/rates", deliveryHandler.GetDeliveryRates)         // Get delivery rates for zone
-		}
-
-		// Delivery partners/drivers (admin functionality)
-		partners := r.Group("/admin/delivery")
-		partners.Use(middleware.FirebaseAuthMiddleware()) // Add admin middleware later
-		{
-			partners.GET("/drivers", deliveryHandler.GetDeliveryDrivers)          // Get delivery drivers
-			partners.POST("/assign", deliveryHandler.AssignDelivery)              // Assign delivery to driver
-			partners.GET("/stats", deliveryHandler.GetDeliveryStats)              // Get delivery statistics
-			partners.PUT("/:deliveryId/status", deliveryHandler.UpdateDeliveryStatus) // Update delivery status
-		}
-
-		// Delivery feedback and ratings
-		feedback := delivery.Group("/:deliveryId/feedback")
-		{
-			feedback.POST("", deliveryHandler.SubmitDeliveryFeedback)             // Submit delivery feedback
-			feedback.GET("", deliveryHandler.GetDeliveryFeedback)                 // Get delivery feedback
-		}
-	*/
+	logger.Info("Delivery routes registered successfully")
 }
