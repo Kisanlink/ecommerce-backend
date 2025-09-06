@@ -46,8 +46,8 @@ type CreateOrderRequest struct {
 	ShippingAddressID string  `json:"shipping_address_id,omitempty"` // Optional: if using saved addresses
 	ShippingAddress   string  `json:"shipping_address,omitempty"`    // Optional: if providing new address
 	Currency          string  `json:"currency,omitempty"`            // Ignored (hardcoded to INR)
-	Subtotal          float64 `json:"subtotal,omitempty"`            // Ignored if cached estimate available
-	FirstName         string  `json:"first_name"`                    // Required
+	Subtotal          float64 `json:"subtotal,omitempty"`
+	FirstName         string  `json:"first_name"` // Required
 	LastName          string  `json:"last_name,omitempty"`
 	Mobile            string  `json:"mobile"` // Required (primary)
 	MobileSecondary   string  `json:"mobile_secondary,omitempty"`
@@ -222,45 +222,29 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		}
 	}
 
-	// Always use INR currency and prefer last delivery estimate for address and totals
+	// Always use INR currency - require address_id to be provided
 	useCurrency := "INR" // Always INR for all transactions
 	shippingAddress := ""
+	var shippingAddressID string = ""
 	finalAmount := 0.0
 	shippingCharges := 0.0
 
-	// First priority: Use cached estimate from shipping estimation if available
-	if h.deliveryService != nil {
-		if last, err := h.deliveryService.GetLastEstimate(c.Request.Context(), userID); err == nil && last != nil {
-			shippingAddress = last.ShippingAddress
-			shippingCharges = last.ShippingCharges
-			finalAmount = last.Total // This includes subtotal + shipping
-			// Currency is always INR from estimate, but force it anyway
-			useCurrency = "INR"
-
-			h.logger.Info("Using cached delivery estimate",
-				zap.String("user_id", userID),
-				zap.String("cached_address", shippingAddress),
-				zap.Float64("cached_total", finalAmount),
-				zap.Float64("cached_shipping", shippingCharges))
-		}
+	// Require address_id to be provided - no caching
+	if req.ShippingAddressID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "shipping_address_id is required"})
+		return
 	}
 
-	// Fallback to provided address or address ID if cache not present
-	if shippingAddress == "" {
-		if req.ShippingAddressID != "" {
-			if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
-				shippingAddress = h.orderService.FormatAddress(addr)
-			} else {
-				h.logger.Error("Invalid shipping_address_id", zap.String("user_id", userID), zap.String("addr_id", req.ShippingAddressID), zap.Error(err))
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid shipping_address_id"})
-				return
-			}
-		} else if req.ShippingAddress != "" {
-			shippingAddress = req.ShippingAddress
-		}
-	}
-	if shippingAddress == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Shipping address is required"})
+	shippingAddressID = req.ShippingAddressID
+	if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
+		shippingAddress = h.orderService.FormatAddress(addr)
+		h.logger.Info("Using provided address_id",
+			zap.String("user_id", userID),
+			zap.String("provided_address_id", shippingAddressID),
+			zap.String("address", shippingAddress))
+	} else {
+		h.logger.Error("Invalid shipping_address_id", zap.String("user_id", userID), zap.String("addr_id", req.ShippingAddressID), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid shipping_address_id"})
 		return
 	}
 
@@ -282,7 +266,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Step 2: Calculate totals - prefer cached estimate, fallback to dynamic calculation
+	// Step 2: Calculate totals dynamically from cart
 	cartTotal := 0.0
 	for _, item := range cart.Items {
 		cartTotal += item.TotalPrice
@@ -291,9 +275,9 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	// Force INR currency always
 	req.Currency = useCurrency // Always "INR"
 
-	// Use cached estimate totals if available, otherwise calculate dynamically
-	if finalAmount <= 0 {
-		// No cached estimate available - calculate from request or fallback
+	// Calculate totals from cart
+	if finalAmount <= 0 || (req.Subtotal > 0) {
+		// Calculate from provided subtotal or get dynamic shipping charges
 		subtotal := req.Subtotal
 		if subtotal > 0 {
 			shippingCharges = subtotal - cartTotal
@@ -304,7 +288,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		} else {
 			// Get shipping charges dynamically from delivery service API
 			if h.deliveryService != nil {
-				// Try to get real shipping charges from API
+				// Try to get real shipping charges from API using the address
 				if dynamicCharges, err := h.calculateShippingFromAddress(c.Request.Context(), userID, shippingAddress, cartTotal, len(cart.Items)); err == nil {
 					shippingCharges = dynamicCharges
 				} else {
@@ -318,7 +302,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			finalAmount = cartTotal + shippingCharges
 		}
 
-		h.logger.Info("Using dynamic calculation (no cached estimate)",
+		h.logger.Info("Calculated shipping charges",
 			zap.String("user_id", userID),
 			zap.Float64("cart_total", cartTotal),
 			zap.Float64("calculated_shipping", shippingCharges),
@@ -349,7 +333,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	notes := map[string]interface{}{
 		"user_id":             userID,
 		"shipping_address":    shippingAddress,
-		"shipping_address_id": req.ShippingAddressID,
+		"shipping_address_id": shippingAddressID, // Use resolved address ID
 		"cart_total":          cartTotal,
 		"shipping_charges":    shippingCharges,
 		"subtotal":            finalAmount, // Total including shipping
@@ -622,6 +606,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			// Ensure shipping address stored
 			if order.ShippingAddr == "" {
 				order.ShippingAddr = shippingAddress
+			}
+			// Store shipping address ID for structured data access
+			if shippingAddressID != "" {
+				order.ShippingAddrID = shippingAddressID
 			}
 			// Persist customer checkout identity for shipment label
 			if firstName != "" {

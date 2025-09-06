@@ -24,7 +24,6 @@ import (
 type DeliveryServiceInterface interface {
 	Estimate(ctx context.Context, userID string, req requests.EstimateShippingRequest) (*models.DeliveryEstimate, error)
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
-	GetLastEstimate(ctx context.Context, userID string) (*LastEstimate, error)
 	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error)
 	GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error)
 }
@@ -64,51 +63,6 @@ func NewDeliveryService(repoManager *repositories.RepositoryManager, logger *zap
 		config: config.GetDelhiveryConfig(),
 		logger: logger,
 	}
-}
-
-// LastEstimate represents a cached delivery estimate summary for reuse in payment
-type LastEstimate struct {
-	ShippingAddress string  `json:"shipping_address"`
-	ShippingCharges float64 `json:"shipping_charges"`
-	Subtotal        float64 `json:"subtotal"`
-	Total           float64 `json:"total"`
-	Currency        string  `json:"currency"`
-	EtaMinDays      int     `json:"eta_min_days"`
-	EtaMaxDays      int     `json:"eta_max_days"`
-	Pincode         string  `json:"pincode"`
-	Timestamp       int64   `json:"ts"`
-}
-
-func (s *DeliveryService) estimateCacheKey(userID string) string {
-	return fmt.Sprintf("user:%s:last_estimate", userID)
-}
-
-func (s *DeliveryService) saveLastEstimate(ctx context.Context, userID string, est *LastEstimate) {
-	if s.repoManager == nil || s.repoManager.RedisManager == nil || est == nil {
-		return
-	}
-	b, err := json.Marshal(est)
-	if err != nil {
-		s.logger.Warn("Failed to marshal last estimate for cache", zap.Error(err))
-		return
-	}
-	_ = s.repoManager.RedisManager.Set(s.estimateCacheKey(userID), string(b), 30*time.Minute)
-}
-
-// GetLastEstimate retrieves the cached estimate for a user if available
-func (s *DeliveryService) GetLastEstimate(ctx context.Context, userID string) (*LastEstimate, error) {
-	if s.repoManager == nil || s.repoManager.RedisManager == nil {
-		return nil, fmt.Errorf("estimate cache unavailable")
-	}
-	val, err := s.repoManager.RedisManager.Get(s.estimateCacheKey(userID))
-	if err != nil || val == "" {
-		return nil, fmt.Errorf("no cached estimate")
-	}
-	var est LastEstimate
-	if e := json.Unmarshal([]byte(val), &est); e != nil {
-		return nil, e
-	}
-	return &est, nil
 }
 
 // CheckServiceability checks if delivery is available to the given pincode
@@ -390,41 +344,50 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 	}
 
 	result := &models.DeliveryEstimate{
-		UserID:   userID,
-		Subtotal: cart.TotalPrice,
-		Options:  options,
+		UserID:    userID,
+		AddressID: "", // Will be set below if address is saved successfully
+		Subtotal:  cart.TotalPrice,
+		Options:   options,
 	}
 
-	// Build address string for caching
-	parts := []string{}
-	if s := strings.TrimSpace(req.Address.Street); s != "" {
-		parts = append(parts, s)
-	}
-	cityState := strings.TrimSpace(strings.TrimSpace(req.Address.City) + ", " + strings.TrimSpace(req.Address.State))
-	cityState = strings.Trim(cityState, ", ")
-	if cityState != "" {
-		parts = append(parts, cityState)
-	}
-	if p := strings.TrimSpace(req.Address.PostalCode); p != "" {
-		parts = append(parts, p)
-	}
-	if c := strings.TrimSpace(req.Address.Country); c != "" {
-		parts = append(parts, c)
-	}
-	addressStr := strings.Join(parts, ", ")
+	// Store or find the address in the database and return address_id
+	var addressID string
 
-	cached := &LastEstimate{
-		ShippingAddress: addressStr,
-		ShippingCharges: surfaceCharges,
-		Subtotal:        cart.TotalPrice,
-		Total:           cart.TotalPrice + surfaceCharges,
-		Currency:        "INR",
-		EtaMinDays:      deliveryDays,
-		EtaMaxDays:      deliveryDays + 2,
-		Pincode:         pincode,
-		Timestamp:       time.Now().Unix(),
+	if s.repoManager != nil && s.repoManager.AddressRepository != nil {
+		s.logger.Info("Attempting to save address during estimation",
+			zap.String("user_id", userID),
+			zap.String("street", strings.TrimSpace(req.Address.Street)),
+			zap.String("city", strings.TrimSpace(req.Address.City)),
+			zap.String("state", strings.TrimSpace(req.Address.State)),
+			zap.String("postal_code", strings.TrimSpace(req.Address.PostalCode)),
+			zap.String("country", strings.TrimSpace(req.Address.Country)))
+
+		// Save the address to database (or find existing one)
+		savedAddress, addrErr := s.repoManager.AddressRepository.FindOrCreateAddress(
+			ctx, userID,
+			strings.TrimSpace(req.Address.Street),
+			strings.TrimSpace(req.Address.City),
+			strings.TrimSpace(req.Address.State),
+			strings.TrimSpace(req.Address.PostalCode),
+			strings.TrimSpace(req.Address.Country),
+		)
+
+		if addrErr != nil {
+			s.logger.Error("Failed to save address during estimation", zap.Error(addrErr), zap.String("user_id", userID))
+			// Don't fail the estimation, but log the error
+		} else {
+			addressID = savedAddress.ID
+			result.AddressID = addressID // Include in response for frontend
+			s.logger.Info("Address saved during shipping estimation",
+				zap.String("user_id", userID),
+				zap.String("address_id", addressID),
+				zap.String("city", savedAddress.City),
+				zap.String("pincode", savedAddress.PostalCode))
+		}
+	} else {
+		s.logger.Warn("Address repository not available, cannot save address during estimation",
+			zap.String("user_id", userID))
 	}
-	s.saveLastEstimate(ctx, userID, cached)
 
 	return result, nil
 }
@@ -438,13 +401,50 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		}, fmt.Errorf("order cannot be nil")
 	}
 
-	pincode := s.extractPincode(order.ShippingAddr)
-	if pincode == "" {
-		return &ShipmentResult{
-			Success: false,
-			Message: "Could not extract valid pincode from shipping address",
-		}, fmt.Errorf("could not extract pincode from shipping address")
+	var pincode, destCity, destState string
+
+	// Try to use structured address data first (preferred method)
+	if order.ShippingAddrID != "" && s.repoManager != nil && s.repoManager.AddressRepository != nil {
+		addr, addrErr := s.repoManager.AddressRepository.GetAddressByID(ctx, order.UserID, order.ShippingAddrID)
+		if addrErr == nil && addr != nil {
+			pincode = addr.PostalCode
+			destCity = addr.City
+			destState = addr.State
+			s.logger.Info("Using structured address data for shipment",
+				zap.String("order_id", order.ID),
+				zap.String("address_id", order.ShippingAddrID),
+				zap.String("city", destCity),
+				zap.String("state", destState),
+				zap.String("pincode", pincode))
+		} else {
+			s.logger.Warn("Failed to fetch structured address, falling back to string parsing",
+				zap.String("order_id", order.ID),
+				zap.String("address_id", order.ShippingAddrID),
+				zap.Error(addrErr))
+		}
 	}
+
+	// Fallback to parsing address string if structured data not available
+	if pincode == "" {
+		pincode = s.extractPincode(order.ShippingAddr)
+		if pincode == "" {
+			return &ShipmentResult{
+				Success: false,
+				Message: "Could not extract valid pincode from shipping address",
+			}, fmt.Errorf("could not extract pincode from shipping address")
+		}
+
+		// Get city and state from API (only needed for fallback)
+		var err error
+		destCity, destState, err = s.getPincodeInfo(ctx, pincode)
+		if err != nil {
+			return &ShipmentResult{
+				Success: false,
+				Message: "Could not get city/state information for pincode",
+			}, fmt.Errorf("could not get city/state for pincode: %w", err)
+		}
+	}
+
 	// Use only order-level customer fields (no fallbacks)
 	custName := strings.TrimSpace(strings.TrimSpace(order.CustomerFirstName + " " + order.CustomerLastName))
 	custPhone := strings.TrimSpace(order.CustomerPhone)
@@ -466,15 +466,6 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		} else {
 			return &ShipmentResult{Success: false, Message: "Customer phone must contain at least 10 digits"}, fmt.Errorf("invalid customer phone")
 		}
-	}
-
-	// Get city and state from API
-	destCity, destState, err := s.getPincodeInfo(ctx, pincode)
-	if err != nil {
-		return &ShipmentResult{
-			Success: false,
-			Message: "Could not get city/state information for pincode",
-		}, fmt.Errorf("could not get city/state for pincode: %w", err)
 	}
 
 	// Build products description

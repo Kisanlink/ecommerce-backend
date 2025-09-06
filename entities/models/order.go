@@ -22,14 +22,15 @@ type Order struct {
 	TotalAmount     float64     `json:"total_amount" gorm:"not null"`
 	Status          OrderStatus `json:"status" gorm:"default:'pending'"`
 	ShippingAddr    string      `json:"shipping_address"`
+	ShippingAddrID  string      `json:"shipping_address_id" gorm:"index"` // Reference to addresses table
 	// Customer contact captured at checkout (used for shipping label)
 	CustomerFirstName string `json:"customer_first_name"`
 	CustomerLastName  string `json:"customer_last_name"`
 	CustomerPhone     string `json:"customer_phone"`
 	CustomerPhoneAlt  string `json:"customer_phone_alt"`
-	PaymentMethod   string      `json:"payment_method"`
-	PaymentStatus   string      `json:"payment_status" gorm:"default:'pending'"`
-	Notes           string      `json:"notes"`
+	PaymentMethod     string `json:"payment_method"`
+	PaymentStatus     string `json:"payment_status" gorm:"default:'pending'"`
+	Notes             string `json:"notes"`
 	// Payment metadata (Razorpay)
 	RazorpayOrderID     string `json:"razorpay_order_id" gorm:"index"`
 	RazorpayReceipt     string `json:"razorpay_receipt"`
