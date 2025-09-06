@@ -19,6 +19,7 @@ type OrderServiceInterface interface {
 	CreateOrderFromCartWithShipping(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64) (*models.Order, error)
 	GetUserCart(ctx context.Context, userID string) (*models.Cart, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
+	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetUserOrders(ctx context.Context, userID string) ([]*models.Order, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
 	UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error
@@ -29,6 +30,9 @@ type OrderServiceInterface interface {
 	ClearUserCart(ctx context.Context, userID string) error
 	UpdateOrder(ctx context.Context, order *models.Order) error
 	GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error)
+	// Transaction-based methods for payment verification
+	CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error)
+	UpdateOrderWithShipmentAtomic(ctx context.Context, orderID string, waybill string, trackingURL string, delhiveryStatus string) error
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
@@ -57,6 +61,9 @@ func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartSe
 
 	// Initialize order ID counter from existing database records
 	service.initializeOrderIDCounter()
+
+	// Initialize order item ID counter from existing database records
+	service.initializeOrderItemIDGenerator()
 
 	return service
 }
@@ -96,6 +103,40 @@ func (s *OrderService) initializeOrderIDCounter() {
 	}
 
 	s.logger.Info("Order ID counter initialized")
+}
+
+// initializeOrderItemIDGenerator initializes the order item ID generator from existing database records
+func (s *OrderService) initializeOrderItemIDGenerator() {
+	ctx := context.Background()
+	s.logger.Info("Initializing order item ID generator")
+
+	// Query all existing order item IDs to prevent conflicts
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{},
+			Logic:      base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	var orderItems []*models.OrderItem
+	if err := s.orderRepo.GetOrderItems(ctx, filter, &orderItems); err != nil {
+		s.logger.Error("Failed to get existing order items for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("OITM", []string{}, hash.Large)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, 0, len(orderItems))
+		for _, item := range orderItems {
+			if item != nil && item.GetID() != "" {
+				existingIDs = append(existingIDs, item.GetID())
+			}
+		}
+		s.logger.Info("Found existing order item IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("OITM", existingIDs, hash.Large)
+	}
+	s.logger.Info("Order item ID generator initialized")
 }
 
 // GetUserCart retrieves the user's cart via cart service
@@ -530,4 +571,66 @@ func (s *OrderService) ConfirmOrderPayment(ctx context.Context, razorpayOrderID,
 	// 4. Clearing the user's cart
 
 	return nil
+}
+
+// GetOrderByRazorpayOrderID retrieves an order by Razorpay order ID
+func (s *OrderService) GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.GetOrderByRazorpayOrderID(ctx, razorpayOrderID)
+}
+
+// CreateOrderFromCartWithShippingAtomic creates an order from cart with shipping charges atomically
+// This method ensures that duplicate orders cannot be created for the same Razorpay order ID
+func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+
+	// First check if order already exists for this Razorpay order ID to prevent duplicates
+	if existingOrder, _ := s.GetOrderByRazorpayOrderID(ctx, razorpayOrderID); existingOrder != nil {
+		return nil, fmt.Errorf("order already exists for razorpay order ID: %s", razorpayOrderID)
+	}
+
+	// Get user's cart
+	cart, err := s.GetUserCart(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
+	}
+
+	if len(cart.Items) == 0 {
+		return nil, fmt.Errorf("cart is empty")
+	}
+
+	// Calculate total amount from cart items + shipping
+	totalAmount := cart.TotalPrice + shippingCharges
+
+	// Create order
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
+	order.ShippingCharge = shippingCharges
+	order.RazorpayOrderID = razorpayOrderID
+
+	// Create order with transaction safety
+	if err := s.orderRepo.CreateOrderAtomic(ctx, order, cart.Items); err != nil {
+		return nil, fmt.Errorf("failed to create order atomically: %w", err)
+	}
+
+	s.logger.Info("Order created atomically",
+		zap.String("order_id", order.ID),
+		zap.String("user_id", userID),
+		zap.String("razorpay_order_id", razorpayOrderID),
+		zap.Float64("total_amount", totalAmount),
+		zap.Float64("shipping_charges", shippingCharges))
+
+	return order, nil
+}
+
+// UpdateOrderWithShipmentAtomic updates order with shipment details atomically
+func (s *OrderService) UpdateOrderWithShipmentAtomic(ctx context.Context, orderID string, waybill string, trackingURL string, delhiveryStatus string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+
+	return s.orderRepo.UpdateOrderShipmentAtomic(ctx, orderID, waybill, trackingURL, delhiveryStatus)
 }

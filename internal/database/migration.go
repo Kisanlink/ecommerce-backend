@@ -50,11 +50,11 @@ func (m *Migration) RunMigrations() error {
 // migrateModel runs auto migration for a single model
 func (m *Migration) migrateModel(model interface{}) error {
 	log.Printf("Migrating model: %T", model)
-	
+
 	if err := m.db.AutoMigrate(model); err != nil {
 		return fmt.Errorf("auto migration failed for %T: %w", model, err)
 	}
-	
+
 	log.Printf("Successfully migrated model: %T", model)
 	return nil
 }
@@ -64,7 +64,7 @@ func RunMigrationsWithDB() error {
 	if DB == nil {
 		return fmt.Errorf("database connection not established")
 	}
-	
+
 	migration := NewMigration(DB)
 	return migration.RunMigrations()
 }
@@ -72,7 +72,7 @@ func RunMigrationsWithDB() error {
 // DropAllTables drops all tables (use with caution - only for development/testing)
 func (m *Migration) DropAllTables() error {
 	log.Println("Warning: Dropping all tables...")
-	
+
 	// List of all models to drop
 	modelsToDrop := []interface{}{
 		&models.OrderItem{},
@@ -104,7 +104,7 @@ func DropAllTablesWithDB() error {
 	if DB == nil {
 		return fmt.Errorf("database connection not established")
 	}
-	
+
 	migration := NewMigration(DB)
 	return migration.DropAllTables()
 }
@@ -112,7 +112,7 @@ func DropAllTablesWithDB() error {
 // GetMigrationStatus returns the current migration status
 func (m *Migration) GetMigrationStatus() (map[string]bool, error) {
 	status := make(map[string]bool)
-	
+
 	// Check if each table exists
 	modelsToCheck := []interface{}{
 		&models.User{},
@@ -141,7 +141,7 @@ func GetMigrationStatusWithDB() (map[string]bool, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("database connection not established")
 	}
-	
+
 	migration := NewMigration(DB)
 	return migration.GetMigrationStatus()
 }

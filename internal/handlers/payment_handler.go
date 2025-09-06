@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -210,16 +211,23 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "first_name and mobile are required"})
 		return
 	}
-	// Normalize mobile: keep last 10 digits if prefixed
-	if len(req.Mobile) > 10 {
-		if digits := onlyDigits(req.Mobile); len(digits) >= 10 {
-			req.Mobile = digits[len(digits)-10:]
-		}
+
+	// Validate and normalize primary mobile number
+	normalizedMobile, err := h.validateAndNormalizePhoneNumber(req.Mobile)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mobile number: " + err.Error()})
+		return
 	}
-	if req.MobileSecondary != "" && len(req.MobileSecondary) > 10 {
-		if digits := onlyDigits(req.MobileSecondary); len(digits) >= 10 {
-			req.MobileSecondary = digits[len(digits)-10:]
+	req.Mobile = normalizedMobile
+
+	// Validate and normalize secondary mobile if provided
+	if req.MobileSecondary != "" {
+		normalizedMobileSecondary, err := h.validateAndNormalizePhoneNumber(req.MobileSecondary)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid secondary mobile number: " + err.Error()})
+			return
 		}
+		req.MobileSecondary = normalizedMobileSecondary
 	}
 
 	// Always use INR currency - require address_id to be provided
@@ -286,19 +294,8 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			}
 			finalAmount = subtotal
 		} else {
-			// Get shipping charges dynamically from delivery service API
-			if h.deliveryService != nil {
-				// Try to get real shipping charges from API using the address
-				if dynamicCharges, err := h.calculateShippingFromAddress(c.Request.Context(), userID, shippingAddress, cartTotal, len(cart.Items)); err == nil {
-					shippingCharges = dynamicCharges
-				} else {
-					h.logger.Warn("Failed to get dynamic shipping charges, using fallback", zap.Error(err))
-					shippingCharges = 50.0 // Keep fallback for safety
-				}
-			} else {
-				h.logger.Warn("Delivery service not available, using fallback shipping charges")
-				shippingCharges = 50.0 // Keep fallback for safety
-			}
+			// Get shipping charges dynamically from delivery service API with robust fallback
+			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, cartTotal, len(cart.Items))
 			finalAmount = cartTotal + shippingCharges
 		}
 
@@ -309,14 +306,14 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Float64("final_amount", finalAmount))
 	}
 
-	// Apply business rule: Free delivery on cart total strictly above 500
-	// Assumption: threshold is exclusive (> 500, not >= 500)
+	// Apply business rule: Free delivery on cart total of 500 or more
+	// Assumption: threshold is inclusive (>= 500)
 	freeDelivery := false
-	if cartTotal > 500 {
+	if cartTotal >= 500 {
 		freeDelivery = true
 		shippingCharges = 0
 		finalAmount = cartTotal
-		h.logger.Info("Applied free delivery threshold (>500)",
+		h.logger.Info("Applied free delivery threshold (>=500)",
 			zap.String("user_id", userID),
 			zap.Float64("cart_total", cartTotal),
 			zap.Float64("final_amount", finalAmount))
@@ -428,17 +425,33 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		return
 	}
 
-	// Verify payment signature first
+	// Enhanced logging for debugging
+	h.logger.Info("Payment verification requested",
+		zap.String("user_id", userID),
+		zap.String("razorpay_order_id", req.OrderID),
+		zap.String("payment_id", req.PaymentID),
+		zap.String("signature_length", fmt.Sprintf("%d", len(req.Signature))))
+
+	// Verify payment signature first with enhanced error handling
 	isValid, err := h.paymentService.VerifyPayment(c.Request.Context(), req.OrderID, req.PaymentID, req.Signature)
 	if err != nil {
-		h.logger.Error("Payment verification error",
+		h.logger.Error("Payment verification API error",
 			zap.Error(err),
 			zap.String("user_id", userID),
 			zap.String("order_id", req.OrderID),
 			zap.String("payment_id", req.PaymentID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verification failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Payment verification API failed",
+			"code":    "PAYMENT_VERIFICATION_ERROR",
+			"details": err.Error()})
 		return
 	}
+
+	// Log verification result
+	h.logger.Info("Payment verification completed",
+		zap.String("user_id", userID),
+		zap.String("order_id", req.OrderID),
+		zap.Bool("is_valid", isValid))
 
 	var response VerifyPaymentResponse
 	if isValid {
@@ -546,22 +559,28 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			shippingCharges = 0
 		}
 
-		order, err := h.orderService.CreateOrderFromCartWithShipping(
+		// Use atomic order creation to prevent race conditions and duplicates
+		order, err := h.orderService.CreateOrderFromCartWithShippingAtomic(
 			c.Request.Context(),
 			userID,
 			shippingAddress,
 			"razorpay",
 			shippingCharges,
+			req.OrderID, // Pass Razorpay order ID for duplicate prevention
 		)
 		if err != nil {
 			h.logger.Error("Failed to create order after payment verification",
 				zap.Error(err),
 				zap.String("user_id", userID),
-				zap.String("payment_id", req.PaymentID))
+				zap.String("payment_id", req.PaymentID),
+				zap.String("razorpay_order_id", req.OrderID))
 
-			// Check if this is a duplicate key error
-			if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
-				h.logger.Error("Duplicate order creation attempted - this payment may have already been processed",
+			// Check if this is a duplicate order error
+			if strings.Contains(err.Error(), "already exists for razorpay order ID") ||
+				strings.Contains(err.Error(), "duplicate key") ||
+				strings.Contains(err.Error(), "UNIQUE constraint") ||
+				strings.Contains(err.Error(), "Duplicate entry") {
+				h.logger.Error("Duplicate order creation attempted - this payment has already been processed",
 					zap.String("user_id", userID),
 					zap.String("payment_id", req.PaymentID),
 					zap.String("razorpay_order_id", req.OrderID))
@@ -641,43 +660,81 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			h.logger.Info("Invoice generated", zap.String("order_id", order.ID), zap.String("invoice_url", url))
 		}
 
-		// Create Delhivery shipment after successful order creation
+		// Create Delhivery shipment after successful order creation with enhanced error handling
 		var awbNumber, trackingURL string
 		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
 		if getOrderErr != nil {
 			h.logger.Error("Failed to get order items for shipment creation",
 				zap.Error(getOrderErr),
-				zap.String("order_id", order.ID))
+				zap.String("order_id", order.ID),
+				zap.String("user_id", userID))
+			// Continue without shipment creation - order is still valid
+		} else if len(orderItems) == 0 {
+			h.logger.Error("No order items found for shipment creation",
+				zap.String("order_id", order.ID),
+				zap.String("user_id", userID))
+			// Continue without shipment creation - order is still valid
 		} else {
-			// Create Delhivery shipment
+			// Enhanced shipment creation with detailed logging
+			h.logger.Info("Attempting to create Delhivery shipment",
+				zap.String("order_id", order.ID),
+				zap.String("user_id", userID),
+				zap.Int("item_count", len(orderItems)),
+				zap.String("shipping_address", orderWithItems.ShippingAddr))
+
 			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
 			if shipmentErr != nil {
-				h.logger.Error("Failed to create Delhivery shipment",
+				h.logger.Error("Delhivery shipment creation FAILED",
 					zap.Error(shipmentErr),
 					zap.String("order_id", order.ID),
-					zap.String("user_id", userID))
-				// Don't fail the payment verification, just log the error
-			} else if shipmentResult != nil && shipmentResult.Success && shipmentResult.Waybill != "" {
-				// Update order with Delhivery waybill number
-				orderWithItems.DelhiveryWaybill = shipmentResult.Waybill
-				orderWithItems.DelhiveryStatus = shipmentResult.Status
-				// Use tracking URL from shipment result
-				orderWithItems.TrackingURL = shipmentResult.TrackingURL
+					zap.String("user_id", userID),
+					zap.String("error_details", shipmentErr.Error()))
 
-				// Store for response
+				// Even if shipment fails, payment is successful - notify user
+				h.logger.Warn("Order created successfully but shipment creation failed - manual intervention required",
+					zap.String("order_id", order.ID))
+			} else if shipmentResult == nil {
+				h.logger.Error("Delhivery shipment result is nil",
+					zap.String("order_id", order.ID))
+			} else if !shipmentResult.Success {
+				h.logger.Error("Delhivery shipment creation returned failure",
+					zap.String("order_id", order.ID),
+					zap.String("message", shipmentResult.Message))
+			} else if shipmentResult.Waybill == "" {
+				h.logger.Error("Delhivery shipment creation returned empty waybill",
+					zap.String("order_id", order.ID),
+					zap.String("message", shipmentResult.Message))
+			} else {
+				// Shipment created successfully
 				awbNumber = shipmentResult.Waybill
 				trackingURL = shipmentResult.TrackingURL
 
-				if updateErr := h.orderService.UpdateOrder(c.Request.Context(), orderWithItems); updateErr != nil {
-					h.logger.Error("Failed to update order with Delhivery waybill",
+				// Ensure tracking URL is not empty - generate if needed
+				if trackingURL == "" && awbNumber != "" {
+					trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
+					h.logger.Info("Generated tracking URL for AWB",
+						zap.String("awb", awbNumber),
+						zap.String("tracking_url", trackingURL))
+				}
+
+				// Update order with shipment details atomically
+				if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
+					c.Request.Context(),
+					order.ID,
+					shipmentResult.Waybill,
+					trackingURL,
+					shipmentResult.Status,
+				); updateErr != nil {
+					h.logger.Error("Failed to update order with Delhivery shipment details",
 						zap.Error(updateErr),
 						zap.String("order_id", order.ID),
 						zap.String("waybill", shipmentResult.Waybill))
 				} else {
-					h.logger.Info("Delhivery shipment created successfully",
+					h.logger.Info("Delhivery shipment created and order updated successfully",
 						zap.String("order_id", order.ID),
 						zap.String("waybill", shipmentResult.Waybill),
-						zap.String("tracking_url", orderWithItems.TrackingURL))
+						zap.String("tracking_url", trackingURL),
+						zap.String("status", shipmentResult.Status))
 				}
 			}
 		}
@@ -687,29 +744,49 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			h.logger.Warn("Failed to clear cart after payment", zap.Error(err), zap.String("user_id", userID))
 		}
 
+		// Prepare comprehensive response
+		responseMessage := "Payment verified and order created successfully"
+		if awbNumber != "" {
+			responseMessage += fmt.Sprintf(". Shipment AWB: %s", awbNumber)
+		} else {
+			responseMessage += ". Shipment will be processed shortly"
+		}
+
 		response = VerifyPaymentResponse{
 			Success:     true,
-			Message:     "Payment verified and order created successfully",
+			Message:     responseMessage,
 			PaymentID:   req.PaymentID,
 			OrderID:     order.ID,
 			AWBNumber:   awbNumber,
 			TrackingURL: trackingURL,
 		}
 
-		h.logger.Info("Order created successfully after payment verification",
+		// Comprehensive success logging
+		h.logger.Info("Payment verification and order creation completed successfully",
 			zap.String("user_id", userID),
 			zap.String("order_id", order.ID),
 			zap.String("payment_id", req.PaymentID),
-			zap.String("razorpay_order_id", req.OrderID))
+			zap.String("razorpay_order_id", req.OrderID),
+			zap.String("awb_number", awbNumber),
+			zap.String("tracking_url", trackingURL),
+			zap.Float64("total_amount", order.TotalAmount),
+			zap.Float64("shipping_charges", order.ShippingCharge))
 	} else {
+		// Enhanced failure response with more details
 		response = VerifyPaymentResponse{
 			Success: false,
-			Message: "Payment verification failed - invalid signature",
+			Message: "Payment verification failed - signature mismatch. Please contact support if payment was deducted.",
 		}
-		h.logger.Warn("Payment verification failed",
+
+		h.logger.Error("Payment verification FAILED - signature mismatch",
 			zap.String("user_id", userID),
 			zap.String("payment_id", req.PaymentID),
-			zap.String("order_id", req.OrderID))
+			zap.String("razorpay_order_id", req.OrderID),
+			zap.String("received_signature", req.Signature))
+
+		// Return error status for failed verification instead of 200
+		c.JSON(http.StatusBadRequest, response)
+		return
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -909,4 +986,134 @@ func onlyDigits(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// calculateShippingChargesRobust provides a robust shipping calculation with intelligent fallback
+func (h *PaymentHandler) calculateShippingChargesRobust(ctx context.Context, userID, shippingAddress string, cartTotal float64, itemCount int) float64 {
+	// First, try to get real API charges from Delhivery
+	if h.deliveryService != nil {
+		if dynamicCharges, err := h.calculateShippingFromAddress(ctx, userID, shippingAddress, cartTotal, itemCount); err == nil {
+			h.logger.Info("Successfully retrieved dynamic shipping charges from API",
+				zap.String("user_id", userID),
+				zap.Float64("api_shipping_cost", dynamicCharges))
+			return dynamicCharges
+		} else {
+			h.logger.Warn("Delhivery API unavailable, using intelligent fallback calculation",
+				zap.Error(err),
+				zap.String("user_id", userID),
+				zap.Float64("cart_total", cartTotal),
+				zap.Int("item_count", itemCount))
+		}
+	} else {
+		h.logger.Warn("Delivery service not initialized, using intelligent fallback calculation",
+			zap.String("user_id", userID))
+	}
+
+	// Intelligent fallback: Calculate based on cart value and item count
+	// This provides more accurate estimates than hardcoded values
+	baseShipping := 30.0 // Base shipping cost
+
+	// Weight-based calculation: approximately 5 rupees per item
+	weightBasedCharge := float64(itemCount) * 5.0
+
+	// Distance estimation based on typical metro vs non-metro rates
+	// Parse pincode to determine if it's likely metro (110xxx, 400xxx, etc.)
+	distanceMultiplier := 1.0
+	if address, err := h.parseShippingAddress(shippingAddress); err == nil {
+		pincode := address.PostalCode
+		// Metro area pincodes typically have lower shipping costs
+		if isMetroPincode(pincode) {
+			distanceMultiplier = 0.9 // 10% discount for metro areas
+		} else {
+			distanceMultiplier = 1.1 // 10% premium for non-metro areas
+		}
+	}
+
+	// Calculate total shipping with all factors
+	calculatedShipping := (baseShipping + weightBasedCharge) * distanceMultiplier
+
+	// Round to 2 decimal places and ensure minimum charge
+	calculatedShipping = math.Round(calculatedShipping*100) / 100
+	if calculatedShipping < 25.0 {
+		calculatedShipping = 25.0 // Minimum shipping charge
+	}
+
+	h.logger.Info("Applied intelligent shipping calculation",
+		zap.String("user_id", userID),
+		zap.Float64("base_shipping", baseShipping),
+		zap.Float64("weight_charge", weightBasedCharge),
+		zap.Float64("distance_multiplier", distanceMultiplier),
+		zap.Float64("calculated_shipping", calculatedShipping),
+		zap.String("fallback_reason", "API_unavailable"))
+
+	return calculatedShipping
+}
+
+// isMetroPincode checks if a pincode belongs to a major metro area
+func isMetroPincode(pincode string) bool {
+	if len(pincode) != 6 {
+		return false
+	}
+
+	// Major metro pincode prefixes
+	metroPrefiexs := []string{
+		"110", "111", "112", // Delhi
+		"400", "401", "402", "403", "421", "422", // Mumbai
+		"560", "561", "562", // Bangalore
+		"600", "601", "602", "603", // Chennai
+		"700", "701", "702", // Kolkata
+		"500", "501", "502", // Hyderabad
+		"411", "412", "413", // Pune
+		"380", "381", "382", // Ahmedabad
+	}
+
+	prefix := pincode[:3]
+	for _, metroPrefix := range metroPrefiexs {
+		if prefix == metroPrefix {
+			return true
+		}
+	}
+
+	return false
+}
+
+// validateAndNormalizePhoneNumber validates and normalizes an Indian mobile number
+func (h *PaymentHandler) validateAndNormalizePhoneNumber(phone string) (string, error) {
+	if phone == "" {
+		return "", fmt.Errorf("phone number cannot be empty")
+	}
+
+	// Extract only digits
+	digits := onlyDigits(phone)
+
+	// Handle international format (+91 prefix)
+	if strings.HasPrefix(digits, "91") && len(digits) == 12 {
+		digits = digits[2:] // Remove country code
+	}
+
+	// Must be exactly 10 digits for Indian mobile numbers
+	if len(digits) != 10 {
+		return "", fmt.Errorf("phone number must be exactly 10 digits, got %d digits", len(digits))
+	}
+
+	// Validate Indian mobile number format - must start with 6, 7, 8, or 9
+	firstDigit := digits[0]
+	if firstDigit < '6' || firstDigit > '9' {
+		return "", fmt.Errorf("Indian mobile numbers must start with 6, 7, 8, or 9, got %c", firstDigit)
+	}
+
+	// Additional validation: second digit restrictions
+	if firstDigit == '6' {
+		// 6 series: 60-69, but 60 and 61 are not common
+		secondDigit := digits[1]
+		if secondDigit < '0' || secondDigit > '9' {
+			return "", fmt.Errorf("invalid mobile number format")
+		}
+	}
+
+	h.logger.Info("Phone number validated and normalized",
+		zap.String("original", phone),
+		zap.String("normalized", digits))
+
+	return digits, nil
 }

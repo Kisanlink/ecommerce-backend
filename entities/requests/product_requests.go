@@ -11,8 +11,8 @@ type CreateProductRequest struct {
 	Price           float64  `json:"price" validate:"required,min=0"`
 	ActualPrice     float64  `json:"actual_price" validate:"required,min=0"`
 	DiscountPercent int      `json:"discount_percent" validate:"min=0,max=100"`
-	ImageURL        string   `json:"image_url,omitempty"`        // Primary image (backward compatibility)
-	ImageURLs       []string `json:"image_urls,omitempty"`       // Array of up to 4 image URLs
+	ImageURL        string   `json:"image_url,omitempty"`  // Primary image (backward compatibility)
+	ImageURLs       []string `json:"image_urls,omitempty"` // Array of up to 4 image URLs
 	Stock           int      `json:"stock" validate:"min=0"`
 	ReviewCount     int      `json:"review_count" validate:"min=0"`
 	Rating          float64  `json:"rating" validate:"min=0,max=5"`
@@ -27,8 +27,8 @@ type UpdateProductRequest struct {
 	Price           float64  `json:"price" validate:"required,min=0"`
 	ActualPrice     float64  `json:"actual_price" validate:"required,min=0"`
 	DiscountPercent int      `json:"discount_percent" validate:"min=0,max=100"`
-	ImageURL        string   `json:"image_url,omitempty"`        // Primary image (backward compatibility)
-	ImageURLs       []string `json:"image_urls,omitempty"`       // Array of up to 4 image URLs
+	ImageURL        string   `json:"image_url,omitempty"`  // Primary image (backward compatibility)
+	ImageURLs       []string `json:"image_urls,omitempty"` // Array of up to 4 image URLs
 	Stock           int      `json:"stock" validate:"min=0"`
 	ReviewCount     int      `json:"review_count" validate:"min=0"`
 	Rating          float64  `json:"rating" validate:"min=0,max=5"`
@@ -64,12 +64,12 @@ func (r *CreateProductRequest) GetEffectiveImages() []string {
 		}
 		return r.ImageURLs
 	}
-	
+
 	// Fallback to single ImageURL for backward compatibility
 	if r.ImageURL != "" {
 		return []string{r.ImageURL}
 	}
-	
+
 	return []string{}
 }
 
@@ -82,11 +82,11 @@ func (r *UpdateProductRequest) GetEffectiveImages() []string {
 		}
 		return r.ImageURLs
 	}
-	
+
 	// Fallback to single ImageURL for backward compatibility
 	if r.ImageURL != "" {
 		return []string{r.ImageURL}
 	}
-	
+
 	return []string{}
 }

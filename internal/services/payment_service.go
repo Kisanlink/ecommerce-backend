@@ -184,24 +184,44 @@ func (s *PaymentService) CreateOrder(ctx context.Context, userID string, amount 
 	return &order, nil
 }
 
-// VerifyPayment verifies Razorpay payment signature
+// VerifyPayment verifies Razorpay payment signature with enhanced debugging
 func (s *PaymentService) VerifyPayment(ctx context.Context, orderID, paymentID, signature string) (bool, error) {
+	// Validate inputs
+	if orderID == "" || paymentID == "" || signature == "" {
+		s.logger.Error("Invalid payment verification inputs",
+			zap.String("order_id", orderID),
+			zap.String("payment_id", paymentID),
+			zap.Bool("signature_empty", signature == ""))
+		return false, fmt.Errorf("order ID, payment ID, and signature are required")
+	}
+
+	// Validate configuration
+	if s.config.KeySecret == "" {
+		s.logger.Error("Razorpay key secret not configured")
+		return false, fmt.Errorf("payment service not properly configured")
+	}
+
 	// Create expected signature
 	message := orderID + "|" + paymentID
 	expectedSignature := s.generateSignature(message, s.config.KeySecret)
 
+	// Enhanced signature comparison with detailed logging
 	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
 
 	if isValid {
 		s.logger.Info("Payment signature verified successfully",
 			zap.String("order_id", orderID),
-			zap.String("payment_id", paymentID))
+			zap.String("payment_id", paymentID),
+			zap.String("message", message))
 	} else {
-		s.logger.Warn("Payment signature verification failed",
+		s.logger.Warn("Payment signature verification FAILED - detailed debug info",
 			zap.String("order_id", orderID),
 			zap.String("payment_id", paymentID),
-			zap.String("expected", expectedSignature),
-			zap.String("received", signature))
+			zap.String("message", message),
+			zap.String("expected_signature", expectedSignature),
+			zap.String("received_signature", signature),
+			zap.String("key_secret_length", fmt.Sprintf("%d", len(s.config.KeySecret))),
+			zap.Bool("signatures_equal", expectedSignature == signature))
 	}
 
 	return isValid, nil

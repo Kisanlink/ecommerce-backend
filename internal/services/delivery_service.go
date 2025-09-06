@@ -518,6 +518,9 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	shipmentReq.AddShipmentDetail(shipmentDetail)
 
 	if err := shipmentReq.IsValid(); err != nil {
+		s.logger.Error("Invalid shipment request validation failed",
+			zap.Error(err),
+			zap.String("order_id", order.ID))
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Invalid shipment request: %v", err),
@@ -528,11 +531,19 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	dataJSON, err := json.Marshal(shipmentReq)
 	if err != nil {
+		s.logger.Error("Failed to marshal shipment request",
+			zap.Error(err),
+			zap.String("order_id", order.ID))
 		return &ShipmentResult{
 			Success: false,
 			Message: "Failed to prepare shipment request data",
 		}, fmt.Errorf("failed to marshal shipment request: %w", err)
 	}
+
+	s.logger.Info("Sending shipment creation request to Delhivery",
+		zap.String("order_id", order.ID),
+		zap.String("endpoint", endpoint),
+		zap.String("unique_order_id", uniqueOrderID))
 
 	formData := url.Values{}
 	formData.Set("format", "json")
@@ -540,6 +551,9 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
+		s.logger.Error("Failed to create HTTP request",
+			zap.Error(err),
+			zap.String("order_id", order.ID))
 		return &ShipmentResult{
 			Success: false,
 			Message: "Failed to create HTTP request to Delhivery API",
@@ -552,6 +566,10 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		s.logger.Error("HTTP request to Delhivery API failed",
+			zap.Error(err),
+			zap.String("order_id", order.ID),
+			zap.String("endpoint", endpoint))
 		return &ShipmentResult{
 			Success: false,
 			Message: "Failed to connect to Delhivery API",
@@ -561,21 +579,42 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		s.logger.Error("Failed to read Delhivery API response",
+			zap.Error(err),
+			zap.String("order_id", order.ID))
 		return &ShipmentResult{
 			Success: false,
 			Message: "Failed to read response from Delhivery API",
 		}, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	s.logger.Info("Received response from Delhivery API",
+		zap.String("order_id", order.ID),
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("response_length", fmt.Sprintf("%d", len(body))))
+
 	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("Delhivery API returned error status",
+			zap.String("order_id", order.ID),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response_body", string(body)))
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Delhivery API returned error status %d", resp.StatusCode),
 		}, fmt.Errorf("shipment API failed: HTTP %d - %s", resp.StatusCode, string(body))
 	}
 
+	// Log response for debugging
+	s.logger.Debug("Raw Delhivery API response",
+		zap.String("order_id", order.ID),
+		zap.String("response_body", string(body)))
+
 	shipmentResp, err := responses.ParseShipmentResponse(body)
 	if err != nil {
+		s.logger.Error("Failed to parse Delhivery shipment response",
+			zap.Error(err),
+			zap.String("order_id", order.ID),
+			zap.String("response_body", string(body)))
 		return &ShipmentResult{
 			Success: false,
 			Message: "Failed to parse Delhivery response",
@@ -584,6 +623,9 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	if !shipmentResp.IsSuccessful() {
 		errorMsg := shipmentResp.GetErrorMessage()
+		s.logger.Error("Delhivery shipment creation failed",
+			zap.String("order_id", order.ID),
+			zap.String("error_message", errorMsg))
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Failed to create shipment: %s", errorMsg),
@@ -592,6 +634,9 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	waybill := shipmentResp.GetWaybill()
 	if waybill == "" {
+		s.logger.Error("No waybill received from Delhivery despite successful response",
+			zap.String("order_id", order.ID),
+			zap.String("response_body", string(body)))
 		return &ShipmentResult{
 			Success: false,
 			Message: "No AWB/Waybill number received from Delhivery",
@@ -600,6 +645,17 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	trackingURL := shipmentResp.GetTrackingURL()
 	status := shipmentResp.GetStatus()
+
+	// Ensure tracking URL is properly formatted
+	if trackingURL == "" {
+		trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", waybill)
+	}
+
+	s.logger.Info("Delhivery shipment created successfully",
+		zap.String("order_id", order.ID),
+		zap.String("waybill", waybill),
+		zap.String("tracking_url", trackingURL),
+		zap.String("status", status))
 
 	return &ShipmentResult{
 		Success:     true,

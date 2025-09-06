@@ -59,12 +59,12 @@ func (p *Product) TableName() string {
 // GetImages returns all non-empty image URLs as a slice
 func (p *Product) GetImages() []string {
 	var images []string
-	
+
 	// Add primary image first if exists
 	if p.ImageURL != "" {
 		images = append(images, p.ImageURL)
 	}
-	
+
 	// Add additional images
 	if p.ImageURL1 != "" {
 		images = append(images, p.ImageURL1)
@@ -78,7 +78,7 @@ func (p *Product) GetImages() []string {
 	if p.ImageURL4 != "" {
 		images = append(images, p.ImageURL4)
 	}
-	
+
 	return images
 }
 
@@ -90,7 +90,7 @@ func (p *Product) SetImages(imageUrls []string) {
 	p.ImageURL2 = ""
 	p.ImageURL3 = ""
 	p.ImageURL4 = ""
-	
+
 	// Set images based on slice length
 	if len(imageUrls) > 0 {
 		p.ImageURL = imageUrls[0]
