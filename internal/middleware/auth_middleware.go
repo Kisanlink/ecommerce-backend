@@ -55,7 +55,9 @@ func FirebaseAuthMiddleware() gin.HandlerFunc {
 		}
 
 		// Set user info in context
+		// Provide both firebase-specific keys and a generic user_id for handlers
 		c.Set("firebase_uid", token.UID)
+		c.Set("user_id", token.UID)
 		c.Set("firebase_email", token.Claims["email"])
 		c.Next()
 	}

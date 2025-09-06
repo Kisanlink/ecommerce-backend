@@ -40,10 +40,10 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 	{
 		// Serviceability check (authenticated)
 		delivery.GET("/serviceability/:pincode", deliveryHandler.CheckServiceability)
-		
+
 		// Shipping estimation
 		delivery.POST("/estimate", deliveryHandler.Estimate)
-		delivery.GET("/estimate/last", deliveryHandler.GetLastEstimate)
+		delivery.GET("/addresses", deliveryHandler.GetUserAddresses)
 
 		// Tracking by waybill (authenticated)
 		delivery.GET("/track/:waybill", deliveryHandler.GetTrackingInfo)

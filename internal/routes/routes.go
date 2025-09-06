@@ -49,6 +49,12 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
+
+		// Address management routes
+		if repoManager.AddressRepository != nil {
+			addressHandler := handlers.NewAddressHandler(repoManager.AddressRepository, logger)
+			AddressRoutes(r, addressHandler)
+		}
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

@@ -44,17 +44,62 @@ type ApplyCouponRequest struct {
 
 // EstimateShippingRequest represents the request to estimate shipping costs
 type EstimateShippingRequest struct {
+	// Option 1: Use existing saved address
+	AddressID string `json:"address_id,omitempty" validate:"omitempty,uuid"`
+
+	// Option 2: Provide new address details (will be automatically saved for future use)
 	Address struct {
-		Street     string `json:"street" binding:"required" validate:"required,min=1,max=200"`
-		City       string `json:"city" binding:"required" validate:"required,min=1,max=100"`
-		State      string `json:"state" binding:"required" validate:"required,min=1,max=100"`
-		PostalCode string `json:"postal_code" binding:"required" validate:"required,min=1,max=20"`
-		Country    string `json:"country" binding:"required" validate:"required,min=1,max=100"`
-	} `json:"address" binding:"required"`
+		Street     string `json:"street,omitempty" validate:"omitempty,min=1,max=200"`
+		City       string `json:"city,omitempty" validate:"omitempty,min=1,max=100"`
+		State      string `json:"state,omitempty" validate:"omitempty,min=1,max=100"`
+		PostalCode string `json:"postal_code,omitempty" validate:"omitempty,min=1,max=20"`
+		Country    string `json:"country,omitempty" validate:"omitempty,min=1,max=100"`
+	} `json:"address,omitempty"`
+
+	// Address metadata (optional - will use defaults if not provided)
+	AddressType  string `json:"address_type,omitempty" validate:"omitempty,oneof=home work other shipping billing"`
+	FirstName    string `json:"first_name,omitempty" validate:"omitempty,min=1,max=100"`
+	LastName     string `json:"last_name,omitempty" validate:"omitempty,min=1,max=100"`
+	Phone        string `json:"phone,omitempty" validate:"omitempty,min=10,max=15"`
+	SetAsDefault bool   `json:"set_as_default,omitempty"` // Whether to set as default address
+
 	ShippingMethod string `json:"shipping_method,omitempty" validate:"omitempty,oneof=standard express overnight"`
 }
 
-// Validation helper methods
+//Validation helper methods
+
+// IsValid checks if EstimateShippingRequest is valid
+func (r *EstimateShippingRequest) IsValid() error {
+	// Must provide either address_id or address details
+	if r.AddressID == "" && (r.Address.Street == "" || r.Address.City == "" || r.Address.State == "" || r.Address.PostalCode == "") {
+		return fmt.Errorf("either address_id or complete address details (street, city, state, postal_code) must be provided")
+	}
+
+	return nil
+}
+
+// Sanitize cleans string fields
+func (r *EstimateShippingRequest) Sanitize() {
+	r.AddressID = strings.TrimSpace(r.AddressID)
+	r.Address.Street = strings.TrimSpace(r.Address.Street)
+	r.Address.City = strings.TrimSpace(r.Address.City)
+	r.Address.State = strings.TrimSpace(r.Address.State)
+	r.Address.PostalCode = strings.TrimSpace(r.Address.PostalCode)
+	r.Address.Country = strings.TrimSpace(r.Address.Country)
+	r.AddressType = strings.TrimSpace(r.AddressType)
+	r.FirstName = strings.TrimSpace(r.FirstName)
+	r.LastName = strings.TrimSpace(r.LastName)
+	r.Phone = strings.TrimSpace(r.Phone)
+	r.ShippingMethod = strings.TrimSpace(r.ShippingMethod)
+
+	// Set defaults
+	if r.Address.Country == "" && r.AddressID == "" {
+		r.Address.Country = "India"
+	}
+	if r.AddressType == "" && r.AddressID == "" && r.Address.Street != "" {
+		r.AddressType = "shipping"
+	}
+}
 
 // IsValid checks if AddToCartRequest is valid
 func (r *AddToCartRequest) IsValid() error {

@@ -24,7 +24,9 @@ import (
 type DeliveryServiceInterface interface {
 	Estimate(ctx context.Context, userID string, req requests.EstimateShippingRequest) (*models.DeliveryEstimate, error)
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
-	GetLastEstimate(ctx context.Context, userID string) (*LastEstimate, error)
+	GetUserAddresses(ctx context.Context, userID string) ([]*models.Address, error)
+	SaveShippingAddress(ctx context.Context, userID string, req requests.EstimateShippingRequest) (*models.Address, error)
+	GetUserShippingAddressForOrder(ctx context.Context, userID, addressID string) (*models.Address, error)
 	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error)
 	GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error)
 }
@@ -66,49 +68,71 @@ func NewDeliveryService(repoManager *repositories.RepositoryManager, logger *zap
 	}
 }
 
-// LastEstimate represents a cached delivery estimate summary for reuse in payment
-type LastEstimate struct {
-	ShippingAddress string  `json:"shipping_address"`
-	ShippingCharges float64 `json:"shipping_charges"`
-	Subtotal        float64 `json:"subtotal"`
-	Total           float64 `json:"total"`
-	Currency        string  `json:"currency"`
-	EtaMinDays      int     `json:"eta_min_days"`
-	EtaMaxDays      int     `json:"eta_max_days"`
-	Pincode         string  `json:"pincode"`
-	Timestamp       int64   `json:"ts"`
+// EstimateWithAddress contains estimate details with address info for order creation
+type EstimateWithAddress struct {
+	Address         *models.Address         `json:"address"`
+	ShippingCharges float64                 `json:"shipping_charges"`
+	DeliveryOptions []models.DeliveryOption `json:"delivery_options"`
+	Subtotal        float64                 `json:"subtotal"`
+	Total           float64                 `json:"total"`
+	Currency        string                  `json:"currency"`
 }
 
-func (s *DeliveryService) estimateCacheKey(userID string) string {
-	return fmt.Sprintf("user:%s:last_estimate", userID)
+// GetUserAddresses retrieves all saved addresses for a user
+func (s *DeliveryService) GetUserAddresses(ctx context.Context, userID string) ([]*models.Address, error) {
+	if s.repoManager == nil || s.repoManager.AddressRepository == nil {
+		return nil, fmt.Errorf("address repository unavailable")
+	}
+
+	return s.repoManager.AddressRepository.GetUserAddresses(ctx, userID)
 }
 
-func (s *DeliveryService) saveLastEstimate(ctx context.Context, userID string, est *LastEstimate) {
-	if s.repoManager == nil || s.repoManager.RedisManager == nil || est == nil {
-		return
+// SaveShippingAddress saves a new shipping address for the user
+func (s *DeliveryService) SaveShippingAddress(ctx context.Context, userID string, req requests.EstimateShippingRequest) (*models.Address, error) {
+	if s.repoManager == nil || s.repoManager.AddressRepository == nil {
+		return nil, fmt.Errorf("address repository unavailable")
 	}
-	b, err := json.Marshal(est)
-	if err != nil {
-		s.logger.Warn("Failed to marshal last estimate for cache", zap.Error(err))
-		return
+
+	// Create new address from the request
+	addressType := models.AddressTypeShipping
+	if req.AddressType != "" {
+		addressType = models.AddressType(req.AddressType)
 	}
-	_ = s.repoManager.RedisManager.Set(s.estimateCacheKey(userID), string(b), 30*time.Minute)
+
+	address := models.NewAddressFromEstimate(
+		userID,
+		req.Address.Street,
+		req.Address.City,
+		req.Address.State,
+		req.Address.PostalCode,
+		req.Address.Country,
+	)
+
+	// Set additional optional fields
+	address.Type = addressType
+	if req.FirstName != "" {
+		address.FirstName = req.FirstName
+	}
+	if req.LastName != "" {
+		address.LastName = req.LastName
+	}
+
+	if req.Phone != "" {
+		address.Phone = req.Phone
+	}
+
+	address.IsDefault = req.SetAsDefault
+
+	return address, s.repoManager.AddressRepository.CreateAddress(ctx, address)
 }
 
-// GetLastEstimate retrieves the cached estimate for a user if available
-func (s *DeliveryService) GetLastEstimate(ctx context.Context, userID string) (*LastEstimate, error) {
-	if s.repoManager == nil || s.repoManager.RedisManager == nil {
-		return nil, fmt.Errorf("estimate cache unavailable")
+// GetUserShippingAddressForOrder retrieves an address for order creation
+func (s *DeliveryService) GetUserShippingAddressForOrder(ctx context.Context, userID, addressID string) (*models.Address, error) {
+	if s.repoManager == nil || s.repoManager.AddressRepository == nil {
+		return nil, fmt.Errorf("address repository unavailable")
 	}
-	val, err := s.repoManager.RedisManager.Get(s.estimateCacheKey(userID))
-	if err != nil || val == "" {
-		return nil, fmt.Errorf("no cached estimate")
-	}
-	var est LastEstimate
-	if e := json.Unmarshal([]byte(val), &est); e != nil {
-		return nil, e
-	}
-	return &est, nil
+
+	return s.repoManager.AddressRepository.GetUserAddressByID(ctx, userID, addressID)
 }
 
 // CheckServiceability checks if delivery is available to the given pincode
@@ -334,13 +358,106 @@ func (s *DeliveryService) extractPincode(postalCode string) string {
 	return ""
 }
 
+// addressMatches checks if two addresses are essentially the same
+// Used to avoid creating duplicate addresses during estimate shipping
+func (s *DeliveryService) addressMatches(existing, new *models.Address) bool {
+	// Compare the core address components
+	return strings.EqualFold(strings.TrimSpace(existing.AddressLine1), strings.TrimSpace(new.AddressLine1)) &&
+		strings.EqualFold(strings.TrimSpace(existing.City), strings.TrimSpace(new.City)) &&
+		strings.EqualFold(strings.TrimSpace(existing.State), strings.TrimSpace(new.State)) &&
+		strings.TrimSpace(existing.PostalCode) == strings.TrimSpace(new.PostalCode) &&
+		strings.EqualFold(strings.TrimSpace(existing.Country), strings.TrimSpace(new.Country))
+}
+
 // Estimate computes delivery options using Delhivery APIs
 func (s *DeliveryService) Estimate(ctx context.Context, userID string, req requests.EstimateShippingRequest) (*models.DeliveryEstimate, error) {
-	pincode := s.extractPincode(req.Address.PostalCode)
-	if pincode == "" {
-		return nil, fmt.Errorf("invalid postal code format: %s", req.Address.PostalCode)
+	// Validate and sanitize the request
+	req.Sanitize()
+	if err := req.IsValid(); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	var address *models.Address
+	var err error
+
+	// Get address either from saved address or from request
+	if req.AddressID != "" {
+		// Use existing saved address
+		if s.repoManager == nil || s.repoManager.AddressRepository == nil {
+			return nil, fmt.Errorf("address repository unavailable")
+		}
+		address, err = s.repoManager.AddressRepository.GetUserAddressByID(ctx, userID, req.AddressID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get saved address: %w", err)
+		}
+	} else {
+		// Create address from request data - this will be automatically saved for future use
+		address = models.NewAddressFromEstimate(
+			userID,
+			req.Address.Street,
+			req.Address.City,
+			req.Address.State,
+			req.Address.PostalCode,
+			req.Address.Country,
+		)
+
+		// Add optional fields if provided
+		if req.FirstName != "" {
+			address.FirstName = req.FirstName
+		}
+		if req.LastName != "" {
+			address.LastName = req.LastName
+		}
+		if req.Phone != "" {
+			address.Phone = req.Phone
+		}
+		if req.AddressType != "" {
+			address.Type = models.AddressType(req.AddressType)
+		}
+
+		// Always save the address when user provides new address data during estimate
+		// This makes the user flow seamless - address gets saved automatically for future use
+		if s.repoManager != nil && s.repoManager.AddressRepository != nil {
+			// Check if a similar address already exists for this user
+			existingAddresses, _ := s.repoManager.AddressRepository.GetUserAddresses(ctx, userID)
+			addressExists := false
+
+			for _, existing := range existingAddresses {
+				if s.addressMatches(existing, address) {
+					// Use existing address and update last used time
+					address = existing
+					now := time.Now()
+					address.LastUsedAt = &now
+					s.repoManager.AddressRepository.UpdateAddress(ctx, address)
+					addressExists = true
+					break
+				}
+			}
+
+			if !addressExists {
+				// Save new address for future use
+				address.IsDefault = req.SetAsDefault
+				if err := s.repoManager.AddressRepository.CreateAddress(ctx, address); err != nil {
+					s.logger.Warn("Failed to save address during estimate", zap.Error(err), zap.String("user_id", userID))
+					// Continue with estimation even if saving fails
+				} else {
+					s.logger.Info("Address automatically saved during shipping estimate",
+						zap.String("user_id", userID),
+						zap.String("address_id", address.ID),
+						zap.String("city", address.City),
+						zap.String("postal_code", address.PostalCode))
+				}
+			}
+		}
+	}
+
+	// Extract and validate pincode
+	pincode := s.extractPincode(address.PostalCode)
+	if pincode == "" {
+		return nil, fmt.Errorf("invalid postal code format: %s", address.PostalCode)
+	}
+
+	// Get user's cart
 	if s.repoManager == nil || s.repoManager.CartRepository == nil {
 		return nil, fmt.Errorf("cart repository unavailable")
 	}
@@ -354,6 +471,7 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		return nil, fmt.Errorf("cart is empty; add items before estimating shipping")
 	}
 
+	// Check serviceability
 	serviceable, err := s.CheckServiceability(ctx, pincode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check serviceability: %w", err)
@@ -363,6 +481,7 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		return nil, fmt.Errorf("delivery service is not available to pincode %s", pincode)
 	}
 
+	// Calculate shipping charges
 	const PRODUCT_WEIGHT_GRAMS = 100
 	weight := cart.TotalItems * PRODUCT_WEIGHT_GRAMS
 
@@ -371,6 +490,7 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		return nil, fmt.Errorf("failed to get shipping charges from Delhivery API: %w", err)
 	}
 
+	// Get delivery time estimate
 	deliveryDays, err := s.getEstimatedTAT(ctx, pincode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get estimated delivery time: %w", err)
@@ -394,37 +514,6 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		Subtotal: cart.TotalPrice,
 		Options:  options,
 	}
-
-	// Build address string for caching
-	parts := []string{}
-	if s := strings.TrimSpace(req.Address.Street); s != "" {
-		parts = append(parts, s)
-	}
-	cityState := strings.TrimSpace(strings.TrimSpace(req.Address.City) + ", " + strings.TrimSpace(req.Address.State))
-	cityState = strings.Trim(cityState, ", ")
-	if cityState != "" {
-		parts = append(parts, cityState)
-	}
-	if p := strings.TrimSpace(req.Address.PostalCode); p != "" {
-		parts = append(parts, p)
-	}
-	if c := strings.TrimSpace(req.Address.Country); c != "" {
-		parts = append(parts, c)
-	}
-	addressStr := strings.Join(parts, ", ")
-
-	cached := &LastEstimate{
-		ShippingAddress: addressStr,
-		ShippingCharges: surfaceCharges,
-		Subtotal:        cart.TotalPrice,
-		Total:           cart.TotalPrice + surfaceCharges,
-		Currency:        "INR",
-		EtaMinDays:      deliveryDays,
-		EtaMaxDays:      deliveryDays + 2,
-		Pincode:         pincode,
-		Timestamp:       time.Now().Unix(),
-	}
-	s.saveLastEstimate(ctx, userID, cached)
 
 	return result, nil
 }

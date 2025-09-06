@@ -172,28 +172,33 @@ func (h *DeliveryHandler) Estimate(c *gin.Context) {
 	c.JSON(http.StatusOK, est)
 }
 
-// GetLastEstimate handles GET /estimate/last
-// @Summary Get last shipping estimate
-// @Description Get last cached estimate for the authenticated user
+// GetUserAddresses handles GET /addresses
+// @Summary Get user addresses
+// @Description Get all saved addresses for the authenticated user
 // @Tags Delivery
 // @Produce json
 // @Security FirebaseAuth
-// @Success 200 {object} map[string]interface{} "Last estimate"
+// @Success 200 {array} models.Address "User addresses"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
-// @Failure 404 {object} map[string]interface{} "No cached estimate"
-// @Router /delivery/estimate/last [get]
-func (h *DeliveryHandler) GetLastEstimate(c *gin.Context) {
+// @Failure 500 {object} map[string]interface{} "Failed to get addresses"
+// @Router /delivery/addresses [get]
+func (h *DeliveryHandler) GetUserAddresses(c *gin.Context) {
 	userID, ok := h.auth.GetAuthenticatedUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
-	last, err := h.deliveryService.GetLastEstimate(c.Request.Context(), userID)
-	if err != nil || last == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No cached estimate"})
+	addresses, err := h.deliveryService.GetUserAddresses(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("Failed to get user addresses", zap.Error(err), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get addresses"})
 		return
 	}
-	c.JSON(http.StatusOK, last)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    addresses,
+		"message": "User addresses retrieved successfully",
+	})
 }
 
 // GetTrackingInfo handles GET /track/:waybill

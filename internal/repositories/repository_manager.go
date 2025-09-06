@@ -97,17 +97,4 @@ func NewOrderRepository(dbManager db.DBManager) *OrderRepository {
 	return repo
 }
 
-// Address Repository
-type AddressRepository struct {
-	*base.BaseFilterableRepository[*models.Address]
-	dbManager db.DBManager
-}
-
-func NewAddressRepository(dbManager db.DBManager) *AddressRepository {
-	repo := &AddressRepository{
-		BaseFilterableRepository: base.NewBaseFilterableRepository[*models.Address](),
-		dbManager:                dbManager,
-	}
-	repo.SetDBManager(dbManager)
-	return repo
-}
+// Note: AddressRepository is now in address_repository.go for better code organization

@@ -43,14 +43,19 @@ func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderSer
 
 // CreateOrderRequest represents the request to create a payment order
 type CreateOrderRequest struct {
-	ShippingAddressID string  `json:"shipping_address_id,omitempty"` // Optional: if using saved addresses
-	ShippingAddress   string  `json:"shipping_address,omitempty"`    // Optional: if providing new address
-	Currency          string  `json:"currency,omitempty"`            // Ignored (hardcoded to INR)
-	Subtotal          float64 `json:"subtotal,omitempty"`            // Ignored if cached estimate available
-	FirstName         string  `json:"first_name"`                    // Required
-	LastName          string  `json:"last_name,omitempty"`
-	Mobile            string  `json:"mobile"` // Required (primary)
-	MobileSecondary   string  `json:"mobile_secondary,omitempty"`
+	// Shipping Address Options (choose one)
+	ShippingAddressID string `json:"shipping_address_id,omitempty"` // Preferred: Use saved address ID
+	ShippingAddress   string `json:"shipping_address,omitempty"`    // Deprecated: Direct address string
+
+	// Customer Details (required for payment and shipping)
+	FirstName       string `json:"first_name" binding:"required"` // Required for payment
+	LastName        string `json:"last_name,omitempty"`           // Optional
+	Mobile          string `json:"mobile" binding:"required"`     // Required for payment and shipping
+	MobileSecondary string `json:"mobile_secondary,omitempty"`    // Optional secondary phone
+
+	// Optional fields (will be calculated if not provided)
+	Currency string  `json:"currency,omitempty"` // Ignored (hardcoded to INR)
+	Subtotal float64 `json:"subtotal,omitempty"` // Ignored if cached estimate available
 }
 
 // CreateOrderResponse represents the response with order details
@@ -222,45 +227,52 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		}
 	}
 
-	// Always use INR currency and prefer last delivery estimate for address and totals
-	useCurrency := "INR" // Always INR for all transactions
+	// Always use INR currency
+	useCurrency := "INR"
 	shippingAddress := ""
 	finalAmount := 0.0
 	shippingCharges := 0.0
 
-	// First priority: Use cached estimate from shipping estimation if available
-	if h.deliveryService != nil {
-		if last, err := h.deliveryService.GetLastEstimate(c.Request.Context(), userID); err == nil && last != nil {
-			shippingAddress = last.ShippingAddress
-			shippingCharges = last.ShippingCharges
-			finalAmount = last.Total // This includes subtotal + shipping
-			// Currency is always INR from estimate, but force it anyway
-			useCurrency = "INR"
+	// Step 1: Get shipping address - prioritize address_id over direct address string
+	if req.ShippingAddressID != "" {
+		// Preferred method: Use saved address ID
+		if h.deliveryService != nil {
+			if addr, err := h.deliveryService.GetUserShippingAddressForOrder(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
+				shippingAddress = h.formatAddressForShipping(addr)
 
-			h.logger.Info("Using cached delivery estimate",
-				zap.String("user_id", userID),
-				zap.String("cached_address", shippingAddress),
-				zap.Float64("cached_total", finalAmount),
-				zap.Float64("cached_shipping", shippingCharges))
-		}
-	}
-
-	// Fallback to provided address or address ID if cache not present
-	if shippingAddress == "" {
-		if req.ShippingAddressID != "" {
-			if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
-				shippingAddress = h.orderService.FormatAddress(addr)
+				h.logger.Info("Using saved address from database",
+					zap.String("user_id", userID),
+					zap.String("address_id", req.ShippingAddressID),
+					zap.String("formatted_address", shippingAddress))
 			} else {
-				h.logger.Error("Invalid shipping_address_id", zap.String("user_id", userID), zap.String("addr_id", req.ShippingAddressID), zap.Error(err))
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid shipping_address_id"})
+				h.logger.Error("Invalid or non-existent shipping_address_id",
+					zap.String("user_id", userID),
+					zap.String("address_id", req.ShippingAddressID),
+					zap.Error(err))
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "Invalid shipping_address_id. Please call GET /api/v1/addresses to get valid address IDs",
+					"hint":  "Use GET /api/v1/addresses to see your saved addresses and their IDs",
+				})
 				return
 			}
-		} else if req.ShippingAddress != "" {
-			shippingAddress = req.ShippingAddress
+		} else {
+			h.logger.Error("Delivery service not available for address lookup")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Address lookup service not available"})
+			return
 		}
-	}
-	if shippingAddress == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Shipping address is required"})
+	} else if req.ShippingAddress != "" {
+		// Fallback method: Use direct address string (deprecated)
+		shippingAddress = req.ShippingAddress
+		h.logger.Info("Using direct address string (deprecated approach)",
+			zap.String("user_id", userID),
+			zap.String("address", shippingAddress))
+	} else {
+		// No address provided
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":          "Shipping address is required",
+			"hint":           "Provide either 'shipping_address_id' (recommended) or 'shipping_address' (deprecated)",
+			"recommendation": "Use GET /api/v1/addresses to get your saved address IDs, then use 'shipping_address_id' field",
+		})
 		return
 	}
 
@@ -823,9 +835,21 @@ func (h *PaymentHandler) calculateShippingFromAddress(ctx context.Context, userI
 		return 0, fmt.Errorf("failed to parse shipping address: %w", err)
 	}
 
-	// Create shipping estimate request
+	// Create shipping estimate request with a direct address (not using saved address)
 	estimateReq := requests.EstimateShippingRequest{
-		Address: address,
+		Address: struct {
+			Street     string `json:"street,omitempty" validate:"omitempty,min=1,max=200"`
+			City       string `json:"city,omitempty" validate:"omitempty,min=1,max=100"`
+			State      string `json:"state,omitempty" validate:"omitempty,min=1,max=100"`
+			PostalCode string `json:"postal_code,omitempty" validate:"omitempty,min=1,max=20"`
+			Country    string `json:"country,omitempty" validate:"omitempty,min=1,max=100"`
+		}{
+			Street:     address.Street,
+			City:       address.City,
+			State:      address.State,
+			PostalCode: address.PostalCode,
+			Country:    address.Country,
+		},
 	}
 
 	// Get shipping estimate from delivery service
@@ -909,6 +933,39 @@ func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
 	}
 
 	return address, nil
+}
+
+// formatAddressForShipping formats an address model for shipping
+func (h *PaymentHandler) formatAddressForShipping(addr *models.Address) string {
+	parts := []string{}
+
+	if addr.AddressLine1 != "" {
+		parts = append(parts, addr.AddressLine1)
+	}
+	if addr.AddressLine2 != "" {
+		parts = append(parts, addr.AddressLine2)
+	}
+
+	cityState := strings.TrimSpace(addr.City)
+	if addr.State != "" {
+		if cityState != "" {
+			cityState += ", " + addr.State
+		} else {
+			cityState = addr.State
+		}
+	}
+	if cityState != "" {
+		parts = append(parts, cityState)
+	}
+
+	if addr.PostalCode != "" {
+		parts = append(parts, addr.PostalCode)
+	}
+	if addr.Country != "" {
+		parts = append(parts, addr.Country)
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 // onlyDigits returns a string containing only 0-9 digits
