@@ -612,6 +612,7 @@ func (h *CartHandler) EstimateShipping(c *gin.Context) {
 			"shipping_options": transformDeliveryOptions(est.Options),
 			"subtotal":         est.Subtotal,
 			"user_id":          est.UserID,
+			"address_id":       est.AddressID, // Include the address_id in response
 		},
 		"message": "Shipping estimated successfully",
 	}

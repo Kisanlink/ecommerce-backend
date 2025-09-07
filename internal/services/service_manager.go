@@ -12,6 +12,7 @@ type ServiceManager struct {
 	ProductService  *ProductService
 	ProfileService  *ProfileService
 	FavoriteService *FavoriteService
+	AddressService  AddressServiceInterface
 	CartService     CartServiceInterface
 	S3Service       *S3Service
 	DeliveryService DeliveryServiceInterface
@@ -32,6 +33,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	}
 
 	// Create services
+	addressService := NewAddressService(repoManager, logger)
 	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.GetDBManager(), logger)
 	deliveryService := NewDeliveryService(repoManager, logger)
 	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, s3Service, logger)
@@ -41,6 +43,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		ProductService:  NewProductService(repoManager),
 		ProfileService:  NewProfileService(repoManager),
 		FavoriteService: NewFavoriteService(repoManager),
+		AddressService:  addressService,
 		CartService:     cartService,
 		S3Service:       s3Service,
 		DeliveryService: deliveryService,

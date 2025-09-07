@@ -99,6 +99,5 @@ Examples:
   go run cmd/migrate/main.go -action drop       # Drop all tables
 
 Environment Variables:
-  POSTGRES_DSN     PostgreSQL connection string
-`)
+  POSTGRES_DSN     PostgreSQL connection string`)
 }

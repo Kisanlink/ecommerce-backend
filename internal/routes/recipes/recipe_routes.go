@@ -40,9 +40,9 @@ func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.Reposito
 	//reviews := recipes.Group("/:id/reviews")
 	//reviews.Use(middleware.OptionalFirebaseAuth())
 	//{
-		//reviews.GET("", recipeHandler.GetRecipes) // Get recipe reviews
-		// reviews.POST("", reviewHandler.CreateRecipeReview)         // Create review (requires auth)
-		// reviews.PUT("/:reviewId", reviewHandler.UpdateReview)      // Update review (owner only)
-		// reviews.DELETE("/:reviewId", reviewHandler.DeleteReview)   // Delete review (owner only)
+	//reviews.GET("", recipeHandler.GetRecipes) // Get recipe reviews
+	// reviews.POST("", reviewHandler.CreateRecipeReview)         // Create review (requires auth)
+	// reviews.PUT("/:reviewId", reviewHandler.UpdateReview)      // Update review (owner only)
+	// reviews.DELETE("/:reviewId", reviewHandler.DeleteReview)   // Delete review (owner only)
 	//}
 }

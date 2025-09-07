@@ -198,7 +198,7 @@ func (s *ProductService) UpdateProduct(ctx context.Context, req *requests.Update
 	// Handle image updates
 	imageUrls := req.GetEffectiveImages()
 	existing.SetImages(imageUrls)
-	
+
 	// Update primary ImageURL for backward compatibility
 	if len(imageUrls) > 0 {
 		existing.ImageURL = imageUrls[0]

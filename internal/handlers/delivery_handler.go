@@ -172,30 +172,6 @@ func (h *DeliveryHandler) Estimate(c *gin.Context) {
 	c.JSON(http.StatusOK, est)
 }
 
-// GetLastEstimate handles GET /estimate/last
-// @Summary Get last shipping estimate
-// @Description Get last cached estimate for the authenticated user
-// @Tags Delivery
-// @Produce json
-// @Security FirebaseAuth
-// @Success 200 {object} map[string]interface{} "Last estimate"
-// @Failure 401 {object} map[string]interface{} "User not authenticated"
-// @Failure 404 {object} map[string]interface{} "No cached estimate"
-// @Router /delivery/estimate/last [get]
-func (h *DeliveryHandler) GetLastEstimate(c *gin.Context) {
-	userID, ok := h.auth.GetAuthenticatedUserID(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
-		return
-	}
-	last, err := h.deliveryService.GetLastEstimate(c.Request.Context(), userID)
-	if err != nil || last == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No cached estimate"})
-		return
-	}
-	c.JSON(http.StatusOK, last)
-}
-
 // GetTrackingInfo handles GET /track/:waybill
 // @Summary Get tracking info
 // @Description Get tracking URL and info for a waybill
