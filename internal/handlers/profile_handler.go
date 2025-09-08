@@ -10,19 +10,23 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // ProfileHandler handles profile-related HTTP requests
 type ProfileHandler struct {
 	profileService *services.ProfileService
 	s3Service      *services.S3Service
+	logger         *zap.Logger
 }
 
 // NewProfileHandler creates a new profile handler
 func NewProfileHandler(serviceManager *services.ServiceManager) *ProfileHandler {
+	logger, _ := zap.NewProduction()
 	return &ProfileHandler{
 		profileService: serviceManager.ProfileService,
 		s3Service:      serviceManager.S3Service,
+		logger:         logger,
 	}
 }
 
@@ -58,8 +62,21 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /profile/auto [post]
 func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Auto profile creation requested",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	userID, err := h.getUserID(c)
 	if err != nil {
+		h.logger.Error("User authentication failed for auto profile creation",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
@@ -72,15 +89,37 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 		}
 	}
 
+	h.logger.Info("Creating auto profile for authenticated user",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("firebase_email", firebaseEmail))
+
 	profile, err := h.profileService.CreateAutoProfile(c.Request.Context(), userID, firebaseEmail)
 	if err != nil {
 		if err.Error() == "profile already exists for user" {
+			h.logger.Warn("Profile creation failed - profile already exists",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("error_type", "profile_exists_error"))
 			c.JSON(http.StatusConflict, gin.H{"error": "Profile already exists"})
 			return
 		}
+
+		h.logger.Error("Failed to create auto profile",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("firebase_email", firebaseEmail),
+			zap.Error(err),
+			zap.String("error_type", "profile_creation_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create profile", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Auto profile created successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("profile_id", profile.ID),
+		zap.String("firebase_email", firebaseEmail))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Profile created successfully",
@@ -100,21 +139,55 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /profile [get]
 func (h *ProfileHandler) GetProfile(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Profile retrieval requested",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	userID, err := h.getUserID(c)
 	if err != nil {
+		h.logger.Error("User authentication failed for profile retrieval",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 
+	h.logger.Info("Retrieving profile for authenticated user",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID))
+
 	profile, err := h.profileService.GetProfileByUserID(c.Request.Context(), userID)
 	if err != nil {
 		if err.Error() == "record not found" {
+			h.logger.Warn("Profile not found for user",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("error_type", "profile_not_found"))
 			c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 			return
 		}
+
+		h.logger.Error("Failed to retrieve profile",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "profile_retrieval_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get profile", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Profile retrieved successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("profile_id", profile.ID),
+		zap.Bool("has_profile_picture", profile.ProfilePictureS3Key != ""),
+		zap.Bool("has_full_name", profile.FirstName != "" && profile.LastName != ""))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile retrieved successfully",
@@ -137,14 +210,32 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /profile [put]
 func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Profile update requested",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	userID, err := h.getUserID(c)
 	if err != nil {
+		h.logger.Error("User authentication failed for profile update",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 
 	req := &requests.UpdateProfileRequest{}
 	if err := c.ShouldBindJSON(req); err != nil {
+		h.logger.Error("Invalid profile update request data",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "validation_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data", "details": err.Error()})
 		return
 	}
@@ -153,15 +244,39 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	req.BaseRequest = &base.BaseRequest{}
 	req.BaseRequest.SetUserID(userID)
 
+	// Log update details (be careful not to log sensitive data)
+	h.logger.Info("Processing profile update",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Bool("has_first_name", req.FirstName != nil && *req.FirstName != ""),
+		zap.Bool("has_last_name", req.LastName != nil && *req.LastName != ""),
+		zap.Bool("has_phone", req.Phone != nil && *req.Phone != ""),
+		zap.Bool("has_address_line1", req.AddressLine1 != nil && *req.AddressLine1 != ""))
+
 	profile, err := h.profileService.UpdateProfile(c.Request.Context(), req)
 	if err != nil {
 		if err.Error() == "record not found" {
+			h.logger.Warn("Profile update failed - profile not found",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("error_type", "profile_not_found"))
 			c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 			return
 		}
+
+		h.logger.Error("Failed to update profile",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "profile_update_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Profile updated successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("profile_id", profile.ID))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile updated successfully",
@@ -183,8 +298,21 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /profile/image [post]
 func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Profile image upload requested",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	userID, err := h.getUserID(c)
 	if err != nil {
+		h.logger.Error("User authentication failed for profile image upload",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
@@ -192,31 +320,89 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 	// Get the uploaded file
 	file, header, err := c.Request.FormFile("image")
 	if err != nil {
+		h.logger.Error("No image file provided in request",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "file_upload_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No image file provided", "details": err.Error()})
 		return
 	}
 	defer file.Close()
 
+	// Log file details for debugging
+	h.logger.Info("Profile image file received",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("filename", header.Filename),
+		zap.Int64("file_size", header.Size),
+		zap.String("content_type", header.Header.Get("Content-Type")))
+
 	// Upload image to S3
+	h.logger.Info("Uploading profile image to S3",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID))
+
 	s3Key, err := h.s3Service.UploadProfileImage(c.Request.Context(), userID, file, header)
 	if err != nil {
+		h.logger.Error("Failed to upload profile image to S3",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("filename", header.Filename),
+			zap.Error(err),
+			zap.String("error_type", "s3_upload_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image", "details": err.Error()})
 		return
 	}
 
+	h.logger.Info("Profile image uploaded to S3 successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("s3_key", s3Key))
+
 	// Generate presigned URL for immediate access
+	h.logger.Info("Generating presigned URL for uploaded image",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("s3_key", s3Key))
+
 	imageURL, err := h.s3Service.GetProfileImageURL(c.Request.Context(), s3Key, 24*time.Hour)
 	if err != nil {
+		h.logger.Error("Failed to generate presigned URL for profile image",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("s3_key", s3Key),
+			zap.Error(err),
+			zap.String("error_type", "presigned_url_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image URL", "details": err.Error()})
 		return
 	}
 
 	// Update profile with S3 key and URL
+	h.logger.Info("Updating profile with uploaded image details",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("s3_key", s3Key))
+
 	profile, err := h.profileService.UpdateProfilePictureWithS3(c.Request.Context(), userID, imageURL, s3Key)
 	if err != nil {
+		h.logger.Error("Failed to update profile with image details",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("s3_key", s3Key),
+			zap.Error(err),
+			zap.String("error_type", "profile_update_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile with image", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Profile image upload completed successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("profile_id", profile.ID),
+		zap.String("s3_key", s3Key),
+		zap.String("filename", header.Filename),
+		zap.Int64("file_size", header.Size))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Profile image uploaded successfully",
@@ -239,21 +425,22 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /profile/image/url [get]
 func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Profile image URL generation requested",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	userID, err := h.getUserID(c)
 	if err != nil {
+		h.logger.Error("User authentication failed for profile image URL generation",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Get user's profile
-	profile, err := h.profileService.GetProfileByUserID(c.Request.Context(), userID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found", "details": err.Error()})
-		return
-	}
-
-	if profile.ProfilePictureS3Key == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No profile image found"})
 		return
 	}
 
@@ -265,6 +452,40 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		}
 	}
 
+	h.logger.Info("Retrieving profile for image URL generation",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Int("expiry_hours", expiryHours))
+
+	// Get user's profile
+	profile, err := h.profileService.GetProfileByUserID(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("Failed to retrieve profile for image URL generation",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "profile_retrieval_error"))
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found", "details": err.Error()})
+		return
+	}
+
+	if profile.ProfilePictureS3Key == "" {
+		h.logger.Warn("No profile image found for URL generation",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("profile_id", profile.ID),
+			zap.String("error_type", "no_profile_image"))
+		c.JSON(http.StatusNotFound, gin.H{"error": "No profile image found"})
+		return
+	}
+
+	h.logger.Info("Generating presigned URL for profile image",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("profile_id", profile.ID),
+		zap.String("s3_key", profile.ProfilePictureS3Key),
+		zap.Int("expiry_hours", expiryHours))
+
 	// Generate presigned URL
 	imageURL, err := h.s3Service.GetProfileImageURL(
 		c.Request.Context(),
@@ -272,9 +493,22 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		time.Duration(expiryHours)*time.Hour,
 	)
 	if err != nil {
+		h.logger.Error("Failed to generate presigned URL for profile image",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("s3_key", profile.ProfilePictureS3Key),
+			zap.Error(err),
+			zap.String("error_type", "presigned_url_generation_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image URL", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Profile image URL generated successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("profile_id", profile.ID),
+		zap.String("s3_key", profile.ProfilePictureS3Key),
+		zap.Int("expiry_hours", expiryHours))
 
 	c.JSON(http.StatusOK, gin.H{
 		"image_url":  imageURL,

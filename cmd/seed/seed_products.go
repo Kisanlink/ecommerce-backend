@@ -5,6 +5,8 @@ import (
 	"log"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
+	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -26,128 +28,148 @@ func main() {
 		log.Fatalf("Failed to migrate products table: %v", err)
 	}
 
-	// Seed product data
+	// Seed product data - matching your database table exactly
 	products := []*models.Product{
-		models.NewProduct(
-			"Turmeric Powder",
-			"Premium quality organic turmeric powder with high curcumin content. Perfect for cooking and health benefits.",
-			"Spices",
-			"https://example.com/images/turmeric-powder.jpg",
-			85.00,  // price
-			100.00, // actual_price
-			100,    // stock
-			25,     // review_count
-			15,     // discount_percent
-			4.5,    // rating
-		),
-		models.NewProduct(
-			"Ginger Powder",
-			"Pure dried ginger powder with intense flavor and medicinal properties. Ideal for teas and cooking.",
-			"Spices",
-			"https://example.com/images/ginger-powder.jpg",
-			120.00, // price
-			140.00, // actual_price
-			75,     // stock
-			18,     // review_count
-			14,     // discount_percent
-			4.3,    // rating
-		),
-		models.NewProduct(
-			"Ashwagandha Powder",
-			"High-quality organic ashwagandha root powder known for stress relief and energy enhancement.",
-			"Herbs",
-			"https://example.com/images/ashwagandha-powder.jpg",
-			250.00, // price
-			300.00, // actual_price
-			60,     // stock
-			42,     // review_count
-			17,     // discount_percent
-			4.7,    // rating
-		),
-		models.NewProduct(
-			"Moringa Powder",
-			"Nutrient-rich moringa leaf powder packed with vitamins, minerals, and antioxidants for daily wellness.",
-			"Superfoods",
-			"https://example.com/images/moringa-powder.jpg",
-			180.00, // price
-			220.00, // actual_price
-			45,     // stock
-			30,     // review_count
-			18,     // discount_percent
-			4.4,    // rating
-		),
-		models.NewProduct(
-			"Amla Powder",
-			"Pure amla (Indian gooseberry) powder rich in Vitamin C and natural antioxidants for immunity boost.",
-			"Superfoods",
-			"https://example.com/images/amla-powder.jpg",
-			95.00,  // price
-			110.00, // actual_price
-			80,     // stock
-			35,     // review_count
-			14,     // discount_percent
-			4.6,    // rating
-		),
-		models.NewProduct(
-			"Spirulina Powder",
-			"Premium blue-green spirulina powder loaded with protein, vitamins, and minerals for enhanced nutrition.",
-			"Superfoods",
-			"https://example.com/images/spirulina-powder.jpg",
-			320.00, // price
-			380.00, // actual_price
-			35,     // stock
-			28,     // review_count
-			16,     // discount_percent
-			4.8,    // rating
-		),
-		models.NewProduct(
-			"Wheatgrass Powder",
-			"Fresh wheatgrass powder packed with chlorophyll, enzymes, and nutrients for detoxification.",
-			"Superfoods",
-			"https://example.com/images/wheatgrass-powder.jpg",
-			150.00, // price
-			180.00, // actual_price
-			50,     // stock
-			20,     // review_count
-			17,     // discount_percent
-			4.2,    // rating
-		),
-		models.NewProduct(
-			"Neem Powder",
-			"Pure neem leaf powder with natural antibacterial and antifungal properties for skin and health.",
-			"Herbs",
-			"https://example.com/images/neem-powder.jpg",
-			110.00, // price
-			130.00, // actual_price
-			65,     // stock
-			22,     // review_count
-			15,     // discount_percent
-			4.1,    // rating
-		),
-		models.NewProduct(
-			"Tulsi Powder",
-			"Sacred tulsi (holy basil) powder with adaptogenic properties for stress relief and respiratory health.",
-			"Herbs",
-			"https://example.com/images/tulsi-powder.jpg",
-			135.00, // price
-			160.00, // actual_price
-			70,     // stock
-			32,     // review_count
-			16,     // discount_percent
-			4.5,    // rating
-		),
-		models.NewProduct(
-			"Brahmi Powder",
-			"Pure brahmi (bacopa monnieri) powder for cognitive enhancement, memory improvement, and mental clarity.",
-			"Herbs",
-			"https://example.com/images/brahmi-powder.jpg",
-			190.00, // price
-			230.00, // actual_price
-			40,     // stock
-			15,     // review_count
-			17,     // discount_percent
-			4.3,    // rating
-		),
+		// Product 1 - Row 1 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Papaya Powder",
+			Description:     "Premium quality organic papaya powder rich in vitamins A, C, and E. Perfect for digestive health and skin care.",
+			Category:        "Superfoods",
+			Price:           279.00, // price after discount
+			ActualPrice:     359.00, // original price
+			DiscountPercent: 22,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+papaya+powder.jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+papaya+powder.jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/6.png",
+			ImageURL3:       "",
+			ImageURL4:       "",
+			Stock:           42,
+			StockStatus:     "Comming Soon",
+			ReviewCount:     98,
+			Rating:          4.5,
+			IsActive:        false,
+		},
+		// Product 2 - Row 2 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Tomato Powder",
+			Description:     "Pure dried tomato powder with intense flavor and rich in lycopene. Ideal for cooking and sauces.",
+			Category:        "Spices",
+			Price:           249.00, // price after discount
+			ActualPrice:     329.00, // original price
+			DiscountPercent: 24,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+Tomato+Powder+(1).jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+Tomato+Powder+(1).jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/3.png",
+			ImageURL3:       "",
+			ImageURL4:       "",
+			Stock:           42,
+			StockStatus:     "Comming Soon",
+			ReviewCount:     33,
+			Rating:          4.2,
+			IsActive:        false,
+		},
+		// Product 3 - Row 3 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Ashwagandha Powder",
+			Description:     "High-quality organic ashwagandha root powder known for stress relief and energy enhancement.",
+			Category:        "Herbs",
+			Price:           249.00, // price after discount
+			ActualPrice:     300.00, // original price
+			DiscountPercent: 17,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+aswagandha+powder.jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+aswagandha+powder.jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/4.png",
+			ImageURL3:       "",
+			ImageURL4:       "",
+			Stock:           60,
+			StockStatus:     "Comming Soon",
+			ReviewCount:     42,
+			Rating:          4.7,
+			IsActive:        false,
+		},
+		// Product 4 - Row 4 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Moringa Powder",
+			Description:     "Nutrient-rich moringa leaf powder packed with vitamins, minerals, and antioxidants for daily wellness.",
+			Category:        "Superfoods",
+			Price:           180.00, // price after discount
+			ActualPrice:     220.00, // original price
+			DiscountPercent: 18,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/pouch+front+mockup.jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/pouch+front+mockup.jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/Moringa+bck.png",
+			ImageURL3:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/1.png",
+			ImageURL4:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/pouch+front+mockup.jpg",
+			Stock:           29,
+			StockStatus:     "In stock",
+			ReviewCount:     30,
+			Rating:          4.4,
+			IsActive:        true,
+		},
+		// Product 5 - Row 5 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Amla Powder",
+			Description:     "Pure amla (Indian gooseberry) powder rich in Vitamin C and natural antioxidants for immunity boost.",
+			Category:        "Superfoods",
+			Price:           95.00,  // price after discount
+			ActualPrice:     110.00, // original price
+			DiscountPercent: 14,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+amla+powder.jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+amla+powder.jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/5.png",
+			ImageURL3:       "",
+			ImageURL4:       "",
+			Stock:           45,
+			StockStatus:     "Comming Soon",
+			ReviewCount:     35,
+			Rating:          4.6,
+			IsActive:        false,
+		},
+		// Product 6 - Row 6 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Beetroot Powder",
+			Description:     "Premium beetroot powder packed with nitrates, antioxidants and natural minerals for cardiovascular health.",
+			Category:        "Superfoods",
+			Price:           269.00, // price after discount
+			ActualPrice:     349.00, // original price
+			DiscountPercent: 23,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+beetroot+powder.jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+beetroot+powder.jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/7.png",
+			ImageURL3:       "",
+			ImageURL4:       "",
+			Stock:           54,
+			StockStatus:     "Comming Soon",
+			ReviewCount:     145,
+			Rating:          4.0,
+			IsActive:        false, // Row shows false in is_active
+		},
+		// Product 7 - Row 7 from table
+		{
+			BaseModel:       base.NewBaseModel("PROD", hash.Medium),
+			Name:            "Spinach Powder",
+			Description:     "Fresh spinach powder loaded with iron, vitamins, and minerals for enhanced nutrition and energy.",
+			Category:        "Superfoods",
+			Price:           303.00, // price after discount
+			ActualPrice:     399.00, // original price
+			DiscountPercent: 24,     // calculated discount
+			ImageURL:        "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+spinach+powder.jpg",
+			ImageURL1:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product-images/web+spinach+powder.jpg",
+			ImageURL2:       "https://amrti-ecommerce.s3.eu-north-1.amazonaws.com/images/product+benefits/2.png",
+			ImageURL3:       "",
+			ImageURL4:       "",
+			Stock:           3,
+			StockStatus:     "Comming Soon",
+			ReviewCount:     89,
+			Rating:          4.8,
+			IsActive:        false,
+		},
 	}
 
 	ctx := context.Background()

@@ -13,6 +13,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/products"
 	profiles "github.com/Kisanlink/ecommerce-backend/internal/routes/profile"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/recipes"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/reviews"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/users"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
+		reviews.RegisterReviewRoutes(v1, serviceManager, logger) // Add review routes
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

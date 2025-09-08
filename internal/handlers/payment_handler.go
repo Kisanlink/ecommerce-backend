@@ -187,17 +187,36 @@ func (h *PaymentHandler) CheckoutPage(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Failed to create payment order"
 // @Router /payments/create-order [post]
 func (h *PaymentHandler) CreateOrder(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Creating payment order (Razorpay intent)",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	// Get user ID from context (works with both Firebase and JWT auth)
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
-		h.logger.Error("User ID not found in context")
+		h.logger.Error("User authentication failed for payment order creation",
+			zap.String("request_id", requestID),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
+	h.logger.Info("User authenticated for payment order creation",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID))
+
 	var req CreateOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("Invalid create order request", zap.Error(err))
+		h.logger.Error("Invalid payment order request data",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "validation_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
 		return
 	}
@@ -208,13 +227,29 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	req.Mobile = strings.TrimSpace(req.Mobile)
 	req.MobileSecondary = strings.TrimSpace(req.MobileSecondary)
 	if req.FirstName == "" || req.Mobile == "" {
+		h.logger.Error("Missing required customer fields",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("first_name", req.FirstName),
+			zap.String("mobile", req.Mobile))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "first_name and mobile are required"})
 		return
 	}
 
+	h.logger.Info("Customer details validated",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("first_name", req.FirstName),
+		zap.String("mobile_length", fmt.Sprintf("%d", len(req.Mobile))))
+
 	// Validate and normalize primary mobile number
 	normalizedMobile, err := h.validateAndNormalizePhoneNumber(req.Mobile)
 	if err != nil {
+		h.logger.Error("Mobile number validation failed",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("original_mobile", req.Mobile),
+			zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mobile number: " + err.Error()})
 		return
 	}
@@ -224,11 +259,22 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	if req.MobileSecondary != "" {
 		normalizedMobileSecondary, err := h.validateAndNormalizePhoneNumber(req.MobileSecondary)
 		if err != nil {
+			h.logger.Error("Secondary mobile number validation failed",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("original_mobile_secondary", req.MobileSecondary),
+				zap.Error(err))
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid secondary mobile number: " + err.Error()})
 			return
 		}
 		req.MobileSecondary = normalizedMobileSecondary
 	}
+
+	h.logger.Info("Mobile numbers validated and normalized",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("mobile", req.Mobile),
+		zap.String("mobile_secondary", req.MobileSecondary))
 
 	// Always use INR currency - require address_id to be provided
 	useCurrency := "INR" // Always INR for all transactions
@@ -239,6 +285,9 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 
 	// Require address_id to be provided - no caching
 	if req.ShippingAddressID == "" {
+		h.logger.Error("Missing shipping address ID",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "shipping_address_id is required"})
 		return
 	}
@@ -246,39 +295,63 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	shippingAddressID = req.ShippingAddressID
 	if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
 		shippingAddress = h.orderService.FormatAddress(addr)
-		h.logger.Info("Using provided address_id",
+		h.logger.Info("Shipping address resolved",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("provided_address_id", shippingAddressID),
+			zap.String("address_id", shippingAddressID),
 			zap.String("address", shippingAddress))
 	} else {
-		h.logger.Error("Invalid shipping_address_id", zap.String("user_id", userID), zap.String("addr_id", req.ShippingAddressID), zap.Error(err))
+		h.logger.Error("Failed to resolve shipping address",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("address_id", req.ShippingAddressID),
+			zap.Error(err),
+			zap.String("error_type", "address_resolution_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid shipping_address_id"})
 		return
 	}
 
-	h.logger.Info("Creating payment intent for user", zap.String("user_id", userID))
+	h.logger.Info("Starting cart retrieval for payment calculation",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID))
 
 	// Step 1: Get user's cart to calculate total (NO order creation yet!)
 	cart, err := h.orderService.GetUserCart(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to get user cart",
+		h.logger.Error("Failed to retrieve user cart for payment order",
+			zap.String("request_id", requestID),
 			zap.Error(err),
-			zap.String("user_id", userID))
+			zap.String("user_id", userID),
+			zap.String("error_type", "cart_retrieval_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get cart"})
 		return
 	}
 
 	if len(cart.Items) == 0 {
-		h.logger.Error("User cart is empty", zap.String("user_id", userID))
+		h.logger.Error("User cart is empty - cannot create payment order",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("error_type", "empty_cart_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Cart is empty"})
 		return
 	}
+
+	h.logger.Info("Cart retrieved successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("cart_id", cart.ID),
+		zap.Int("item_count", len(cart.Items)))
 
 	// Step 2: Calculate totals dynamically from cart
 	cartTotal := 0.0
 	for _, item := range cart.Items {
 		cartTotal += item.TotalPrice
 	}
+
+	h.logger.Info("Cart total calculated",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Float64("cart_total", cartTotal))
 
 	// Force INR currency always
 	req.Currency = useCurrency // Always "INR"
@@ -293,16 +366,28 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 				shippingCharges = 0
 			}
 			finalAmount = subtotal
+			h.logger.Info("Using provided subtotal",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("provided_subtotal", subtotal),
+				zap.Float64("calculated_shipping", shippingCharges))
 		} else {
 			// Get shipping charges dynamically from delivery service API with robust fallback
+			h.logger.Info("Calculating dynamic shipping charges",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("cart_total", cartTotal),
+				zap.Int("item_count", len(cart.Items)))
+
 			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, cartTotal, len(cart.Items))
 			finalAmount = cartTotal + shippingCharges
 		}
 
-		h.logger.Info("Calculated shipping charges",
+		h.logger.Info("Shipping charges calculated",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.Float64("cart_total", cartTotal),
-			zap.Float64("calculated_shipping", shippingCharges),
+			zap.Float64("shipping_charges", shippingCharges),
 			zap.Float64("final_amount", finalAmount))
 	}
 
@@ -313,17 +398,22 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		freeDelivery = true
 		shippingCharges = 0
 		finalAmount = cartTotal
-		h.logger.Info("Applied free delivery threshold (>=500)",
+		h.logger.Info("Free delivery threshold met",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.Float64("cart_total", cartTotal),
-			zap.Float64("final_amount", finalAmount))
+			zap.Float64("threshold", 500),
+			zap.Bool("free_delivery", true),
+			zap.Float64("adjusted_final_amount", finalAmount))
 	}
 
-	h.logger.Info("Calculated payment amounts",
+	h.logger.Info("Final payment amounts calculated",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
 		zap.Float64("cart_total", cartTotal),
 		zap.Float64("shipping_charges", shippingCharges),
 		zap.Float64("final_amount", finalAmount),
-		zap.String("user_id", userID))
+		zap.Bool("free_delivery", freeDelivery))
 
 	// Step 3: Create ONLY Razorpay payment order (NO database order!)
 	// Store all necessary information in notes for later order creation
@@ -347,14 +437,30 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		notes["free_delivery_threshold"] = 500
 	}
 
+	h.logger.Info("Creating Razorpay payment order",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Float64("amount", finalAmount),
+		zap.String("currency", req.Currency))
+
 	razorpayOrder, err := h.paymentService.CreateOrder(c.Request.Context(), userID, finalAmount, req.Currency, "payment_intent_"+userID, notes)
 	if err != nil {
-		h.logger.Error("Failed to create payment order",
+		h.logger.Error("Failed to create Razorpay payment order",
+			zap.String("request_id", requestID),
 			zap.Error(err),
-			zap.String("user_id", userID))
+			zap.String("user_id", userID),
+			zap.Float64("amount", finalAmount),
+			zap.String("currency", req.Currency),
+			zap.String("error_type", "payment_service_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment order", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Razorpay payment order created successfully",
+		zap.String("request_id", requestID),
+		zap.String("razorpay_order_id", razorpayOrder.ID),
+		zap.String("user_id", userID),
+		zap.Int("amount_paisa", razorpayOrder.Amount))
 
 	// Convert amount back to rupees for response
 	amountInRupees := services.PaisaToRupees(razorpayOrder.Amount)
@@ -387,11 +493,14 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		CheckoutURL: checkoutURL,
 	}
 
-	h.logger.Info("Payment intent created successfully - NO database order yet",
+	h.logger.Info("Payment order response prepared - NO database order created yet",
+		zap.String("request_id", requestID),
 		zap.String("razorpay_order_id", razorpayOrder.ID),
 		zap.String("user_id", userID),
-		zap.Float64("final_amount", amountInRupees),
-		zap.Float64("shipping_charges", shippingCharges))
+		zap.Float64("amount_rupees", amountInRupees),
+		zap.Float64("shipping_charges", shippingCharges),
+		zap.String("checkout_url", checkoutURL),
+		zap.Bool("free_delivery", freeDelivery))
 
 	c.JSON(http.StatusOK, response)
 }
@@ -410,36 +519,60 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Verification failed"
 // @Router /payments/verify [post]
 func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Payment verification requested",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path),
+		zap.String("client_ip", c.ClientIP()))
+
 	// Get user ID from context
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
-		h.logger.Error("User ID not found in context")
+		h.logger.Error("User authentication failed for payment verification",
+			zap.String("request_id", requestID),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+			zap.String("error_type", "authentication_error"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
 	var req VerifyPaymentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("Invalid verify payment request", zap.Error(err))
+		h.logger.Error("Invalid payment verification request data",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "validation_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
 		return
 	}
 
 	// Enhanced logging for debugging
-	h.logger.Info("Payment verification requested",
+	h.logger.Info("Payment verification details received",
+		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("razorpay_order_id", req.OrderID),
 		zap.String("payment_id", req.PaymentID),
-		zap.String("signature_length", fmt.Sprintf("%d", len(req.Signature))))
+		zap.Int("signature_length", len(req.Signature)))
 
 	// Verify payment signature first with enhanced error handling
+	h.logger.Info("Starting payment signature verification",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("order_id", req.OrderID),
+		zap.String("payment_id", req.PaymentID))
+
 	isValid, err := h.paymentService.VerifyPayment(c.Request.Context(), req.OrderID, req.PaymentID, req.Signature)
 	if err != nil {
 		h.logger.Error("Payment verification API error",
+			zap.String("request_id", requestID),
 			zap.Error(err),
 			zap.String("user_id", userID),
 			zap.String("order_id", req.OrderID),
-			zap.String("payment_id", req.PaymentID))
+			zap.String("payment_id", req.PaymentID),
+			zap.String("error_type", "payment_api_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Payment verification API failed",
 			"code":    "PAYMENT_VERIFICATION_ERROR",
@@ -448,27 +581,37 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 	}
 
 	// Log verification result
-	h.logger.Info("Payment verification completed",
+	h.logger.Info("Payment signature verification completed",
+		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("order_id", req.OrderID),
-		zap.Bool("is_valid", isValid))
+		zap.Bool("is_valid", isValid),
+		zap.String("payment_id", req.PaymentID))
 
 	var response VerifyPaymentResponse
 	if isValid {
-		h.logger.Info("Payment verified successfully - NOW creating order",
+		h.logger.Info("Payment verified successfully - proceeding to create database order",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID))
 
 		// Check if this payment has already been processed to avoid duplicate orders
+		h.logger.Info("Checking for existing orders with this Razorpay order ID",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("razorpay_order_id", req.OrderID))
+
 		existingOrders, getOrdersErr := h.orderService.GetUserOrders(c.Request.Context(), userID)
 		if getOrdersErr == nil {
 			for _, existingOrder := range existingOrders {
 				if existingOrder.RazorpayOrderID == req.OrderID {
-					h.logger.Warn("Order already exists for this Razorpay order ID",
+					h.logger.Warn("Duplicate order creation attempt - order already exists",
+						zap.String("request_id", requestID),
 						zap.String("user_id", userID),
 						zap.String("existing_order_id", existingOrder.ID),
-						zap.String("razorpay_order_id", req.OrderID))
+						zap.String("razorpay_order_id", req.OrderID),
+						zap.String("event_type", "duplicate_order_prevention"))
 
 					// Return the existing order details instead of creating new one
 					response = VerifyPaymentResponse{
@@ -483,12 +626,25 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					return
 				}
 			}
+		} else {
+			h.logger.Warn("Failed to check for existing orders",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Error(getOrdersErr))
 		}
 
 		// Fetch Razorpay order to get notes (subtotal, cart_total, shipping_charges, shipping_address)
+		h.logger.Info("Fetching Razorpay order metadata",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("razorpay_order_id", req.OrderID))
+
 		rzpOrder, getErr := h.paymentService.GetOrder(c.Request.Context(), req.OrderID)
 		if getErr != nil {
-			h.logger.Warn("Failed to fetch Razorpay order for metadata", zap.Error(getErr))
+			h.logger.Warn("Failed to fetch Razorpay order metadata - proceeding without metadata",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Error(getErr))
 		}
 
 		// Derive shipping values from notes
@@ -548,11 +704,37 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			if v, ok := notes["mobile_secondary"].(string); ok {
 				mobileSecondary = strings.TrimSpace(v)
 			}
+
+			h.logger.Info("Extracted order metadata from Razorpay notes",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("subtotal", subtotal),
+				zap.Float64("cart_total", cartTotal),
+				zap.Float64("shipping_charges", shippingCharges),
+				zap.String("first_name", firstName),
+				zap.String("mobile", mobile),
+				zap.String("shipping_address_id", shippingAddressID))
 		}
+
 		// If address string missing but address ID present, resolve again (safety)
 		if shippingAddress == "" && shippingAddressID != "" {
+			h.logger.Info("Resolving shipping address from ID",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("address_id", shippingAddressID))
+
 			if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, shippingAddressID); err == nil && addr != nil {
 				shippingAddress = h.orderService.FormatAddress(addr)
+				h.logger.Info("Shipping address resolved from ID",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.String("address", shippingAddress))
+			} else {
+				h.logger.Warn("Failed to resolve shipping address from ID",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.String("address_id", shippingAddressID),
+					zap.Error(err))
 			}
 		}
 		if shippingCharges < 0 {
@@ -560,6 +742,12 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		}
 
 		// Use atomic order creation to prevent race conditions and duplicates
+		h.logger.Info("Creating database order atomically",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("razorpay_order_id", req.OrderID),
+			zap.Float64("shipping_charges", shippingCharges))
+
 		order, err := h.orderService.CreateOrderFromCartWithShippingAtomic(
 			c.Request.Context(),
 			userID,
@@ -569,21 +757,25 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			req.OrderID, // Pass Razorpay order ID for duplicate prevention
 		)
 		if err != nil {
-			h.logger.Error("Failed to create order after payment verification",
+			h.logger.Error("Failed to create database order after payment verification",
+				zap.String("request_id", requestID),
 				zap.Error(err),
 				zap.String("user_id", userID),
 				zap.String("payment_id", req.PaymentID),
-				zap.String("razorpay_order_id", req.OrderID))
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.String("error_type", "order_creation_error"))
 
 			// Check if this is a duplicate order error
 			if strings.Contains(err.Error(), "already exists for razorpay order ID") ||
 				strings.Contains(err.Error(), "duplicate key") ||
 				strings.Contains(err.Error(), "UNIQUE constraint") ||
 				strings.Contains(err.Error(), "Duplicate entry") {
-				h.logger.Error("Duplicate order creation attempted - this payment has already been processed",
+				h.logger.Error("Duplicate order creation detected",
+					zap.String("request_id", requestID),
 					zap.String("user_id", userID),
 					zap.String("payment_id", req.PaymentID),
-					zap.String("razorpay_order_id", req.OrderID))
+					zap.String("razorpay_order_id", req.OrderID),
+					zap.String("error_type", "duplicate_order_error"))
 				c.JSON(http.StatusConflict, gin.H{
 					"error": "This payment has already been processed. Please check your order history.",
 					"code":  "PAYMENT_ALREADY_PROCESSED"})
@@ -593,15 +785,26 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			return
 		}
 
+		h.logger.Info("Database order created successfully after payment verification",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("order_id", order.ID),
+			zap.String("payment_id", req.PaymentID),
+			zap.String("razorpay_order_id", req.OrderID),
+			zap.Float64("total_amount", order.TotalAmount))
+
 		// Update order with payment details and confirm the order
 		if err := h.orderService.UpdatePaymentStatusAndOrderStatus(c.Request.Context(), order.ID, "successful", req.PaymentID, models.OrderStatusConfirmed); err != nil {
 			h.logger.Error("Failed to update payment and order status",
+				zap.String("request_id", requestID),
 				zap.Error(err),
 				zap.String("order_id", order.ID),
-				zap.String("payment_id", req.PaymentID))
+				zap.String("payment_id", req.PaymentID),
+				zap.String("error_type", "status_update_error"))
 			// Don't fail the verification, but log the error
 		} else {
-			h.logger.Info("Order confirmed after successful payment",
+			h.logger.Info("Order status updated after successful payment",
+				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
 				zap.String("payment_id", req.PaymentID),
 				zap.String("order_status", "confirmed"),
@@ -610,6 +813,12 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Persist full payment and shipping metadata on order and notes
 		if rzpOrder != nil {
+			h.logger.Info("Updating order with Razorpay metadata",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("razorpay_order_id", rzpOrder.ID),
+				zap.Int("amount_paisa", rzpOrder.Amount))
+
 			// Save rich metadata fields
 			order.RazorpayOrderID = rzpOrder.ID
 			order.RazorpayReceipt = rzpOrder.Receipt
@@ -644,7 +853,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				order.CustomerPhoneAlt = mobileSecondary
 			}
 			if updErr := h.orderService.UpdateOrder(c.Request.Context(), order); updErr != nil {
-				h.logger.Warn("Failed to persist order metadata", zap.Error(updErr), zap.String("order_id", order.ID))
+				h.logger.Warn("Failed to persist order metadata",
+					zap.String("request_id", requestID),
+					zap.Error(updErr),
+					zap.String("order_id", order.ID))
+			} else {
+				h.logger.Info("Order metadata persisted successfully",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID))
 			}
 
 			// Update notes compact string
@@ -655,28 +871,44 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Generate invoice and attach URL
 		if url, invErr := h.orderService.GenerateAndAttachInvoice(c.Request.Context(), order.ID); invErr != nil {
-			h.logger.Warn("Failed to generate invoice", zap.Error(invErr), zap.String("order_id", order.ID))
+			h.logger.Warn("Failed to generate invoice",
+				zap.String("request_id", requestID),
+				zap.Error(invErr),
+				zap.String("order_id", order.ID))
 		} else if url != "" {
-			h.logger.Info("Invoice generated", zap.String("order_id", order.ID), zap.String("invoice_url", url))
+			h.logger.Info("Invoice generated successfully",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("invoice_url", url))
 		}
 
 		// Create Delhivery shipment after successful order creation with enhanced error handling
+		h.logger.Info("Preparing to create Delhivery shipment",
+			zap.String("request_id", requestID),
+			zap.String("order_id", order.ID),
+			zap.String("user_id", userID))
+
 		var awbNumber, trackingURL string
 		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
 		if getOrderErr != nil {
 			h.logger.Error("Failed to get order items for shipment creation",
+				zap.String("request_id", requestID),
 				zap.Error(getOrderErr),
 				zap.String("order_id", order.ID),
-				zap.String("user_id", userID))
+				zap.String("user_id", userID),
+				zap.String("error_type", "order_items_retrieval_error"))
 			// Continue without shipment creation - order is still valid
 		} else if len(orderItems) == 0 {
 			h.logger.Error("No order items found for shipment creation",
+				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
-				zap.String("user_id", userID))
+				zap.String("user_id", userID),
+				zap.String("error_type", "empty_order_items_error"))
 			// Continue without shipment creation - order is still valid
 		} else {
 			// Enhanced shipment creation with detailed logging
-			h.logger.Info("Attempting to create Delhivery shipment",
+			h.logger.Info("Creating Delhivery shipment",
+				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID),
 				zap.Int("item_count", len(orderItems)),
@@ -684,26 +916,35 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
 			if shipmentErr != nil {
-				h.logger.Error("Delhivery shipment creation FAILED",
+				h.logger.Error("Delhivery shipment creation failed",
+					zap.String("request_id", requestID),
 					zap.Error(shipmentErr),
 					zap.String("order_id", order.ID),
 					zap.String("user_id", userID),
+					zap.String("error_type", "shipment_creation_error"),
 					zap.String("error_details", shipmentErr.Error()))
 
 				// Even if shipment fails, payment is successful - notify user
 				h.logger.Warn("Order created successfully but shipment creation failed - manual intervention required",
+					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID))
 			} else if shipmentResult == nil {
 				h.logger.Error("Delhivery shipment result is nil",
-					zap.String("order_id", order.ID))
-			} else if !shipmentResult.Success {
-				h.logger.Error("Delhivery shipment creation returned failure",
+					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
-					zap.String("message", shipmentResult.Message))
+					zap.String("error_type", "nil_shipment_result"))
+			} else if !shipmentResult.Success {
+				h.logger.Error("Delhivery shipment creation returned failure status",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("message", shipmentResult.Message),
+					zap.String("error_type", "shipment_api_failure"))
 			} else if shipmentResult.Waybill == "" {
 				h.logger.Error("Delhivery shipment creation returned empty waybill",
+					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
-					zap.String("message", shipmentResult.Message))
+					zap.String("message", shipmentResult.Message),
+					zap.String("error_type", "empty_waybill_error"))
 			} else {
 				// Shipment created successfully
 				awbNumber = shipmentResult.Waybill
@@ -713,6 +954,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				if trackingURL == "" && awbNumber != "" {
 					trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
 					h.logger.Info("Generated tracking URL for AWB",
+						zap.String("request_id", requestID),
 						zap.String("awb", awbNumber),
 						zap.String("tracking_url", trackingURL))
 				}
@@ -726,11 +968,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					shipmentResult.Status,
 				); updateErr != nil {
 					h.logger.Error("Failed to update order with Delhivery shipment details",
+						zap.String("request_id", requestID),
 						zap.Error(updateErr),
 						zap.String("order_id", order.ID),
-						zap.String("waybill", shipmentResult.Waybill))
+						zap.String("waybill", shipmentResult.Waybill),
+						zap.String("error_type", "shipment_update_error"))
 				} else {
 					h.logger.Info("Delhivery shipment created and order updated successfully",
+						zap.String("request_id", requestID),
 						zap.String("order_id", order.ID),
 						zap.String("waybill", shipmentResult.Waybill),
 						zap.String("tracking_url", trackingURL),
@@ -740,8 +985,20 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		}
 
 		// Clear user's cart after successful order creation
+		h.logger.Info("Clearing user cart after successful order creation",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("order_id", order.ID))
+
 		if err := h.orderService.ClearUserCart(c.Request.Context(), userID); err != nil {
-			h.logger.Warn("Failed to clear cart after payment", zap.Error(err), zap.String("user_id", userID))
+			h.logger.Warn("Failed to clear cart after payment",
+				zap.String("request_id", requestID),
+				zap.Error(err),
+				zap.String("user_id", userID))
+		} else {
+			h.logger.Info("User cart cleared successfully",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID))
 		}
 
 		// Prepare comprehensive response
@@ -763,6 +1020,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Comprehensive success logging
 		h.logger.Info("Payment verification and order creation completed successfully",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("order_id", order.ID),
 			zap.String("payment_id", req.PaymentID),
@@ -778,11 +1036,13 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			Message: "Payment verification failed - signature mismatch. Please contact support if payment was deducted.",
 		}
 
-		h.logger.Error("Payment verification FAILED - signature mismatch",
+		h.logger.Error("Payment verification failed - signature mismatch",
+			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID),
-			zap.String("received_signature", req.Signature))
+			zap.String("received_signature_length", fmt.Sprintf("%d", len(req.Signature))),
+			zap.String("error_type", "signature_verification_failed"))
 
 		// Return error status for failed verification instead of 200
 		c.JSON(http.StatusBadRequest, response)

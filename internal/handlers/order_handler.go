@@ -43,11 +43,25 @@ func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Lo
 // @Failure 500 {object} map[string]interface{} "Failed to create order"
 // @Router /orders [post]
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Creating order from cart - direct API",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path))
+
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
+		h.logger.Error("User authentication failed - no user ID found",
+			zap.String("request_id", requestID),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
+
+	h.logger.Info("User authenticated for order creation",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID))
 
 	var req struct {
 		CartID          string `json:"cart_id" binding:"required"`
@@ -57,9 +71,20 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid request data for order creation",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "validation_error"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	h.logger.Info("Order creation request validated",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("cart_id", req.CartID),
+		zap.String("payment_method", req.PaymentMethod))
 
 	order, err := h.orderService.CreateOrderFromCart(
 		c.Request.Context(),
@@ -70,14 +95,25 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	)
 
 	if err != nil {
-		h.logger.Error("Failed to create order", zap.Error(err))
+		h.logger.Error("Failed to create order from cart",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("cart_id", req.CartID),
+			zap.String("payment_method", req.PaymentMethod),
+			zap.Error(err),
+			zap.String("error_type", "service_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create order"})
 		return
 	}
 
-	h.logger.Info("Order created via direct API",
+	h.logger.Info("Order created successfully via direct API",
+		zap.String("request_id", requestID),
 		zap.String("order_id", order.ID),
-		zap.String("user_id", userID))
+		zap.String("user_id", userID),
+		zap.String("cart_id", req.CartID),
+		zap.Float64("total_amount", order.TotalAmount),
+		zap.String("status", string(order.Status)),
+		zap.String("payment_method", req.PaymentMethod))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Order created successfully",
@@ -100,8 +136,17 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /orders [get]
 func (h *OrderHandler) GetUserOrders(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	h.logger.Info("Retrieving user orders",
+		zap.String("request_id", requestID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path))
+
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
+		h.logger.Error("User authentication failed for orders retrieval",
+			zap.String("request_id", requestID),
+			zap.String("client_ip", c.ClientIP()))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
@@ -120,12 +165,27 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 		}
 	}
 
+	h.logger.Info("Parsed pagination parameters",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Int("page", page),
+		zap.Int("limit", limit))
+
 	orders, err := h.orderService.GetUserOrders(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to get user orders", zap.Error(err))
+		h.logger.Error("Failed to retrieve user orders from service",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.String("error_type", "service_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve orders"})
 		return
 	}
+
+	h.logger.Info("Orders retrieved from database",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Int("total_orders", len(orders)))
 
 	// Simple pagination (in production, you'd want to do this at the database level)
 	start := (page - 1) * limit
@@ -137,6 +197,14 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 	} else {
 		orders = orders[start:end]
 	}
+
+	h.logger.Info("Orders pagination applied",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Int("page", page),
+		zap.Int("limit", limit),
+		zap.Int("returned_count", len(orders)),
+		zap.Bool("has_more", end < len(orders)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"orders": orders,
@@ -166,28 +234,54 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /orders/{id} [get]
 func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
+	requestID := c.GetString("request_id")
+	orderID := c.Param("id")
+
+	h.logger.Info("Retrieving order details",
+		zap.String("request_id", requestID),
+		zap.String("order_id", orderID),
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.Request.URL.Path))
+
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
+		h.logger.Error("User authentication failed for order details",
+			zap.String("request_id", requestID),
+			zap.String("order_id", orderID),
+			zap.String("client_ip", c.ClientIP()))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
-	orderID := c.Param("id")
 	if orderID == "" {
+		h.logger.Error("Order ID missing in request",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
 		return
 	}
 
+	h.logger.Info("Fetching order details from service",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("order_id", orderID))
+
 	// Get order with items
 	order, orderItems, err := h.orderService.GetOrderWithItems(c.Request.Context(), orderID)
 	if err != nil {
-		h.logger.Error("Failed to get order details",
+		h.logger.Error("Failed to get order details from service",
+			zap.String("request_id", requestID),
 			zap.Error(err),
 			zap.String("order_id", orderID),
-			zap.String("user_id", userID))
+			zap.String("user_id", userID),
+			zap.String("error_type", "service_error"))
 
 		// Check if it's a "not found" error
 		if strings.Contains(err.Error(), "not found") {
+			h.logger.Warn("Order not found in database",
+				zap.String("request_id", requestID),
+				zap.String("order_id", orderID),
+				zap.String("user_id", userID))
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Order not found. Please check the order ID and try again.",
 				"code":  "ORDER_NOT_FOUND"})
@@ -201,9 +295,23 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 
 	// Verify the order belongs to the authenticated user
 	if order.UserID != userID {
+		h.logger.Warn("User attempted to access order that doesn't belong to them",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("order_id", orderID),
+			zap.String("order_owner_id", order.UserID),
+			zap.String("security_event", "unauthorized_access_attempt"))
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
+
+	h.logger.Info("Order details retrieved successfully",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("order_id", orderID),
+		zap.String("order_status", string(order.Status)),
+		zap.Float64("total_amount", order.TotalAmount),
+		zap.Int("item_count", len(orderItems)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"order": order,
