@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
@@ -24,24 +25,26 @@ import (
 
 // ReviewService handles all review-related business logic
 type ReviewService struct {
-	dbMgr        db.DBManager
-	userService  *UserService
-	dynamoClient *dynamodb.Client
-	logger       *zap.Logger
-	tableName    string
+	dbMgr          db.DBManager
+	userService    *UserService
+	profileService *ProfileService
+	dynamoClient   *dynamodb.Client
+	logger         *zap.Logger
+	tableName      string
 }
 
 // NewReviewService creates a new review service
-func NewReviewService(dbMgr db.DBManager, userService *UserService, logger *zap.Logger) *ReviewService {
+func NewReviewService(dbMgr db.DBManager, userService *UserService, profileService *ProfileService, logger *zap.Logger) *ReviewService {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
 
 	service := &ReviewService{
-		dbMgr:       dbMgr,
-		userService: userService,
-		logger:      logger,
-		tableName:   "product-reviews",
+		dbMgr:          dbMgr,
+		userService:    userService,
+		profileService: profileService,
+		logger:         logger,
+		tableName:      "product-reviews",
 	}
 
 	// Initialize DynamoDB client
@@ -93,40 +96,64 @@ func (s *ReviewService) initDynamoDB() error {
 	return nil
 }
 
+// getUserDisplayName gets user's display name with proper fallback logic
+func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (string, error) {
+	// First, try to get the name from Users table
+	userResponse, err := s.userService.GetUserByID(ctx, userID)
+	if err == nil && userResponse.Success {
+		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+			if userName, ok := userData["name"].(string); ok && strings.TrimSpace(userName) != "" {
+				return userName, nil
+			}
+		}
+	}
+
+	// If Users table doesn't have a name, try Profile table
+	if s.profileService != nil {
+		profile, err := s.profileService.GetProfileByUserID(ctx, userID)
+		if err == nil && profile != nil {
+			// Construct name from FirstName and LastName
+			firstName := strings.TrimSpace(profile.FirstName)
+			lastName := strings.TrimSpace(profile.LastName)
+
+			if firstName != "" && lastName != "" {
+				return firstName + " " + lastName, nil
+			} else if firstName != "" {
+				return firstName, nil
+			} else if lastName != "" {
+				return lastName, nil
+			}
+		}
+	}
+
+	// If both fail, return an error asking user to set up their name
+	return "", errors.New("please set up your display name first. Visit /api/v1/profiles to update your profile information")
+}
+
 // CreateReview creates a new product review
 func (s *ReviewService) CreateReview(ctx context.Context, req *requests.CreateReviewRequest, userID string) (*responses.ReviewResponse, error) {
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Get user information to cache in the review
-	var userName, userEmail string
-
-	userResponse, err := s.userService.GetUserByID(ctx, userID)
+	// Get user's display name with proper fallback logic
+	userName, err := s.getUserDisplayName(ctx, userID)
 	if err != nil {
-		s.logger.Warn("Failed to get user information, using defaults", zap.Error(err), zap.String("user_id", userID))
-		userName = "Anonymous User"
-		userEmail = ""
-	} else if !userResponse.Success {
-		s.logger.Warn("User service returned unsuccessful response, using defaults", zap.String("user_id", userID))
-		userName = "Anonymous User"
-		userEmail = ""
-	} else {
-		// Extract user data from the response
-		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
-			userName, _ = userData["name"].(string)
-			userEmail, _ = userData["email"].(string)
-		}
+		return nil, fmt.Errorf("failed to get user display name: %w", err)
+	}
 
-		// Fallback if name is empty
-		if userName == "" {
-			userName = "Anonymous User"
+	// Get user email for the review
+	var userEmail string
+	userResponse, err := s.userService.GetUserByID(ctx, userID)
+	if err == nil && userResponse.Success {
+		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+			userEmail, _ = userData["email"].(string)
 		}
 	}
 
 	// Check if user has already reviewed this product
 	existingReview, err := s.GetReviewByUserAndProduct(ctx, userID, req.ProductID)
-	if err == nil && existingReview != nil {
+	if err == nil && existingReview != nil && existingReview.IsActive {
 		return nil, errors.New("user has already reviewed this product")
 	}
 
@@ -583,7 +610,7 @@ func (s *ReviewService) getReviewByID(ctx context.Context, reviewID string) (*mo
 	return review, nil
 }
 
-// GetReviewByUserAndProduct gets a review by user and product (for checking duplicates)
+// GetReviewByUserAndProduct gets an active review by user and product (for checking duplicates)
 func (s *ReviewService) GetReviewByUserAndProduct(ctx context.Context, userID, productID string) (*models.Review, error) {
 	if s.dynamoClient == nil {
 		return nil, errors.New("DynamoDB not available")
@@ -608,7 +635,16 @@ func (s *ReviewService) GetReviewByUserAndProduct(ctx context.Context, userID, p
 
 	review := &models.Review{}
 	err = attributevalue.UnmarshalMap(result.Item, review)
-	return review, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if the review is active (not deleted)
+	if !review.IsActive {
+		return nil, errors.New("review not found")
+	}
+
+	return review, nil
 }
 
 // sortReviews sorts a slice of reviews based on the given criteria

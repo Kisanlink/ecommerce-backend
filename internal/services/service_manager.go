@@ -42,7 +42,8 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	// Create review service with DynamoDB support
 	dbManager := repoManager.GetDBManager()
 	userService := NewUserService(repoManager.UserRepository)
-	reviewService := NewReviewService(dbManager, userService, logger)
+	profileService := NewProfileService(repoManager)
+	reviewService := NewReviewService(dbManager, userService, profileService, logger)
 
 	return &ServiceManager{
 		UserService:     userService,
