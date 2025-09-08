@@ -236,13 +236,13 @@ func (h *ReviewHandler) GetUserReviews(c *gin.Context) {
 	})
 }
 
-// UpdateReview handles PUT /products/:productId/reviews/:reviewId
+// UpdateReview handles PUT /products/:id/reviews/:reviewId
 // @Summary Update a review
 // @Description Update an existing review (only by review owner)
 // @Tags reviews
 // @Accept json
 // @Produce json
-// @Param productId path string true "Product ID"
+// @Param id path string true "Product ID"
 // @Param reviewId path string true "Review ID"
 // @Param request body requests.UpdateReviewRequest true "Review update request"
 // @Success 200 {object} responses.ReviewResponse
@@ -251,7 +251,7 @@ func (h *ReviewHandler) GetUserReviews(c *gin.Context) {
 // @Failure 403 {object} gin.H
 // @Failure 404 {object} gin.H
 // @Failure 500 {object} gin.H
-// @Router /products/{productId}/reviews/{reviewId} [put]
+// @Router /products/{id}/reviews/{reviewId} [put]
 func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	// Get user ID from authentication context
 	userID, exists := c.Get("firebase_uid")
@@ -272,8 +272,8 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	}
 
 	// Get parameters
-	productID := c.Param("productId")
-	reviewID := c.Param("reviewId")
+	productID := c.Param("id")      // Product ID comes from /products/:id/
+	reviewID := c.Param("reviewId") // Review ID comes from /:reviewId
 	if productID == "" || reviewID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID and Review ID are required"})
 		return
@@ -301,13 +301,13 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	})
 }
 
-// DeleteReview handles DELETE /products/:productId/reviews/:reviewId
+// DeleteReview handles DELETE /products/:id/reviews/:reviewId
 // @Summary Delete a review
 // @Description Delete a review (only by review owner or admin)
 // @Tags reviews
 // @Accept json
 // @Produce json
-// @Param productId path string true "Product ID"
+// @Param id path string true "Product ID"
 // @Param reviewId path string true "Review ID"
 // @Success 200 {object} gin.H
 // @Failure 400 {object} gin.H
@@ -315,7 +315,7 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 // @Failure 403 {object} gin.H
 // @Failure 404 {object} gin.H
 // @Failure 500 {object} gin.H
-// @Router /products/{productId}/reviews/{reviewId} [delete]
+// @Router /products/{id}/reviews/{reviewId} [delete]
 func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	// Get user ID from authentication context
 	userID, exists := c.Get("firebase_uid")
@@ -342,8 +342,8 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	}
 
 	// Get parameters
-	productID := c.Param("productId")
-	reviewID := c.Param("reviewId")
+	productID := c.Param("id")      // Product ID comes from /products/:id/
+	reviewID := c.Param("reviewId") // Review ID comes from /:reviewId
 	if productID == "" || reviewID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID and Review ID are required"})
 		return
@@ -368,20 +368,20 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	})
 }
 
-// LikeReview handles POST /products/:productId/reviews/:reviewId/like
+// LikeReview handles POST /products/:id/reviews/:reviewId/like
 // @Summary Like or unlike a review
 // @Description Like or unlike a review (authenticated users only)
 // @Tags reviews
 // @Accept json
 // @Produce json
-// @Param productId path string true "Product ID"
+// @Param id path string true "Product ID"
 // @Param reviewId path string true "Review ID"
 // @Param action body map[string]string true "Action: like or unlike"
 // @Success 200 {object} responses.ReviewActionResponse
 // @Failure 400 {object} gin.H
 // @Failure 401 {object} gin.H
 // @Failure 500 {object} gin.H
-// @Router /products/{productId}/reviews/{reviewId}/like [post]
+// @Router /products/{id}/reviews/{reviewId}/like [post]
 func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	// Get user ID from authentication context
 	userID, exists := c.Get("firebase_uid")
@@ -402,8 +402,8 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	}
 
 	// Get parameters
-	productID := c.Param("productId")
-	reviewID := c.Param("reviewId")
+	productID := c.Param("id")      // Product ID comes from /products/:id/
+	reviewID := c.Param("reviewId") // Review ID comes from /:reviewId
 	if productID == "" || reviewID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID and Review ID are required"})
 		return
@@ -441,20 +441,20 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// GetReviewStats handles GET /products/:productId/reviews/stats
+// GetReviewStats handles GET /products/:id/reviews/stats
 // @Summary Get review statistics for a product
 // @Description Get aggregated review statistics including average rating, rating breakdown, etc.
 // @Tags reviews
 // @Accept json
 // @Produce json
-// @Param productId path string true "Product ID"
+// @Param id path string true "Product ID"
 // @Success 200 {object} responses.ReviewStatsResponse
 // @Failure 400 {object} gin.H
 // @Failure 500 {object} gin.H
-// @Router /products/{productId}/reviews/stats [get]
+// @Router /products/{id}/reviews/stats [get]
 func (h *ReviewHandler) GetReviewStats(c *gin.Context) {
 	// Get product ID from URL parameter
-	productID := c.Param("productId")
+	productID := c.Param("id") // Product ID comes from /products/:id/
 	if productID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
 		return

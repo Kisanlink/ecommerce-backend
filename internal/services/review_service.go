@@ -341,19 +341,42 @@ func (s *ReviewService) UpdateReview(ctx context.Context, reviewID string, req *
 }
 
 // DeleteReview deletes a review (soft delete by setting is_active = false)
+// DeleteReview handles review deletion with proper DynamoDB key lookup
 func (s *ReviewService) DeleteReview(ctx context.Context, req *requests.DeleteReviewRequest, userID string, isAdmin bool) error {
 	if err := req.Validate(); err != nil {
+		s.logger.Error("DeleteReview validation failed", zap.Error(err), zap.String("review_id", req.ReviewID))
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Get the existing review first
+	s.logger.Info("Attempting to delete review",
+		zap.String("review_id", req.ReviewID),
+		zap.String("product_id", req.ProductID),
+		zap.String("user_id", userID),
+		zap.Bool("is_admin", isAdmin))
+
+	// Get the review by its ID (this will use scan to find it)
 	review, err := s.getReviewByID(ctx, req.ReviewID)
 	if err != nil {
+		s.logger.Error("Failed to get review for deletion", zap.Error(err), zap.String("review_id", req.ReviewID))
 		return fmt.Errorf("failed to get review: %w", err)
 	}
 
-	// Check permissions
+	// Verify that the review belongs to the specified product
+	if review.ProductID != req.ProductID {
+		s.logger.Error("Product ID mismatch",
+			zap.String("review_product_id", review.ProductID),
+			zap.String("request_product_id", req.ProductID),
+			zap.String("review_id", req.ReviewID))
+		return errors.New("product ID mismatch")
+	}
+
+	// Check permissions - user can delete own review or admin can delete any
 	if review.UserID != userID && !isAdmin {
+		s.logger.Error("Unauthorized delete attempt",
+			zap.String("review_user_id", review.UserID),
+			zap.String("requesting_user_id", userID),
+			zap.Bool("is_admin", isAdmin),
+			zap.String("review_id", req.ReviewID))
 		return errors.New("unauthorized: can only delete own reviews or admin access required")
 	}
 
@@ -363,12 +386,13 @@ func (s *ReviewService) DeleteReview(ctx context.Context, req *requests.DeleteRe
 
 	// Save updated review to DynamoDB
 	if err := s.saveReviewToDynamoDB(ctx, review); err != nil {
+		s.logger.Error("Failed to save deleted review to DynamoDB", zap.Error(err), zap.String("review_id", req.ReviewID))
 		return fmt.Errorf("failed to delete review: %w", err)
 	}
 
 	// Update product statistics
 	if err := s.updateProductReviewStats(ctx, review.ProductID); err != nil {
-		s.logger.Warn("Failed to update product review stats", zap.Error(err))
+		s.logger.Warn("Failed to update product review stats after deletion", zap.Error(err), zap.String("product_id", review.ProductID))
 	}
 
 	s.logger.Info("Review deleted successfully",
@@ -382,17 +406,29 @@ func (s *ReviewService) DeleteReview(ctx context.Context, req *requests.DeleteRe
 // LikeReview handles like/unlike actions on a review
 func (s *ReviewService) LikeReview(ctx context.Context, req *requests.LikeReviewRequest, userID string) (*responses.ReviewActionResponse, error) {
 	if err := req.Validate(); err != nil {
+		s.logger.Error("LikeReview validation failed", zap.Error(err), zap.String("review_id", req.ReviewID))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Get the existing review
+	s.logger.Info("Attempting to like/unlike review",
+		zap.String("review_id", req.ReviewID),
+		zap.String("product_id", req.ProductID),
+		zap.String("user_id", userID),
+		zap.String("action", req.Action))
+
+	// Get the review by its ID (this will use scan to find it)
 	review, err := s.getReviewByID(ctx, req.ReviewID)
 	if err != nil {
+		s.logger.Error("Failed to get review for like/unlike", zap.Error(err), zap.String("review_id", req.ReviewID))
 		return nil, fmt.Errorf("failed to get review: %w", err)
 	}
 
 	// Verify product ID matches
 	if review.ProductID != req.ProductID {
+		s.logger.Error("Product ID mismatch in like request",
+			zap.String("review_product_id", review.ProductID),
+			zap.String("request_product_id", req.ProductID),
+			zap.String("review_id", req.ReviewID))
 		return nil, errors.New("product ID mismatch")
 	}
 
@@ -416,8 +452,15 @@ func (s *ReviewService) LikeReview(ctx context.Context, req *requests.LikeReview
 		}
 	}
 
+	s.logger.Info("Like/Unlike action processed",
+		zap.String("review_id", req.ReviewID),
+		zap.String("action", req.Action),
+		zap.Bool("success", success),
+		zap.Int("new_likes_count", review.LikesCount))
+
 	// Save updated review to DynamoDB (even if no change, for consistency)
 	if err := s.saveReviewToDynamoDB(ctx, review); err != nil {
+		s.logger.Error("Failed to save review after like/unlike", zap.Error(err), zap.String("review_id", req.ReviewID))
 		return nil, fmt.Errorf("failed to update review: %w", err)
 	}
 
@@ -427,13 +470,13 @@ func (s *ReviewService) LikeReview(ctx context.Context, req *requests.LikeReview
 		zap.String("action", req.Action),
 		zap.Bool("success", success))
 
-	return responses.NewReviewActionResponse(
-		success,
-		message,
-		req.ReviewID,
-		review.LikesCount,
-		review.HasUserLiked(userID),
-	), nil
+	return &responses.ReviewActionResponse{
+		Success:     success,
+		Message:     message,
+		ReviewID:    review.ID,
+		LikesCount:  review.LikesCount,
+		IsUserLiked: review.HasUserLiked(userID),
+	}, nil
 }
 
 // GetReviewStats gets aggregated review statistics for a product
@@ -500,35 +543,44 @@ func (s *ReviewService) saveReviewToDynamoDB(ctx context.Context, review *models
 
 // getReviewByID retrieves a review by its ID
 func (s *ReviewService) getReviewByID(ctx context.Context, reviewID string) (*models.Review, error) {
-	// Since we need both product_id and user_id for DynamoDB key,
-	// we'll need to implement a global secondary index or scan
-	// For now, we'll use scan with filter (not optimal for production)
-
 	if s.dynamoClient == nil {
 		return nil, errors.New("DynamoDB not available")
 	}
 
+	// Log the review ID we're looking for
+	s.logger.Info("Looking for review by ID", zap.String("review_id", reviewID))
+
+	// Use scan with filter - we need this because we don't have a GSI on id field
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(s.tableName),
-		FilterExpression: aws.String("id = :review_id"),
+		FilterExpression: aws.String("ID = :review_id AND is_active = :is_active"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":review_id": &types.AttributeValueMemberS{Value: reviewID},
+			":is_active": &types.AttributeValueMemberBOOL{Value: true},
 		},
-		Limit: aws.Int32(1),
 	}
 
 	result, err := s.dynamoClient.Scan(ctx, input)
 	if err != nil {
+		s.logger.Error("Failed to scan for review", zap.Error(err), zap.String("review_id", reviewID))
 		return nil, fmt.Errorf("failed to scan for review: %w", err)
 	}
 
-	if len(result.Items) == 0 {
+	s.logger.Info("Scan result", zap.Int32("item_count", result.Count), zap.String("review_id", reviewID))
+
+	if result.Count == 0 || len(result.Items) == 0 {
+		s.logger.Warn("Review not found", zap.String("review_id", reviewID))
 		return nil, errors.New("review not found")
 	}
 
 	review := &models.Review{}
-	err = attributevalue.UnmarshalMap(result.Items[0], review)
-	return review, err
+	if err := attributevalue.UnmarshalMap(result.Items[0], review); err != nil {
+		s.logger.Error("Failed to unmarshal review", zap.Error(err), zap.String("review_id", reviewID))
+		return nil, fmt.Errorf("failed to unmarshal review: %w", err)
+	}
+
+	s.logger.Info("Successfully found review", zap.String("review_id", reviewID), zap.String("product_id", review.ProductID), zap.String("user_id", review.UserID))
+	return review, nil
 }
 
 // GetReviewByUserAndProduct gets a review by user and product (for checking duplicates)
