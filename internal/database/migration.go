@@ -149,7 +149,7 @@ func (m *Migration) createReviewsTable(ctx context.Context, client *dynamodb.Cli
 					},
 				},
 				Projection: &types.Projection{
-					ProjectionType: types.ProjectionTypeAll,
+					ProjectionType: types.ProjectionTypeKeysOnly,
 				},
 			},
 		},
