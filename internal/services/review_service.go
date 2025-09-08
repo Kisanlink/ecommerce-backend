@@ -55,37 +55,18 @@ func NewReviewService(dbMgr db.DBManager, userService *UserService, profileServi
 	return service
 }
 
-// initDynamoDB initializes the DynamoDB client with AWS credentials from environment
+// initDynamoDB initializes the DynamoDB client using AWS SDK's default credential chain
 func (s *ReviewService) initDynamoDB() error {
 	region := os.Getenv("DB_DYNAMO_REGION")
 	if region == "" {
 		region = os.Getenv("AWS_REGION")
-		if region == "" {
-			return errors.New("no AWS region specified")
-		}
 	}
-
-	accessKey := os.Getenv("DB_DYNAMO_ACCESS_KEY_ID")
-	if accessKey == "" {
-		accessKey = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-
-	secretKey := os.Getenv("DB_DYNAMO_SECRET_ACCESS_KEY")
-	if secretKey == "" {
-		secretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	}
-
-	if accessKey == "" || secretKey == "" {
-		return errors.New("AWS credentials not found")
+	if region == "" {
+		return errors.New("no AWS region specified")
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			accessKey,
-			secretKey,
-			"",
-		)),
 	)
 	if err != nil {
 		return fmt.Errorf("unable to load AWS config: %w", err)
