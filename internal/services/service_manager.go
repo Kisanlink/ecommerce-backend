@@ -17,6 +17,7 @@ type ServiceManager struct {
 	S3Service       *S3Service
 	DeliveryService DeliveryServiceInterface
 	OrderService    OrderServiceInterface
+	ReviewService   *ReviewService
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -38,8 +39,13 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	deliveryService := NewDeliveryService(repoManager, logger)
 	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, s3Service, logger)
 
+	// Create review service with DynamoDB support
+	dbManager := repoManager.GetDBManager()
+	userService := NewUserService(repoManager.UserRepository)
+	reviewService := NewReviewService(dbManager, userService, logger)
+
 	return &ServiceManager{
-		UserService:     NewUserService(repoManager.UserRepository),
+		UserService:     userService,
 		ProductService:  NewProductService(repoManager),
 		ProfileService:  NewProfileService(repoManager),
 		FavoriteService: NewFavoriteService(repoManager),
@@ -48,5 +54,6 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		S3Service:       s3Service,
 		DeliveryService: deliveryService,
 		OrderService:    orderService,
+		ReviewService:   reviewService,
 	}
 }
