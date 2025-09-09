@@ -188,11 +188,12 @@ func (h *PaymentHandler) CheckoutPage(c *gin.Context) {
 // @Router /payments/create-order [post]
 func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	requestID := c.GetString("request_id")
-	h.logger.Info("Creating payment order (Razorpay intent)",
+	h.logger.Info("=== CREATING PAYMENT ORDER (RAZORPAY INTENT) ===",
 		zap.String("request_id", requestID),
 		zap.String("method", c.Request.Method),
 		zap.String("path", c.Request.URL.Path),
-		zap.String("client_ip", c.ClientIP()))
+		zap.String("client_ip", c.ClientIP()),
+		zap.String("flow_step", "create_order_start"))
 
 	// Get user ID from context (works with both Firebase and JWT auth)
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
@@ -201,14 +202,16 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.String("request_id", requestID),
 			zap.String("client_ip", c.ClientIP()),
 			zap.String("user_agent", c.GetHeader("User-Agent")),
-			zap.String("error_type", "authentication_error"))
+			zap.String("error_type", "authentication_error"),
+			zap.String("flow_step", "authentication_failed"))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
 	h.logger.Info("User authenticated for payment order creation",
 		zap.String("request_id", requestID),
-		zap.String("user_id", userID))
+		zap.String("user_id", userID),
+		zap.String("flow_step", "authentication_success"))
 
 	var req CreateOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -216,7 +219,8 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.Error(err),
-			zap.String("error_type", "validation_error"))
+			zap.String("error_type", "validation_error"),
+			zap.String("flow_step", "request_binding_failed"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
 		return
 	}
@@ -285,28 +289,40 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 
 	// Require address_id to be provided - no caching
 	if req.ShippingAddressID == "" {
-		h.logger.Error("Missing shipping address ID",
+		h.logger.Error("Missing shipping address ID in payment order request",
 			zap.String("request_id", requestID),
-			zap.String("user_id", userID))
+			zap.String("user_id", userID),
+			zap.String("flow_step", "missing_address_id"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "shipping_address_id is required"})
 		return
 	}
 
+	h.logger.Info("Processing shipping address for payment order",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.String("address_id", req.ShippingAddressID),
+		zap.String("flow_step", "resolving_address"))
+
 	shippingAddressID = req.ShippingAddressID
 	if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
 		shippingAddress = h.orderService.FormatAddress(addr)
-		h.logger.Info("Shipping address resolved",
+		h.logger.Info("Shipping address resolved successfully",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("address_id", shippingAddressID),
-			zap.String("address", shippingAddress))
+			zap.String("address", shippingAddress),
+			zap.String("city", addr.City),
+			zap.String("state", addr.State),
+			zap.String("postal_code", addr.PostalCode),
+			zap.String("flow_step", "address_resolved"))
 	} else {
-		h.logger.Error("Failed to resolve shipping address",
+		h.logger.Error("Failed to resolve shipping address for payment order",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("address_id", req.ShippingAddressID),
 			zap.Error(err),
-			zap.String("error_type", "address_resolution_error"))
+			zap.String("error_type", "address_resolution_error"),
+			zap.String("flow_step", "address_resolution_failed"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid shipping_address_id"})
 		return
 	}
@@ -883,103 +899,175 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		}
 
 		// Create Delhivery shipment after successful order creation with enhanced error handling
-		h.logger.Info("Preparing to create Delhivery shipment",
+		h.logger.Info("=== STARTING DELHIVERY SHIPMENT CREATION FLOW ===",
 			zap.String("request_id", requestID),
 			zap.String("order_id", order.ID),
-			zap.String("user_id", userID))
+			zap.String("user_id", userID),
+			zap.String("flow_step", "shipment_creation_start"))
 
 		var awbNumber, trackingURL string
 		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
+
+		h.logger.Info("Order items retrieval result",
+			zap.String("request_id", requestID),
+			zap.String("order_id", order.ID),
+			zap.Error(getOrderErr),
+			zap.Bool("has_error", getOrderErr != nil),
+			zap.Bool("order_is_nil", orderWithItems == nil),
+			zap.Int("items_count", len(orderItems)),
+			zap.String("flow_step", "order_items_retrieval"))
+
 		if getOrderErr != nil {
 			h.logger.Error("Failed to get order items for shipment creation",
 				zap.String("request_id", requestID),
 				zap.Error(getOrderErr),
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID),
-				zap.String("error_type", "order_items_retrieval_error"))
+				zap.String("error_type", "order_items_retrieval_error"),
+				zap.String("flow_step", "order_items_retrieval_failed"))
 			// Continue without shipment creation - order is still valid
 		} else if len(orderItems) == 0 {
 			h.logger.Error("No order items found for shipment creation",
 				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID),
-				zap.String("error_type", "empty_order_items_error"))
+				zap.String("error_type", "empty_order_items_error"),
+				zap.String("flow_step", "empty_order_items"))
 			// Continue without shipment creation - order is still valid
 		} else {
+			h.logger.Info("=== PROCEEDING WITH SHIPMENT CREATION ===",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("flow_step", "shipment_creation_proceed"))
+
 			// Enhanced shipment creation with detailed logging
-			h.logger.Info("Creating Delhivery shipment",
+			h.logger.Info("Creating Delhivery shipment - detailed context",
 				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID),
 				zap.Int("item_count", len(orderItems)),
-				zap.String("shipping_address", orderWithItems.ShippingAddr))
+				zap.String("shipping_address", orderWithItems.ShippingAddr),
+				zap.String("shipping_addr_id", orderWithItems.ShippingAddrID),
+				zap.String("customer_name", orderWithItems.CustomerFirstName+" "+orderWithItems.CustomerLastName),
+				zap.String("customer_phone", orderWithItems.CustomerPhone),
+				zap.Float64("total_amount", orderWithItems.TotalAmount),
+				zap.Float64("shipping_charge", orderWithItems.ShippingCharge),
+				zap.String("flow_step", "calling_delivery_service"))
 
 			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
+
+			h.logger.Info("=== SHIPMENT CREATION SERVICE RESPONSE ===",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.Bool("has_error", shipmentErr != nil),
+				zap.Bool("result_is_nil", shipmentResult == nil),
+				zap.String("flow_step", "shipment_service_response"))
+
+			// Enhanced shipment result logging
 			if shipmentErr != nil {
-				h.logger.Error("Delhivery shipment creation failed",
+				h.logger.Error("=== DELHIVERY SHIPMENT CREATION FAILED WITH ERROR ===",
 					zap.String("request_id", requestID),
 					zap.Error(shipmentErr),
 					zap.String("order_id", order.ID),
 					zap.String("user_id", userID),
 					zap.String("error_type", "shipment_creation_error"),
-					zap.String("error_details", shipmentErr.Error()))
+					zap.String("error_details", shipmentErr.Error()),
+					zap.String("error_message", shipmentErr.Error()),
+					zap.String("flow_step", "shipment_creation_error"))
 
 				// Even if shipment fails, payment is successful - notify user
 				h.logger.Warn("Order created successfully but shipment creation failed - manual intervention required",
 					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID))
+					zap.String("order_id", order.ID),
+					zap.String("flow_step", "shipment_failed_but_order_success"))
 			} else if shipmentResult == nil {
-				h.logger.Error("Delhivery shipment result is nil",
+				h.logger.Error("=== DELHIVERY SHIPMENT RESULT IS NIL ===",
 					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
-					zap.String("error_type", "nil_shipment_result"))
-			} else if !shipmentResult.Success {
-				h.logger.Error("Delhivery shipment creation returned failure status",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("message", shipmentResult.Message),
-					zap.String("error_type", "shipment_api_failure"))
-			} else if shipmentResult.Waybill == "" {
-				h.logger.Error("Delhivery shipment creation returned empty waybill",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("message", shipmentResult.Message),
-					zap.String("error_type", "empty_waybill_error"))
+					zap.String("error_type", "nil_shipment_result"),
+					zap.String("flow_step", "nil_shipment_result"))
 			} else {
-				// Shipment created successfully
-				awbNumber = shipmentResult.Waybill
-				trackingURL = shipmentResult.TrackingURL
+				h.logger.Info("=== ANALYZING SHIPMENT RESULT ===",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.Bool("result_success", shipmentResult.Success),
+					zap.String("result_message", shipmentResult.Message),
+					zap.String("result_waybill", shipmentResult.Waybill),
+					zap.String("result_tracking_url", shipmentResult.TrackingURL),
+					zap.String("result_status", shipmentResult.Status),
+					zap.String("flow_step", "shipment_result_analysis"))
 
-				// Ensure tracking URL is not empty - generate if needed
-				if trackingURL == "" && awbNumber != "" {
-					trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
-					h.logger.Info("Generated tracking URL for AWB",
+				if !shipmentResult.Success {
+					h.logger.Error("=== DELHIVERY API RETURNED FAILURE STATUS ===",
 						zap.String("request_id", requestID),
-						zap.String("awb", awbNumber),
-						zap.String("tracking_url", trackingURL))
-				}
-
-				// Update order with shipment details atomically
-				if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
-					c.Request.Context(),
-					order.ID,
-					shipmentResult.Waybill,
-					trackingURL,
-					shipmentResult.Status,
-				); updateErr != nil {
-					h.logger.Error("Failed to update order with Delhivery shipment details",
-						zap.String("request_id", requestID),
-						zap.Error(updateErr),
 						zap.String("order_id", order.ID),
-						zap.String("waybill", shipmentResult.Waybill),
-						zap.String("error_type", "shipment_update_error"))
+						zap.String("message", shipmentResult.Message),
+						zap.String("error_type", "shipment_api_failure"),
+						zap.String("flow_step", "api_failure_status"))
+				} else if shipmentResult.Waybill == "" {
+					h.logger.Error("=== EMPTY WAYBILL RECEIVED FROM DELHIVERY ===",
+						zap.String("request_id", requestID),
+						zap.String("order_id", order.ID),
+						zap.String("message", shipmentResult.Message),
+						zap.String("status", shipmentResult.Status),
+						zap.String("tracking_url", shipmentResult.TrackingURL),
+						zap.String("error_type", "empty_waybill_error"),
+						zap.String("flow_step", "empty_waybill_error"))
 				} else {
-					h.logger.Info("Delhivery shipment created and order updated successfully",
+					h.logger.Info("=== DELHIVERY SHIPMENT CREATED SUCCESSFULLY ===",
+						zap.String("request_id", requestID),
+						zap.String("order_id", order.ID),
+						zap.String("awb_number", shipmentResult.Waybill),
+						zap.String("tracking_url", shipmentResult.TrackingURL),
+						zap.String("status", shipmentResult.Status),
+						zap.String("flow_step", "shipment_success"))
+
+					// Shipment created successfully
+					awbNumber = shipmentResult.Waybill
+					trackingURL = shipmentResult.TrackingURL
+
+					// Ensure tracking URL is not empty - generate if needed
+					if trackingURL == "" && awbNumber != "" {
+						trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
+						h.logger.Info("Generated tracking URL for AWB",
+							zap.String("request_id", requestID),
+							zap.String("awb", awbNumber),
+							zap.String("tracking_url", trackingURL),
+							zap.String("flow_step", "tracking_url_generated"))
+					}
+
+					h.logger.Info("=== UPDATING ORDER WITH SHIPMENT DETAILS ===",
 						zap.String("request_id", requestID),
 						zap.String("order_id", order.ID),
 						zap.String("waybill", shipmentResult.Waybill),
 						zap.String("tracking_url", trackingURL),
-						zap.String("status", shipmentResult.Status))
+						zap.String("status", shipmentResult.Status),
+						zap.String("flow_step", "updating_order_with_shipment"))
+
+					// Update order with shipment details atomically
+					if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
+						c.Request.Context(),
+						order.ID,
+						shipmentResult.Waybill,
+						trackingURL,
+						shipmentResult.Status,
+					); updateErr != nil {
+						h.logger.Error("=== FAILED TO UPDATE ORDER WITH SHIPMENT DETAILS ===",
+							zap.String("request_id", requestID),
+							zap.Error(updateErr),
+							zap.String("order_id", order.ID),
+							zap.String("waybill", shipmentResult.Waybill),
+							zap.String("error_type", "shipment_update_error"),
+							zap.String("flow_step", "order_update_failed"))
+					} else {
+						h.logger.Info("=== ORDER UPDATED WITH SHIPMENT DETAILS SUCCESSFULLY ===",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("waybill", shipmentResult.Waybill),
+							zap.String("tracking_url", trackingURL),
+							zap.String("status", shipmentResult.Status),
+							zap.String("flow_step", "order_update_success"))
+					}
 				}
 			}
 		}
@@ -1002,6 +1090,15 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		}
 
 		// Prepare comprehensive response
+		h.logger.Info("=== PREPARING PAYMENT VERIFICATION RESPONSE ===",
+			zap.String("request_id", requestID),
+			zap.String("order_id", order.ID),
+			zap.String("awb_number", awbNumber),
+			zap.String("tracking_url", trackingURL),
+			zap.Bool("has_awb", awbNumber != ""),
+			zap.Bool("has_tracking_url", trackingURL != ""),
+			zap.String("flow_step", "preparing_response"))
+
 		responseMessage := "Payment verified and order created successfully"
 		if awbNumber != "" {
 			responseMessage += fmt.Sprintf(". Shipment AWB: %s", awbNumber)

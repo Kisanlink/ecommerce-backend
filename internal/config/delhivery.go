@@ -75,3 +75,42 @@ func GetDelhiveryConfig() DelhiveryConfig {
 		ServiceStatus: serviceStatus,
 	}
 }
+
+// ValidateDelhiveryConfig validates critical configuration values
+func ValidateDelhiveryConfig(config DelhiveryConfig) []string {
+	var issues []string
+
+	if config.APIToken == "" {
+		issues = append(issues, "DELHIVERY_API_TOKEN is required")
+	}
+
+	if len(config.APIToken) < 20 {
+		issues = append(issues, "DELHIVERY_API_TOKEN appears to be invalid (too short)")
+	}
+
+	if config.BaseURL == "" {
+		issues = append(issues, "DELHIVERY_BASE_URL is required")
+	}
+
+	if len(config.OriginPincode) != 6 {
+		issues = append(issues, "DELHIVERY_ORIGIN_PINCODE must be exactly 6 digits")
+	}
+
+	if config.WarehouseName == "" {
+		issues = append(issues, "DELHIVERY_WAREHOUSE_NAME is required and must match your registered pickup location")
+	}
+
+	if config.OriginCity == "" || config.OriginState == "" {
+		issues = append(issues, "DELHIVERY_ORIGIN_CITY and DELHIVERY_ORIGIN_STATE are required")
+	}
+
+	if config.OriginAddress == "" || config.OriginAddress == "Default Address" {
+		issues = append(issues, "DELHIVERY_ORIGIN_ADDRESS must be set to your actual pickup address")
+	}
+
+	if len(config.OriginPhone) < 10 {
+		issues = append(issues, "DELHIVERY_ORIGIN_PHONE must be a valid phone number")
+	}
+
+	return issues
+}

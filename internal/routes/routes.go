@@ -31,9 +31,10 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		})
 	})
 
-	// Debug endpoint to check Firebase status
-	debugHandler := handlers.NewDebugHandler()
+	// Debug endpoints
+	debugHandler := handlers.NewDebugHandler(logger)
 	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
+	r.GET("/debug/delhivery-config", debugHandler.CheckDelhiveryConfig)
 
 	// API versioning
 	v1 := r.Group("/api/v1")

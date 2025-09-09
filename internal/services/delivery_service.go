@@ -54,13 +54,33 @@ type DeliveryService struct {
 }
 
 func NewDeliveryService(repoManager *repositories.RepositoryManager, logger *zap.Logger) *DeliveryService {
+	delhiveryConfig := config.GetDelhiveryConfig()
+
+	// Validate configuration and log any issues
+	if issues := config.ValidateDelhiveryConfig(delhiveryConfig); len(issues) > 0 {
+		for _, issue := range issues {
+			logger.Error("Delhivery configuration issue", zap.String("issue", issue))
+		}
+		logger.Warn("Delhivery service may not work properly due to configuration issues")
+	}
+
+	// Log configuration (with masked sensitive data)
+	logger.Info("Delhivery service initialized with configuration",
+		zap.String("base_url", delhiveryConfig.BaseURL),
+		zap.Bool("is_production", delhiveryConfig.IsProduction),
+		zap.String("warehouse_name", delhiveryConfig.WarehouseName),
+		zap.String("origin_pincode", delhiveryConfig.OriginPincode),
+		zap.String("origin_city", delhiveryConfig.OriginCity),
+		zap.String("origin_state", delhiveryConfig.OriginState),
+		zap.String("api_token_preview", delhiveryConfig.APIToken[:8]+"..."))
+
 	return &DeliveryService{
 		repoManager: repoManager,
 		dbManager:   repoManager.GetDBManager(),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		config: config.GetDelhiveryConfig(),
+		config: delhiveryConfig,
 		logger: logger,
 	}
 }
@@ -540,10 +560,28 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		}, fmt.Errorf("failed to marshal shipment request: %w", err)
 	}
 
+	// Enhanced logging for shipment request preparation
+	s.logger.Info("Preparing Delhivery shipment request with detailed config",
+		zap.String("order_id", order.ID),
+		zap.String("api_token", s.config.APIToken[:8]+"..."+s.config.APIToken[len(s.config.APIToken)-8:]), // Masked token
+		zap.String("base_url", s.config.BaseURL),
+		zap.Bool("is_production", s.config.IsProduction),
+		zap.String("warehouse_name", s.config.WarehouseName),
+		zap.String("origin_pincode", s.config.OriginPincode),
+		zap.String("origin_city", s.config.OriginCity),
+		zap.String("origin_state", s.config.OriginState),
+		zap.String("dest_pincode", pincode),
+		zap.String("dest_city", destCity),
+		zap.String("dest_state", destState),
+		zap.String("customer_name", custName),
+		zap.String("customer_phone", custPhone),
+		zap.String("unique_order_id", uniqueOrderID))
+
 	s.logger.Info("Sending shipment creation request to Delhivery",
 		zap.String("order_id", order.ID),
 		zap.String("endpoint", endpoint),
-		zap.String("unique_order_id", uniqueOrderID))
+		zap.String("unique_order_id", uniqueOrderID),
+		zap.String("request_data", string(dataJSON)))
 
 	formData := url.Values{}
 	formData.Set("format", "json")
@@ -563,6 +601,15 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	req.Header.Set("Authorization", "Token "+s.config.APIToken)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+
+	// Log request headers for debugging (without exposing full token)
+	s.logger.Info("HTTP request details for Delhivery API",
+		zap.String("order_id", order.ID),
+		zap.String("method", "POST"),
+		zap.String("endpoint", endpoint),
+		zap.String("content_type", "application/x-www-form-urlencoded"),
+		zap.String("authorization_prefix", "Token "+s.config.APIToken[:8]+"..."),
+		zap.Int("form_data_length", len(formData.Encode())))
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -604,28 +651,50 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		}, fmt.Errorf("shipment API failed: HTTP %d - %s", resp.StatusCode, string(body))
 	}
 
-	// Log response for debugging
-	s.logger.Debug("Raw Delhivery API response",
+	// Enhanced response logging for debugging AWS issues
+	s.logger.Info("Raw Delhivery API response received",
+		zap.String("order_id", order.ID),
+		zap.Int("response_length", len(body)),
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("content_type", resp.Header.Get("Content-Type")))
+
+	// Always log the full response body for debugging
+	s.logger.Info("Full Delhivery API response body",
 		zap.String("order_id", order.ID),
 		zap.String("response_body", string(body)))
 
 	shipmentResp, err := responses.ParseShipmentResponse(body)
 	if err != nil {
-		s.logger.Error("Failed to parse Delhivery shipment response",
+		s.logger.Error("Failed to parse Delhivery shipment response - JSON parsing error",
 			zap.Error(err),
 			zap.String("order_id", order.ID),
-			zap.String("response_body", string(body)))
+			zap.String("response_body", string(body)),
+			zap.String("error_type", "json_parse_error"))
 		return &ShipmentResult{
 			Success: false,
 			Message: "Failed to parse Delhivery response",
 		}, fmt.Errorf("failed to parse shipment response: %w", err)
 	}
 
+	// Enhanced response validation with detailed logging
+	s.logger.Info("Analyzing Delhivery response structure",
+		zap.String("order_id", order.ID),
+		zap.Bool("response_success", shipmentResp.Success),
+		zap.Int("packages_count", len(shipmentResp.PackageData)),
+		zap.String("rmk_field", shipmentResp.RMK),
+		zap.Float64("cash_total", shipmentResp.CashTotal),
+		zap.Float64("cod_total", shipmentResp.CODTotal),
+		zap.Float64("prepaid", shipmentResp.Prepaid))
+
 	if !shipmentResp.IsSuccessful() {
 		errorMsg := shipmentResp.GetErrorMessage()
-		s.logger.Error("Delhivery shipment creation failed",
+		s.logger.Error("Delhivery shipment creation failed - API returned failure status",
 			zap.String("order_id", order.ID),
-			zap.String("error_message", errorMsg))
+			zap.String("error_message", errorMsg),
+			zap.Bool("success_flag", shipmentResp.Success),
+			zap.Int("packages_received", len(shipmentResp.PackageData)),
+			zap.String("rmk", shipmentResp.RMK),
+			zap.String("error_type", "delhivery_api_failure"))
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Failed to create shipment: %s", errorMsg),
@@ -633,10 +702,31 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	}
 
 	waybill := shipmentResp.GetWaybill()
+	s.logger.Info("Extracted waybill from response",
+		zap.String("order_id", order.ID),
+		zap.String("waybill", waybill),
+		zap.Int("packages_count", len(shipmentResp.PackageData)))
+
 	if waybill == "" {
+		// Enhanced debugging for empty waybill
+		if len(shipmentResp.PackageData) > 0 {
+			pkg := shipmentResp.PackageData[0]
+			s.logger.Error("Waybill extraction failed despite having package data",
+				zap.String("order_id", order.ID),
+				zap.String("package_status", pkg.Status),
+				zap.String("package_client", pkg.Client),
+				zap.String("package_sort_code", pkg.SortCode),
+				zap.String("package_waybill", pkg.Waybill),
+				zap.String("package_refnum", pkg.RefNum),
+				zap.String("package_payment_mode", pkg.PaymentMode),
+				zap.String("package_remarks", pkg.Remarks.String()),
+				zap.String("error_type", "empty_waybill_with_packages"))
+		}
+
 		s.logger.Error("No waybill received from Delhivery despite successful response",
 			zap.String("order_id", order.ID),
-			zap.String("response_body", string(body)))
+			zap.String("response_body", string(body)),
+			zap.String("error_type", "no_waybill_received"))
 		return &ShipmentResult{
 			Success: false,
 			Message: "No AWB/Waybill number received from Delhivery",
