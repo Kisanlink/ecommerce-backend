@@ -587,23 +587,55 @@ func (h *CartHandler) EstimateShipping(c *gin.Context) {
 		return
 	}
 
+	h.logger.Info("=== SHIPPING ESTIMATION REQUEST ===",
+		zap.String("user_id", userID),
+		zap.String("flow_step", "estimate_shipping_start"))
+
 	var req requests.EstimateShippingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid shipping estimation request",
+			zap.Error(err),
+			zap.String("user_id", userID),
+			zap.String("flow_step", "request_binding_failed"))
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request: " + err.Error()})
 		return
 	}
 
+	h.logger.Info("Shipping estimation request details",
+		zap.String("user_id", userID),
+		zap.String("street", req.Address.Street),
+		zap.String("city", req.Address.City),
+		zap.String("state", req.Address.State),
+		zap.String("postal_code", req.Address.PostalCode),
+		zap.String("country", req.Address.Country),
+		zap.String("shipping_method", req.ShippingMethod),
+		zap.String("flow_step", "request_details"))
+
 	if h.deliverySvc == nil {
+		h.logger.Error("Delivery service not configured",
+			zap.String("user_id", userID),
+			zap.String("flow_step", "delivery_service_missing"))
 		c.JSON(http.StatusNotImplemented, gin.H{"success": false, "error": "Delivery service not configured"})
 		return
 	}
 
 	est, err := h.deliverySvc.Estimate(c.Request.Context(), userID, req)
 	if err != nil {
-		h.logger.Error("Estimate shipping failed", zap.Error(err), zap.String("user_id", userID))
+		h.logger.Error("Estimate shipping failed",
+			zap.Error(err),
+			zap.String("user_id", userID),
+			zap.String("postal_code", req.Address.PostalCode),
+			zap.String("flow_step", "delivery_estimation_failed"))
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to estimate shipping", "details": err.Error()})
 		return
 	}
+
+	h.logger.Info("Shipping estimation successful",
+		zap.String("user_id", userID),
+		zap.String("address_id", est.AddressID),
+		zap.Float64("subtotal", est.Subtotal),
+		zap.Int("options_count", len(est.Options)),
+		zap.String("flow_step", "estimation_success"))
 
 	// Transform the DeliveryEstimate response to match expected format
 	response := gin.H{
