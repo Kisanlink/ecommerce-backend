@@ -36,9 +36,9 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 
 	// Create services
 	addressService := NewAddressService(repoManager, logger)
-	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.GetDBManager(), logger)
+	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, repoManager.GetDBManager(), logger)
 	deliveryService := NewDeliveryService(repoManager, logger)
-	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, s3Service, logger)
+	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, s3Service, logger)
 
 	// Create review service with DynamoDB support
 	dbManager := repoManager.GetDBManager()

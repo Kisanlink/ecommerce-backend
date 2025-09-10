@@ -501,9 +501,6 @@ func (s *PDFTemplateService) addModernItemsTable(pdf *gofpdf.Fpdf, data *Invoice
 
 // addModernTotalsSection creates a modern totals summary
 func (s *PDFTemplateService) addModernTotalsSection(pdf *gofpdf.Fpdf, data *InvoiceData, config *InvoiceTemplateConfig) {
-	// Use the actual total amount from the order data
-	finalTotal := data.TotalAmount
-
 	// Calculate subtotal from items
 	subtotal := 0.0
 	for _, item := range data.Items {
@@ -518,6 +515,16 @@ func (s *PDFTemplateService) addModernTotalsSection(pdf *gofpdf.Fpdf, data *Invo
 		taxRate = config.TaxRate
 	}
 	totalTax := subtotal * taxRate / 100
+
+	// Calculate the correct total: subtotal + tax + shipping
+	calculatedTotal := subtotal + totalTax + data.ShippingCharge
+
+	// Use the calculated total instead of the stored TotalAmount to ensure accuracy
+	finalTotal := calculatedTotal
+
+	// Log the calculation for debugging (can be removed in production)
+	fmt.Printf("Invoice Total Calculation - Subtotal: %.2f, Tax: %.2f, Shipping: %.2f, Calculated Total: %.2f, Stored Total: %.2f\n",
+		subtotal, totalTax, data.ShippingCharge, calculatedTotal, data.TotalAmount)
 
 	// Summary card
 	currentY := pdf.GetY()

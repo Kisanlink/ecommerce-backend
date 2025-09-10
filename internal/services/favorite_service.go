@@ -11,7 +11,7 @@ import (
 // FavoriteService provides business logic for favorites
 type FavoriteService struct {
 	favoriteRepo *repositories.FavoriteRepository
-	productRepo  *repositories.ProductRepository
+	productRepo  repositories.ProductRepositoryInterface
 }
 
 // NewFavoriteService creates a new favorite service

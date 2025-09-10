@@ -62,6 +62,7 @@ func (m *Migration) runPostgresMigrations() error {
 		&models.Order{},
 		&models.OrderItem{},
 		&models.Recipe{},
+		&models.Coupon{}, // Add Coupon model for auto-migration
 	}
 
 	// Run auto migration for each model
@@ -218,6 +219,7 @@ func (m *Migration) DropAllTables() error {
 		&models.Profile{},
 		&models.User{},
 		&models.Recipe{},
+		&models.Coupon{}, // Add Coupon model to drop list
 	}
 
 	// Drop tables in reverse order to handle foreign key constraints
@@ -259,6 +261,7 @@ func (m *Migration) GetMigrationStatus() (map[string]bool, error) {
 		&models.Order{},
 		&models.OrderItem{},
 		&models.Recipe{},
+		&models.Coupon{}, // Add Coupon model to status check
 	}
 
 	for _, model := range modelsToCheck {

@@ -40,15 +40,17 @@ type CartServiceInterface interface {
 type CartService struct {
 	cartRepo    repositories.CartRepositoryInterface
 	productRepo repositories.ProductRepositoryInterface
+	couponRepo  repositories.CouponRepositoryInterface
 	dbManager   db.DBManager
 	logger      *zap.Logger
 }
 
 // NewCartService creates a new cart service
-func NewCartService(cartRepo repositories.CartRepositoryInterface, productRepo repositories.ProductRepositoryInterface, dbManager db.DBManager, logger *zap.Logger) CartServiceInterface {
+func NewCartService(cartRepo repositories.CartRepositoryInterface, productRepo repositories.ProductRepositoryInterface, couponRepo repositories.CouponRepositoryInterface, dbManager db.DBManager, logger *zap.Logger) CartServiceInterface {
 	service := &CartService{
 		cartRepo:    cartRepo,
 		productRepo: productRepo,
+		couponRepo:  couponRepo,
 		dbManager:   dbManager,
 		logger:      logger,
 	}
@@ -552,30 +554,27 @@ func (s *CartService) ValidateCart(ctx context.Context, userID string) (map[stri
 }
 
 // --- Coupons persistence ---
-type couponCfg struct {
-	Type         string
-	Value        float64
-	MinCartTotal float64
-	MaxDiscount  float64
-}
-
-var coupons = map[string]couponCfg{
-	"SUMMER10":   {Type: "percent", Value: 10, MinCartTotal: 500, MaxDiscount: 500},
-	"WELCOME100": {Type: "fixed", Value: 100, MinCartTotal: 299, MaxDiscount: 0},
-}
-
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
 
 func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string) (*models.Cart, float64, error) {
 	if userID == "" {
 		return nil, 0, fmt.Errorf("user ID is required")
 	}
+
 	code := strings.TrimSpace(strings.ToUpper(couponCode))
-	cfg, ok := coupons[code]
-	if !ok {
+
+	// Get coupon from database
+	var coupon models.Coupon
+	_, err := s.couponRepo.GetByCode(ctx, code, &coupon)
+	if err != nil {
+		s.logger.Error("Invalid coupon code",
+			zap.String("code", code),
+			zap.String("user_id", userID),
+			zap.Error(err))
 		return nil, 0, fmt.Errorf("invalid coupon code")
 	}
 
+	// Get user's cart
 	cart, err := s.cartRepo.GetUserCart(ctx, userID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get user cart: %w", err)
@@ -583,30 +582,35 @@ func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string
 	if cart == nil || len(cart.Items) == 0 || cart.TotalPrice <= 0 {
 		return nil, 0, fmt.Errorf("cart is empty")
 	}
-	if cart.TotalPrice < cfg.MinCartTotal {
-		return nil, 0, fmt.Errorf("minimum cart total not met")
+
+	// Check if user is first time (simplified check)
+	isFirstTime := true // In a real implementation, check user's order history
+
+	// Validate coupon
+	if !coupon.CanUse(cart.TotalPrice, userID, isFirstTime) {
+		s.logger.Error("Coupon cannot be used",
+			zap.String("code", code),
+			zap.String("user_id", userID),
+			zap.Float64("cart_total", cart.TotalPrice))
+		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
 	}
 
-	var discount float64
-	switch strings.ToLower(cfg.Type) {
-	case "percent":
-		discount = cart.TotalPrice * (cfg.Value / 100)
-	case "fixed":
-		discount = cfg.Value
-	}
-	if cfg.MaxDiscount > 0 && discount > cfg.MaxDiscount {
-		discount = cfg.MaxDiscount
-	}
-	if discount > cart.TotalPrice {
-		discount = cart.TotalPrice
-	}
+	// Calculate discount
+	discount := coupon.CalculateDiscount(cart.TotalPrice)
 	discount = round2(discount)
 
+	// Update cart with coupon
 	cart.CouponCode = code
 	cart.DiscountAmount = discount
 	if err := s.cartRepo.UpdateCart(ctx, cart); err != nil {
 		return nil, 0, fmt.Errorf("failed to update cart with coupon: %w", err)
 	}
+
+	s.logger.Info("Coupon applied successfully",
+		zap.String("code", code),
+		zap.String("user_id", userID),
+		zap.Float64("discount", discount))
+
 	return cart, discount, nil
 }
 

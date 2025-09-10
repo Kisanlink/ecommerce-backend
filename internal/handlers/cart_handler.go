@@ -80,10 +80,30 @@ func (h *CartHandler) handleCartServiceError(c *gin.Context, err error, operatio
 			"success": false,
 			"error":   errMsg,
 		})
+	case errMsg == "invalid coupon code":
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid coupon code",
+		})
+	case errMsg == "cart is empty":
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Cart is empty. Add items to cart before applying coupon",
+		})
+	case errMsg == "coupon cannot be used for this cart":
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Coupon cannot be used for this cart. Check minimum order amount or usage limits",
+		})
+	case strings.HasPrefix(errMsg, "failed to update cart with coupon"):
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to apply coupon to cart",
+		})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error":   "Failed to " + operation,
+			"error":   "Failed to " + operation + ": " + errMsg,
 		})
 	}
 }
