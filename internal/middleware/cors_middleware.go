@@ -7,27 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CORSMiddleware handles Cross-Origin Resource Sharing
-func CORSMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Allow all origins for development
-		c.Header("Access-Control-Allow-Origin", "*")
-
-		// Set other CORS headers
-		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
-
-		// Handle preflight requests
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-
-		c.Next()
-	}
-}
-
 // CORSMiddlewareWithConfig allows custom CORS configuration
 func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -80,7 +59,7 @@ type CORSConfig struct {
 // DefaultCORSConfig returns a default CORS configuration for development
 func DefaultCORSConfig() CORSConfig {
 	return CORSConfig{
-		AllowedOrigins: []string{"*"}, // Allow all origins
+		AllowedOrigins: []string{"http://localhost:5173", "https://amrti.com", "https://www.amrti.com"}, // Allow required origins
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowedHeaders: []string{
 			"Content-Type",

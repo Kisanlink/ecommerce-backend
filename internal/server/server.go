@@ -16,7 +16,7 @@ func NewServer(repoManager *repositories.RepositoryManager, serviceManager *serv
 	r := gin.Default()
 
 	// Add CORS middleware to allow frontend access
-	r.Use(middleware.CORSMiddleware())
+	r.Use(middleware.CORSMiddlewareWithConfig(middleware.DefaultCORSConfig()))
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
