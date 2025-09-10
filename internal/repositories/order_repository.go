@@ -55,9 +55,8 @@ func (r *OrderRepository) UpdatePaymentStatus(ctx context.Context, orderID strin
 	}
 
 	order.PaymentStatus = paymentStatus
-	if paymentID != "" {
-		order.PaymentMethod = fmt.Sprintf("razorpay:%s", paymentID)
-	}
+	// Note: PaymentID is not stored in a separate field, it's handled through RazorpayReceipt
+	// The paymentID parameter is used for logging purposes
 
 	if err := r.dbManager.Update(ctx, &order); err != nil {
 		return fmt.Errorf("failed to update payment status: %w", err)

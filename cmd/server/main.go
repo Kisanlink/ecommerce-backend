@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 )
@@ -45,6 +49,54 @@ import (
 // @in header
 // @name Authorization
 // @description Firebase ID token for authentication
+
+// executeSQLMigrations executes SQL migration files
+func executeSQLMigrations(db *gorm.DB) error {
+	migrationsDir := "migrations"
+
+	// List of migration files to execute in order
+	migrationFiles := []string{
+		"create_coupons_table.sql",
+		"create_images_table.sql",
+		"add_multiple_images_columns.sql",
+		"add_delhivery_columns.sql",
+		"add_discount_columns_to_orders.sql",
+	}
+
+	for _, filename := range migrationFiles {
+		filePath := filepath.Join(migrationsDir, filename)
+
+		// Check if file exists
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			log.Printf("Migration file %s not found, skipping", filePath)
+			continue
+		}
+
+		// Read SQL file
+		sqlContent, err := ioutil.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s: %w", filePath, err)
+		}
+
+		// Split SQL content by semicolon and execute each statement
+		statements := strings.Split(string(sqlContent), ";")
+		for _, statement := range statements {
+			statement = strings.TrimSpace(statement)
+			if statement == "" || strings.HasPrefix(statement, "--") {
+				continue
+			}
+
+			if err := db.Exec(statement).Error; err != nil {
+				// Log warning but don't fail - some statements might already exist
+				log.Printf("Warning: Failed to execute SQL statement in %s: %v", filename, err)
+			}
+		}
+
+		log.Printf("Executed migration file: %s", filename)
+	}
+
+	return nil
+}
 
 func main() {
 	config.LoadEnv()
@@ -152,6 +204,7 @@ func main() {
 		&models.User{},
 		// &models.Recipe{}, // Stored in DynamoDB, not PostgreSQL
 		&models.Product{},
+		&models.Image{}, // Add Image model for auto-migration
 		&models.Order{},
 		&models.OrderItem{},
 		&models.Cart{},
@@ -159,6 +212,7 @@ func main() {
 		&models.Address{},
 		&models.Profile{},
 		&models.Favorite{},
+		&models.Coupon{}, // Add Coupon model for auto-migration
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate models: %v", err)
@@ -168,6 +222,11 @@ func main() {
 	dbConn, err := pgManager.GetDB(ctx, false)
 	if err != nil {
 		log.Fatalf("Failed to get DB: %v", err)
+	}
+
+	// Execute SQL migrations for initial data
+	if err := executeSQLMigrations(dbConn); err != nil {
+		log.Printf("Warning: Failed to execute SQL migrations: %v", err)
 	}
 
 	// Ensure carts table has coupon fields with sane defaults and no NULLs

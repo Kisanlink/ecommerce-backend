@@ -2,9 +2,7 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -44,17 +42,19 @@ type OrderService struct {
 	cartService CartServiceInterface
 	productRepo repositories.ProductRepositoryInterface
 	addressRepo *repositories.AddressRepository
+	couponRepo  repositories.CouponRepositoryInterface
 	s3Service   *S3Service
 	logger      *zap.Logger
 }
 
 // NewOrderService creates a new order service
-func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, s3Service *S3Service, logger *zap.Logger) OrderServiceInterface {
+func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, s3Service *S3Service, logger *zap.Logger) OrderServiceInterface {
 	service := &OrderService{
 		orderRepo:   orderRepo,
 		cartService: cartService,
 		productRepo: productRepo,
 		addressRepo: addressRepo,
+		couponRepo:  couponRepo,
 		s3Service:   s3Service,
 		logger:      logger,
 	}
@@ -161,23 +161,36 @@ func (s *OrderService) CreateOrderFromCart(ctx context.Context, userID string, c
 	}
 
 	// Calculate total amount including any discounts
-	totalAmount := cart.GetTotalAmount()
+	cartTotal := cart.GetTotalAmount()
 	if cart.DiscountAmount > 0 {
-		totalAmount -= cart.DiscountAmount
-		if totalAmount < 0 {
-			totalAmount = 0
+		cartTotal -= cart.DiscountAmount
+		if cartTotal < 0 {
+			cartTotal = 0
 		}
 	}
 
-	// Create order
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
-	order.PaymentStatus = "pending"
-	order.Status = models.OrderStatusPending
+	// Calculate tax (18% as per default configuration)
+	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
+	taxAmount := cartTotal * taxRate / 100
 
-	// Add coupon information to notes if applied
+	// Calculate final total including tax
+	totalAmount := cartTotal + taxAmount
+
+	// Create order
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
+
+	// Add coupon information and tax to notes if applied
+	notes := ""
 	if cart.CouponCode != "" {
-		order.Notes = fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
+		notes += fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
 	}
+	if taxAmount > 0 {
+		if notes != "" {
+			notes += ", "
+		}
+		notes += fmt.Sprintf("Tax (%.1f%%): %.2f", taxRate, taxAmount)
+	}
+	order.Notes = notes
 
 	// Save order to database using the repository create method
 	if err := s.orderRepo.Create(ctx, order); err != nil {
@@ -246,29 +259,39 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 		}
 	}
 
-	// Add shipping charges to get final total
-	totalAmount := cartTotal + shippingCharges
+	// Calculate tax (18% as per default configuration)
+	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
+	taxAmount := cartTotal * taxRate / 100
+
+	// Add shipping charges and tax to get final total
+	totalAmount := cartTotal + taxAmount + shippingCharges
 
 	s.logger.Info("Calculated amounts",
 		zap.String("user_id", userID),
 		zap.Float64("cart_total", cartTotal),
 		zap.Float64("discount_amount", cart.DiscountAmount),
+		zap.Float64("tax_rate", taxRate),
+		zap.Float64("tax_amount", taxAmount),
 		zap.Float64("shipping_charges", shippingCharges),
 		zap.Float64("total_amount", totalAmount))
 
 	// Create order with total amount including shipping
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
-	order.PaymentStatus = "pending"
-	order.Status = models.OrderStatusPending
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	// Set shipping metadata
 	order.ShippingCarrier = "Delhivery"
 	order.ShippingMode = "Surface"
 	order.ShippingCharge = shippingCharges
 
-	// Add coupon information and shipping to notes if applicable
+	// Add coupon information, tax, and shipping to notes if applicable
 	notes := ""
 	if cart.CouponCode != "" {
 		notes += fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
+	}
+	if taxAmount > 0 {
+		if notes != "" {
+			notes += ", "
+		}
+		notes += fmt.Sprintf("Tax (%.1f%%): %.2f", taxRate, taxAmount)
 	}
 	if shippingCharges > 0 {
 		if notes != "" {
@@ -409,52 +432,36 @@ func (s *OrderService) FormatAddress(addr *models.Address) string {
 	return fmt.Sprintf("%s, %s%s, %s, %s %s, %s%s", name, addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country, phone)
 }
 
-// GenerateAndAttachInvoice builds a simple JSON invoice, uploads to S3, and stores URL on the order
+// GenerateAndAttachInvoice generates a PDF invoice, uploads to S3, and stores URL on the order
 func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error) {
-	if s.s3Service == nil {
-		return "", fmt.Errorf("s3 service unavailable")
-	}
 	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load order for invoice: %w", err)
 	}
-	type invoiceItem struct {
-		ProductID string  `json:"product_id"`
-		Quantity  int     `json:"quantity"`
-		UnitPrice float64 `json:"unit_price"`
-		LineTotal float64 `json:"line_total"`
+
+	// Create PDF invoice service
+	pdfInvoiceService := NewPDFInvoiceService(s.s3Service, s.logger)
+
+	// Convert items to pointers
+	itemPointers := make([]*models.OrderItem, len(items))
+	for i := range items {
+		itemPointers[i] = &items[i]
 	}
-	inv := map[string]interface{}{
-		"order_id":         order.ID,
-		"user_id":          order.UserID,
-		"date":             time.Now().Format(time.RFC3339),
-		"shipping_address": order.ShippingAddr,
-		"shipping_carrier": order.ShippingCarrier,
-		"shipping_mode":    order.ShippingMode,
-		"shipping_charge":  order.ShippingCharge,
-		"eta_min_days":     order.EtaMinDays,
-		"eta_max_days":     order.EtaMaxDays,
-		"payment_method":   order.PaymentMethod,
-		"payment_status":   order.PaymentStatus,
-		"total_amount":     order.TotalAmount,
-		"items":            []invoiceItem{},
-	}
-	arr := make([]invoiceItem, 0, len(items))
-	for _, it := range items {
-		arr = append(arr, invoiceItem{ProductID: it.ProductID, Quantity: it.Quantity, UnitPrice: it.UnitPrice, LineTotal: it.TotalPrice})
-	}
-	inv["items"] = arr
-	data, err := json.MarshalIndent(inv, "", "  ")
+
+	// Generate PDF invoice
+	url, err := pdfInvoiceService.GeneratePDFInvoice(ctx, order, itemPointers, s.productRepo)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal invoice: %w", err)
+		return "", fmt.Errorf("failed to generate PDF invoice: %w", err)
 	}
-	key := fmt.Sprintf("invoices/%s.json", order.ID)
-	url, err := s.s3Service.UploadFile(ctx, key, data, "application/json")
-	if err != nil {
-		return "", fmt.Errorf("failed to upload invoice: %w", err)
-	}
+
+	// Update order with invoice URL
 	order.InvoiceURL = url
-	_ = s.orderRepo.Update(ctx, order)
+	if err := s.orderRepo.Update(ctx, order); err != nil {
+		s.logger.Error("Failed to update order with invoice URL",
+			zap.String("order_id", orderID),
+			zap.Error(err))
+	}
+
 	return url, nil
 }
 
@@ -603,17 +610,31 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// Calculate total amount from cart items + shipping
-	totalAmount := cart.TotalPrice + shippingCharges
+	// Calculate total amount from cart items + shipping - discount (no tax)
+	totalAmount := cart.TotalPrice + shippingCharges - cart.DiscountAmount
 
 	// Create order
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	order.ShippingCharge = shippingCharges
 	order.RazorpayOrderID = razorpayOrderID
+	// Add discount information
+	order.CouponCode = cart.CouponCode
+	order.DiscountAmount = cart.DiscountAmount
 
 	// Create order with transaction safety
 	if err := s.orderRepo.CreateOrderAtomic(ctx, order, cart.Items); err != nil {
 		return nil, fmt.Errorf("failed to create order atomically: %w", err)
+	}
+
+	// Reduce coupon usage count if a coupon was applied
+	if cart.CouponCode != "" {
+		if err := s.ReduceCouponUsage(ctx, cart.CouponCode); err != nil {
+			s.logger.Error("Failed to reduce coupon usage count after order creation",
+				zap.String("order_id", order.ID),
+				zap.String("coupon_code", cart.CouponCode),
+				zap.Error(err))
+			// Don't fail the order creation, but log the error
+		}
 	}
 
 	s.logger.Info("Order created atomically",
@@ -621,7 +642,8 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 		zap.String("user_id", userID),
 		zap.String("razorpay_order_id", razorpayOrderID),
 		zap.Float64("total_amount", totalAmount),
-		zap.Float64("shipping_charges", shippingCharges))
+		zap.Float64("shipping_charges", shippingCharges),
+		zap.String("coupon_code", cart.CouponCode))
 
 	return order, nil
 }
@@ -633,4 +655,32 @@ func (s *OrderService) UpdateOrderWithShipmentAtomic(ctx context.Context, orderI
 	}
 
 	return s.orderRepo.UpdateOrderShipmentAtomic(ctx, orderID, waybill, trackingURL, delhiveryStatus)
+}
+
+// ReduceCouponUsage reduces the usage count of a coupon when an order is successfully created
+func (s *OrderService) ReduceCouponUsage(ctx context.Context, couponCode string) error {
+	if couponCode == "" {
+		return nil // No coupon applied, nothing to do
+	}
+
+	if s.couponRepo == nil {
+		s.logger.Warn("Coupon repository not available, skipping coupon usage reduction",
+			zap.String("coupon_code", couponCode))
+		return nil
+	}
+
+	s.logger.Info("Reducing coupon usage count",
+		zap.String("coupon_code", couponCode))
+
+	if err := s.couponRepo.IncrementUsage(ctx, couponCode); err != nil {
+		s.logger.Error("Failed to reduce coupon usage count",
+			zap.String("coupon_code", couponCode),
+			zap.Error(err))
+		return fmt.Errorf("failed to reduce coupon usage count: %w", err)
+	}
+
+	s.logger.Info("Successfully reduced coupon usage count",
+		zap.String("coupon_code", couponCode))
+
+	return nil
 }

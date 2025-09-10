@@ -50,6 +50,10 @@ type Order struct {
 
 	// Invoice metadata
 	InvoiceURL string `json:"invoice_url"`
+
+	// Discount information
+	CouponCode     string  `json:"coupon_code" gorm:"index"`
+	DiscountAmount float64 `json:"discount_amount" gorm:"default:0"`
 }
 
 // OrderItem represents an item in an order
@@ -63,16 +67,16 @@ type OrderItem struct {
 }
 
 // NewOrder creates a new order with base model
-func NewOrder(userID string, totalAmount float64, shippingAddr, paymentMethod string) *Order {
+func NewOrder(userID string, totalAmount float64, shippingAddr, paymentMethod string, status OrderStatus, paymentStatus string) *Order {
 	baseModel := base.NewBaseModel("ORDR", hash.Large)
 	return &Order{
 		BaseModel:     baseModel,
 		UserID:        userID,
 		TotalAmount:   totalAmount,
-		Status:        OrderStatusPending,
+		Status:        status,
 		ShippingAddr:  shippingAddr,
 		PaymentMethod: paymentMethod,
-		PaymentStatus: "pending",
+		PaymentStatus: paymentStatus,
 	}
 }
 

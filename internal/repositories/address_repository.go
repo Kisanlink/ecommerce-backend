@@ -209,7 +209,9 @@ func (r *AddressRepository) FindOrCreateAddress(ctx context.Context, userID stri
 
 	// No existing address found, create a new one
 	fmt.Printf("Creating new address for user: %s\n", userID)
-	newAddress := models.NewAddress(userID, "Default", "User", street, city, state, postalCode, country, models.AddressTypeShipping)
+	// Note: We'll use generic names here as the repository doesn't have access to profile data
+	// The service layer will handle getting actual user names
+	newAddress := models.NewAddress(userID, "User", "", street, city, state, postalCode, country, models.AddressTypeShipping)
 
 	fmt.Printf("New address created with ID: %s (before DB save)\n", newAddress.ID)
 

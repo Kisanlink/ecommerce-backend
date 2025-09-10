@@ -78,14 +78,25 @@ func (s *ReviewService) initDynamoDB() error {
 
 // getUserDisplayName gets user's display name with proper fallback logic
 func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (string, error) {
+	s.logger.Info("Getting user display name", zap.String("user_id", userID))
+
 	// First, try to get the name from Users table
 	userResponse, err := s.userService.GetUserByID(ctx, userID)
 	if err == nil && userResponse.Success {
 		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
 			if userName, ok := userData["name"].(string); ok && strings.TrimSpace(userName) != "" {
+				s.logger.Info("Found user name from Users table",
+					zap.String("user_id", userID),
+					zap.String("user_name", userName))
 				return userName, nil
+			} else {
+				s.logger.Info("No name found in Users table", zap.String("user_id", userID))
 			}
 		}
+	} else {
+		s.logger.Warn("Failed to get user from Users table",
+			zap.String("user_id", userID),
+			zap.Error(err))
 	}
 
 	// If Users table doesn't have a name, try Profile table
@@ -97,17 +108,37 @@ func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (
 			lastName := strings.TrimSpace(profile.LastName)
 
 			if firstName != "" && lastName != "" {
-				return firstName + " " + lastName, nil
+				fullName := firstName + " " + lastName
+				s.logger.Info("Found user name from Profile table",
+					zap.String("user_id", userID),
+					zap.String("user_name", fullName))
+				return fullName, nil
 			} else if firstName != "" {
+				s.logger.Info("Found first name from Profile table",
+					zap.String("user_id", userID),
+					zap.String("user_name", firstName))
 				return firstName, nil
 			} else if lastName != "" {
+				s.logger.Info("Found last name from Profile table",
+					zap.String("user_id", userID),
+					zap.String("user_name", lastName))
 				return lastName, nil
+			} else {
+				s.logger.Info("No name found in Profile table", zap.String("user_id", userID))
 			}
+		} else {
+			s.logger.Warn("Failed to get profile from Profile table",
+				zap.String("user_id", userID),
+				zap.Error(err))
 		}
+	} else {
+		s.logger.Warn("Profile service not available", zap.String("user_id", userID))
 	}
 
-	// If both fail, return an error asking user to set up their name
-	return "", errors.New("please set up your display name first. Visit /api/v1/profiles to update your profile information")
+	// If both fail, return a fallback name instead of error
+	// This allows reviews to be created even if user hasn't set up their profile
+	s.logger.Info("Using fallback name 'User'", zap.String("user_id", userID))
+	return "User", nil
 }
 
 // CreateReview creates a new product review
@@ -121,6 +152,10 @@ func (s *ReviewService) CreateReview(ctx context.Context, req *requests.CreateRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user display name: %w", err)
 	}
+
+	s.logger.Info("Using user name for review creation",
+		zap.String("user_id", userID),
+		zap.String("user_name", userName))
 
 	// Get user email for the review
 	var userEmail string
@@ -681,15 +716,35 @@ func (s *ReviewService) refreshUserNamesFromPostgres(ctx context.Context, review
 		}
 	}
 
-	// Fetch users from PostgreSQL using userService
+	// Fetch users from PostgreSQL using userService and profileService
 	userMap := make(map[string]string)
 	for _, userID := range userIDs {
+		// First try to get name from Users table
 		userResponse, err := s.userService.GetUserByID(ctx, userID)
 		if err == nil && userResponse.Success {
 			// Extract user data from the response
 			if userData, ok := userResponse.Data.(map[string]interface{}); ok {
 				if userName, ok := userData["name"].(string); ok && userName != "" {
 					userMap[userID] = userName
+					continue // Found name, move to next user
+				}
+			}
+		}
+
+		// If Users table doesn't have a name, try Profile table
+		if s.profileService != nil {
+			profile, err := s.profileService.GetProfileByUserID(ctx, userID)
+			if err == nil && profile != nil {
+				// Construct name from FirstName and LastName
+				firstName := strings.TrimSpace(profile.FirstName)
+				lastName := strings.TrimSpace(profile.LastName)
+
+				if firstName != "" && lastName != "" {
+					userMap[userID] = firstName + " " + lastName
+				} else if firstName != "" {
+					userMap[userID] = firstName
+				} else if lastName != "" {
+					userMap[userID] = lastName
 				}
 			}
 		}
@@ -700,9 +755,9 @@ func (s *ReviewService) refreshUserNamesFromPostgres(ctx context.Context, review
 		if userName, exists := userMap[review.UserID]; exists {
 			review.UserName = userName
 		} else {
-			// Keep existing name or set default if empty
+			// Keep existing name or set better default if empty
 			if review.UserName == "" || review.UserName == "Anonymous User" {
-				review.UserName = "Anonymous User"
+				review.UserName = "User"
 			}
 		}
 	}

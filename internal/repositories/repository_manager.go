@@ -13,14 +13,16 @@ import (
 // RepositoryManager manages all repositories
 type RepositoryManager struct {
 	UserRepository     *UserRepository
-	ProductRepository  *ProductRepository
+	ProductRepository  ProductRepositoryInterface
 	OrderRepository    *OrderRepository
 	CartRepository     CartRepositoryInterface // Changed to interface
 	AddressRepository  *AddressRepository
 	RecipesRepository  *RecipesRepository
 	ProfileRepository  *ProfileRepository
 	FavoriteRepository *FavoriteRepository
-	RedisManager       *database.RedisManager // Redis manager for cart operations
+	ImageRepository    ImageRepositoryInterface  // Image repository
+	CouponRepository   CouponRepositoryInterface // Coupon repository
+	RedisManager       *database.RedisManager    // Redis manager for cart operations
 
 	// Database manager for accessing GORM DB instance
 	dbManager db.DBManager
@@ -56,6 +58,8 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 		RecipesRepository:  recipesRepo,
 		ProfileRepository:  NewProfileRepository(dbManager),
 		FavoriteRepository: NewFavoriteRepository(dbManager),
+		ImageRepository:    NewImageRepository(dbManager),          // Image repository
+		CouponRepository:   NewCouponRepository(dbManager, logger), // Coupon repository
 		RedisManager:       redisManager,
 		dbManager:          dbManager, // Store dbManager for access
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -167,13 +168,16 @@ func (s *AddressService) FindOrCreateAddress(ctx context.Context, userID, street
 	baseModel := base.NewBaseModel("ADDR", hash.Medium)
 	baseModel.ID = newID
 
-	// Create new address
+	// Get user's actual name from profile
+	firstName, lastName := s.getUserNames(ctx, userID)
+
+	// Create new address with actual user names
 	address = &models.Address{
 		BaseModel:    baseModel,
 		UserID:       userID,
 		Type:         models.AddressTypeShipping,
-		FirstName:    "Default",
-		LastName:     "User",
+		FirstName:    firstName,
+		LastName:     lastName,
 		Company:      "",
 		AddressLine1: street,
 		AddressLine2: "",
@@ -190,4 +194,42 @@ func (s *AddressService) FindOrCreateAddress(ctx context.Context, userID, street
 	}
 
 	return address, nil
+}
+
+// getUserNames retrieves the user's first and last name from their profile
+func (s *AddressService) getUserNames(ctx context.Context, userID string) (string, string) {
+	// Try to get user profile first
+	profile, err := s.repoManager.ProfileRepository.GetByUserID(ctx, userID)
+	if err == nil && profile != nil {
+		firstName := strings.TrimSpace(profile.FirstName)
+		lastName := strings.TrimSpace(profile.LastName)
+
+		// If we have valid names, return them
+		if firstName != "" && lastName != "" {
+			return firstName, lastName
+		} else if firstName != "" {
+			return firstName, ""
+		} else if lastName != "" {
+			return "", lastName
+		}
+	}
+
+	// Fallback: try to get user info from users table
+	user := &models.User{}
+	_, err = s.repoManager.UserRepository.GetByID(ctx, userID, user)
+	if err == nil && user.Name != "" {
+		// Extract names from display name
+		names := strings.Fields(strings.TrimSpace(user.Name))
+		if len(names) > 0 {
+			firstName := names[0]
+			lastName := ""
+			if len(names) > 1 {
+				lastName = strings.Join(names[1:], " ")
+			}
+			return firstName, lastName
+		}
+	}
+
+	// Final fallback: return generic names
+	return "User", ""
 }

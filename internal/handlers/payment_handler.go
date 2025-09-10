@@ -825,6 +825,23 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("payment_id", req.PaymentID),
 				zap.String("order_status", "confirmed"),
 				zap.String("payment_status", "successful"))
+
+			// Fetch the updated order to get the current status
+			updatedOrder, err := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
+			if err != nil {
+				h.logger.Error("Failed to fetch updated order",
+					zap.String("request_id", requestID),
+					zap.Error(err),
+					zap.String("order_id", order.ID),
+					zap.String("error_type", "order_fetch_error"))
+			} else {
+				order = updatedOrder // Use the updated order with correct status
+				h.logger.Info("Updated order fetched successfully",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("payment_status", order.PaymentStatus),
+					zap.String("order_status", string(order.Status)))
+			}
 		}
 
 		// Persist full payment and shipping metadata on order and notes
@@ -868,6 +885,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			if mobileSecondary != "" {
 				order.CustomerPhoneAlt = mobileSecondary
 			}
+
+			// Log payment status before updating order metadata
+			h.logger.Info("Updating order metadata - preserving payment status",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("payment_status", order.PaymentStatus),
+				zap.String("order_status", string(order.Status)))
+
 			if updErr := h.orderService.UpdateOrder(c.Request.Context(), order); updErr != nil {
 				h.logger.Warn("Failed to persist order metadata",
 					zap.String("request_id", requestID),
@@ -876,7 +901,9 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			} else {
 				h.logger.Info("Order metadata persisted successfully",
 					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID))
+					zap.String("order_id", order.ID),
+					zap.String("payment_status", order.PaymentStatus),
+					zap.String("order_status", string(order.Status)))
 			}
 
 			// Update notes compact string
@@ -1087,6 +1114,23 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			h.logger.Info("User cart cleared successfully",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID))
+		}
+
+		// Final verification: Fetch the order one more time to ensure payment status is correct
+		finalOrder, err := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
+		if err != nil {
+			h.logger.Error("Failed to fetch final order for verification",
+				zap.String("request_id", requestID),
+				zap.Error(err),
+				zap.String("order_id", order.ID),
+				zap.String("error_type", "final_order_fetch_error"))
+		} else {
+			order = finalOrder // Use the final verified order
+			h.logger.Info("Final order verification completed",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("payment_status", order.PaymentStatus),
+				zap.String("order_status", string(order.Status)))
 		}
 
 		// Prepare comprehensive response

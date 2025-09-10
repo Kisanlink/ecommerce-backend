@@ -2,7 +2,9 @@ package repositories
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
@@ -17,6 +19,9 @@ type ProductRepositoryInterface interface {
 	Delete(ctx context.Context, id string, product *models.Product) error
 	Find(ctx context.Context, filter *base.Filter) ([]*models.Product, error)
 	CountWithFilter(ctx context.Context, filter *base.Filter) (int64, error)
+	FindOne(ctx context.Context, filter *base.Filter) (*models.Product, error)
+	Exists(ctx context.Context, id string) (bool, error)
+	SoftDelete(ctx context.Context, id string, deletedBy string) error
 }
 
 // ProductRepository handles product data operations
@@ -113,4 +118,55 @@ func (r *ProductRepository) CountWithFilter(ctx context.Context, filter *base.Fi
 
 	log.Printf("Successfully counted %d products", count)
 	return count, nil
+}
+
+// FindOne retrieves a single product with filtering
+func (r *ProductRepository) FindOne(ctx context.Context, filter *base.Filter) (*models.Product, error) {
+	log.Printf("Finding one product with filter: %+v", filter)
+
+	products, err := r.Find(ctx, filter)
+	if err != nil {
+		log.Printf("Error finding product: %v", err)
+		return nil, err
+	}
+
+	if len(products) == 0 {
+		return nil, fmt.Errorf("product not found")
+	}
+
+	log.Printf("Successfully found product: %s", products[0].Name)
+	return products[0], nil
+}
+
+// Exists checks if a product exists by ID
+func (r *ProductRepository) Exists(ctx context.Context, id string) (bool, error) {
+	log.Printf("Checking if product exists: %s", id)
+
+	var product models.Product
+	_, err := r.GetByID(ctx, id, &product)
+	if err != nil {
+		// If error is "not found", return false
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "record not found") {
+			return false, nil
+		}
+		log.Printf("Error checking product existence: %v", err)
+		return false, err
+	}
+
+	log.Printf("Product exists: %s", id)
+	return true, nil
+}
+
+// SoftDelete soft deletes a product
+func (r *ProductRepository) SoftDelete(ctx context.Context, id string, deletedBy string) error {
+	log.Printf("Soft deleting product: %s by %s", id, deletedBy)
+
+	var product models.Product
+	if err := r.dbManager.SoftDelete(ctx, id, &product, deletedBy); err != nil {
+		log.Printf("Error soft deleting product: %v", err)
+		return err
+	}
+
+	log.Printf("Successfully soft deleted product: %s", id)
+	return nil
 }
