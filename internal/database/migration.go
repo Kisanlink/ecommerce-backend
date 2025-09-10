@@ -55,6 +55,7 @@ func (m *Migration) runPostgresMigrations() error {
 		&models.Profile{},
 		&models.Address{},
 		&models.Product{},
+		&models.Image{}, // Add Image model for auto-migration
 		&models.Cart{},
 		&models.CartItem{},
 		&models.Favorite{},
@@ -211,6 +212,7 @@ func (m *Migration) DropAllTables() error {
 		&models.Favorite{},
 		&models.CartItem{},
 		&models.Cart{},
+		&models.Image{}, // Add Image model to drop list
 		&models.Product{},
 		&models.Address{},
 		&models.Profile{},
@@ -250,6 +252,7 @@ func (m *Migration) GetMigrationStatus() (map[string]bool, error) {
 		&models.Profile{},
 		&models.Address{},
 		&models.Product{},
+		&models.Image{}, // Add Image model to status check
 		&models.Cart{},
 		&models.CartItem{},
 		&models.Favorite{},

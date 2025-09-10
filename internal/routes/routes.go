@@ -2,12 +2,14 @@ package routes
 
 import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
+	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/admin"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/cart"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/delivery"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/favorites"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/image"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/orders"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/payment"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/products"
@@ -52,6 +54,10 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
 		reviews.RegisterReviewRoutes(v1, serviceManager, logger) // Add review routes
+
+		// Register image routes
+		imageHandler := handlers.NewImageHandler(serviceManager.ImageService, nil, logger) // AuthContext will be set in the handler
+		image.SetupImageRoutes(v1, imageHandler, middleware.FirebaseAuthMiddleware())
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

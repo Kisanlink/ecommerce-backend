@@ -152,6 +152,7 @@ func main() {
 		&models.User{},
 		// &models.Recipe{}, // Stored in DynamoDB, not PostgreSQL
 		&models.Product{},
+		&models.Image{}, // Add Image model for auto-migration
 		&models.Order{},
 		&models.OrderItem{},
 		&models.Cart{},

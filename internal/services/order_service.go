@@ -2,9 +2,7 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -170,9 +168,7 @@ func (s *OrderService) CreateOrderFromCart(ctx context.Context, userID string, c
 	}
 
 	// Create order
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
-	order.PaymentStatus = "pending"
-	order.Status = models.OrderStatusPending
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 
 	// Add coupon information to notes if applied
 	if cart.CouponCode != "" {
@@ -257,9 +253,7 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 		zap.Float64("total_amount", totalAmount))
 
 	// Create order with total amount including shipping
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
-	order.PaymentStatus = "pending"
-	order.Status = models.OrderStatusPending
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	// Set shipping metadata
 	order.ShippingCarrier = "Delhivery"
 	order.ShippingMode = "Surface"
@@ -409,52 +403,36 @@ func (s *OrderService) FormatAddress(addr *models.Address) string {
 	return fmt.Sprintf("%s, %s%s, %s, %s %s, %s%s", name, addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country, phone)
 }
 
-// GenerateAndAttachInvoice builds a simple JSON invoice, uploads to S3, and stores URL on the order
+// GenerateAndAttachInvoice generates a PDF invoice, uploads to S3, and stores URL on the order
 func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error) {
-	if s.s3Service == nil {
-		return "", fmt.Errorf("s3 service unavailable")
-	}
 	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load order for invoice: %w", err)
 	}
-	type invoiceItem struct {
-		ProductID string  `json:"product_id"`
-		Quantity  int     `json:"quantity"`
-		UnitPrice float64 `json:"unit_price"`
-		LineTotal float64 `json:"line_total"`
+
+	// Create PDF invoice service
+	pdfInvoiceService := NewPDFInvoiceService(s.s3Service, s.logger)
+
+	// Convert items to pointers
+	itemPointers := make([]*models.OrderItem, len(items))
+	for i := range items {
+		itemPointers[i] = &items[i]
 	}
-	inv := map[string]interface{}{
-		"order_id":         order.ID,
-		"user_id":          order.UserID,
-		"date":             time.Now().Format(time.RFC3339),
-		"shipping_address": order.ShippingAddr,
-		"shipping_carrier": order.ShippingCarrier,
-		"shipping_mode":    order.ShippingMode,
-		"shipping_charge":  order.ShippingCharge,
-		"eta_min_days":     order.EtaMinDays,
-		"eta_max_days":     order.EtaMaxDays,
-		"payment_method":   order.PaymentMethod,
-		"payment_status":   order.PaymentStatus,
-		"total_amount":     order.TotalAmount,
-		"items":            []invoiceItem{},
-	}
-	arr := make([]invoiceItem, 0, len(items))
-	for _, it := range items {
-		arr = append(arr, invoiceItem{ProductID: it.ProductID, Quantity: it.Quantity, UnitPrice: it.UnitPrice, LineTotal: it.TotalPrice})
-	}
-	inv["items"] = arr
-	data, err := json.MarshalIndent(inv, "", "  ")
+
+	// Generate PDF invoice
+	url, err := pdfInvoiceService.GeneratePDFInvoice(ctx, order, itemPointers, s.productRepo)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal invoice: %w", err)
+		return "", fmt.Errorf("failed to generate PDF invoice: %w", err)
 	}
-	key := fmt.Sprintf("invoices/%s.json", order.ID)
-	url, err := s.s3Service.UploadFile(ctx, key, data, "application/json")
-	if err != nil {
-		return "", fmt.Errorf("failed to upload invoice: %w", err)
-	}
+
+	// Update order with invoice URL
 	order.InvoiceURL = url
-	_ = s.orderRepo.Update(ctx, order)
+	if err := s.orderRepo.Update(ctx, order); err != nil {
+		s.logger.Error("Failed to update order with invoice URL",
+			zap.String("order_id", orderID),
+			zap.Error(err))
+	}
+
 	return url, nil
 }
 
@@ -607,7 +585,7 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 	totalAmount := cart.TotalPrice + shippingCharges
 
 	// Create order
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod)
+	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	order.ShippingCharge = shippingCharges
 	order.RazorpayOrderID = razorpayOrderID
 

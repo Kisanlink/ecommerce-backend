@@ -63,16 +63,16 @@ type OrderItem struct {
 }
 
 // NewOrder creates a new order with base model
-func NewOrder(userID string, totalAmount float64, shippingAddr, paymentMethod string) *Order {
+func NewOrder(userID string, totalAmount float64, shippingAddr, paymentMethod string, status OrderStatus, paymentStatus string) *Order {
 	baseModel := base.NewBaseModel("ORDR", hash.Large)
 	return &Order{
 		BaseModel:     baseModel,
 		UserID:        userID,
 		TotalAmount:   totalAmount,
-		Status:        OrderStatusPending,
+		Status:        status,
 		ShippingAddr:  shippingAddr,
 		PaymentMethod: paymentMethod,
-		PaymentStatus: "pending",
+		PaymentStatus: paymentStatus,
 	}
 }
 

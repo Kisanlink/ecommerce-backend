@@ -107,7 +107,22 @@ func (s *ProductService) GetProductByID(ctx context.Context, req *requests.GetPr
 			base.NewNotFoundError("Product", req.ID)), nil
 	}
 
-	return base.NewSuccessResponse("Product retrieved successfully", product), nil
+	// Get additional images from the images table
+	images, err := s.repoManager.ImageRepository.GetActiveImagesByProductID(ctx, req.ID)
+	if err != nil {
+		// Log error but don't fail the request - product can still be returned without additional images
+		// You might want to add logging here
+		images = []*models.Image{}
+	}
+
+	// Create enhanced product response with images
+	productWithImages := map[string]interface{}{
+		"product":     product,
+		"images":      images,
+		"image_count": len(images),
+	}
+
+	return base.NewSuccessResponse("Product retrieved successfully", productWithImages), nil
 }
 
 // GetProducts retrieves products with filtering and pagination

@@ -117,13 +117,15 @@ type Order struct {
     OrderDate       time.Time `json:"order_date"`
 }
 
-func NewOrder(userID string, totalAmount float64, shippingAddress string) *Order {
+func NewOrder(userID string, totalAmount float64, shippingAddress, paymentMethod string, status OrderStatus, paymentStatus string) *Order {
     return &Order{
         BaseModel:       base.NewBaseModel("ORD", hash.Large),
         UserID:          userID,
         TotalAmount:     totalAmount,
-        Status:          "pending",
+        Status:          status,
         ShippingAddress: shippingAddress,
+        PaymentMethod:   paymentMethod,
+        PaymentStatus:   paymentStatus,
         OrderDate:       time.Now(),
     }
 }

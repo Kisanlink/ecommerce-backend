@@ -20,7 +20,8 @@ type RepositoryManager struct {
 	RecipesRepository  *RecipesRepository
 	ProfileRepository  *ProfileRepository
 	FavoriteRepository *FavoriteRepository
-	RedisManager       *database.RedisManager // Redis manager for cart operations
+	ImageRepository    ImageRepositoryInterface // Image repository
+	RedisManager       *database.RedisManager   // Redis manager for cart operations
 
 	// Database manager for accessing GORM DB instance
 	dbManager db.DBManager
@@ -56,6 +57,7 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 		RecipesRepository:  recipesRepo,
 		ProfileRepository:  NewProfileRepository(dbManager),
 		FavoriteRepository: NewFavoriteRepository(dbManager),
+		ImageRepository:    NewImageRepository(dbManager), // Image repository
 		RedisManager:       redisManager,
 		dbManager:          dbManager, // Store dbManager for access
 	}

@@ -18,6 +18,7 @@ type ServiceManager struct {
 	DeliveryService DeliveryServiceInterface
 	OrderService    OrderServiceInterface
 	ReviewService   *ReviewService
+	ImageService    ImageServiceInterface
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -45,6 +46,9 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	profileService := NewProfileService(repoManager)
 	reviewService := NewReviewService(dbManager, userService, profileService, logger)
 
+	// Create image service
+	imageService := NewImageService(repoManager.ImageRepository, repoManager.ProductRepository, logger)
+
 	return &ServiceManager{
 		UserService:     userService,
 		ProductService:  NewProductService(repoManager),
@@ -56,5 +60,6 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		DeliveryService: deliveryService,
 		OrderService:    orderService,
 		ReviewService:   reviewService,
+		ImageService:    imageService,
 	}
 }
