@@ -58,27 +58,57 @@ func main() {
 		usageLimit  int
 	}{
 		{
-			code:        "KaushikMax18",
+			code:        "KAUSHIKMAX18",
 			description: "KaushikMax18 - 18% discount coupon",
 			discount:    18.0,
 			usageLimit:  50,
 		},
 		{
-			code:        "CharanPrime18",
+			code:        "CHARANPRIME18",
 			description: "CharanPrime18 - 18% discount coupon",
 			discount:    18.0,
 			usageLimit:  50,
 		},
 		{
-			code:        "ManiElite18",
+			code:        "MANIELITE18",
 			description: "ManiElite18 - 18% discount coupon",
 			discount:    18.0,
 			usageLimit:  50,
 		},
 		{
-			code:        "MeherFest18",
+			code:        "MEHERFEST18",
 			description: "MeherFest18 - 18% discount coupon",
 			discount:    18.0,
+			usageLimit:  50,
+		},
+		{
+			code:        "DEAL5",
+			description: "Deal5 - 5% discount coupon",
+			discount:    5.0,
+			usageLimit:  50,
+		},
+		{
+			code:        "SAVE10",
+			description: "Save10 - 10% discount coupon",
+			discount:    10.0,
+			usageLimit:  50,
+		},
+		{
+			code:        "OFFER15",
+			description: "Offer15 - 15% discount coupon",
+			discount:    15.0,
+			usageLimit:  50,
+		},
+		{
+			code:        "MEGA5",
+			description: "Mega5 - 5% discount coupon",
+			discount:    5.0,
+			usageLimit:  50,
+		},
+		{
+			code:        "SUPER10",
+			description: "Super10 - 10% discount coupon",
+			discount:    10.0,
 			usageLimit:  50,
 		},
 	}
@@ -127,8 +157,8 @@ func main() {
 			fmt.Printf("Failed to create coupon %s: %v\n", couponData.code, err)
 		} else {
 			createdCount++
-			fmt.Printf("Created coupon: %s (18%% discount, usage limit: %d)\n",
-				couponData.code, couponData.usageLimit)
+			fmt.Printf("Created coupon: %s (%.0f%% discount, usage limit: %d)\n",
+				couponData.code, couponData.discount, couponData.usageLimit)
 		}
 	}
 
