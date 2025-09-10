@@ -50,6 +50,10 @@ type Order struct {
 
 	// Invoice metadata
 	InvoiceURL string `json:"invoice_url"`
+
+	// Discount information
+	CouponCode     string  `json:"coupon_code" gorm:"index"`
+	DiscountAmount float64 `json:"discount_amount" gorm:"default:0"`
 }
 
 // OrderItem represents an item in an order

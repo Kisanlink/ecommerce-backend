@@ -610,15 +610,16 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// Calculate total amount from cart items + tax + shipping
-	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
-	taxAmount := cart.TotalPrice * taxRate / 100
-	totalAmount := cart.TotalPrice + taxAmount + shippingCharges
+	// Calculate total amount from cart items + shipping - discount (no tax)
+	totalAmount := cart.TotalPrice + shippingCharges - cart.DiscountAmount
 
 	// Create order
 	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	order.ShippingCharge = shippingCharges
 	order.RazorpayOrderID = razorpayOrderID
+	// Add discount information
+	order.CouponCode = cart.CouponCode
+	order.DiscountAmount = cart.DiscountAmount
 
 	// Create order with transaction safety
 	if err := s.orderRepo.CreateOrderAtomic(ctx, order, cart.Items); err != nil {

@@ -60,6 +60,7 @@ func executeSQLMigrations(db *gorm.DB) error {
 		"create_images_table.sql",
 		"add_multiple_images_columns.sql",
 		"add_delhivery_columns.sql",
+		"add_discount_columns_to_orders.sql",
 	}
 
 	for _, filename := range migrationFiles {

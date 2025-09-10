@@ -61,8 +61,11 @@ func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *model
 func (s *PDFInvoiceService) prepareInvoiceData(order *models.Order, items []*models.OrderItem, productRepo ProductRepositoryInterface, ctx context.Context) *InvoiceData {
 	invoiceItems := make([]InvoiceItem, 0, len(items))
 
-	// Fetch product names for each item
+	// Calculate subtotal from items
+	subtotal := 0.0
 	for _, item := range items {
+		subtotal += item.TotalPrice
+
 		var product models.Product
 		productName := "Unknown Product"
 		if _, err := productRepo.GetByID(ctx, item.ProductID, &product); err == nil {
@@ -78,10 +81,15 @@ func (s *PDFInvoiceService) prepareInvoiceData(order *models.Order, items []*mod
 		})
 	}
 
+	// Calculate discount amount and discounted total
+	discountAmount := order.DiscountAmount
+	discountedTotal := order.TotalAmount
+
 	return &InvoiceData{
 		OrderID:         order.ID,
 		UserID:          order.UserID,
 		Date:            order.CreatedAt,
+		DueDate:         order.CreatedAt.AddDate(0, 0, 30), // 30 days from order date
 		ShippingAddress: order.ShippingAddr,
 		ShippingCarrier: order.ShippingCarrier,
 		ShippingMode:    order.ShippingMode,
@@ -96,6 +104,11 @@ func (s *PDFInvoiceService) prepareInvoiceData(order *models.Order, items []*mod
 		CustomerPhone:   order.CustomerPhone,
 		TrackingURL:     order.TrackingURL,
 		AWBNumber:       order.DelhiveryWaybill,
+		// Discount information
+		CouponCode:      order.CouponCode,
+		DiscountAmount:  discountAmount,
+		SubtotalAmount:  subtotal,
+		DiscountedTotal: discountedTotal,
 	}
 }
 

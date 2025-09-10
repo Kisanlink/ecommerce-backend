@@ -79,6 +79,11 @@ type InvoiceData struct {
 	AWBNumber       string
 	Notes           string
 	Terms           []string
+	// Discount information
+	CouponCode      string
+	DiscountAmount  float64
+	SubtotalAmount  float64
+	DiscountedTotal float64
 }
 
 // InvoiceItem represents an item in the invoice
@@ -282,51 +287,49 @@ func (s *PDFTemplateService) addStatusBadge(pdf *gofpdf.Fpdf, status string, x, 
 
 // addModernCompanyAndCustomerDetails creates a two-column layout
 func (s *PDFTemplateService) addModernCompanyAndCustomerDetails(pdf *gofpdf.Fpdf, config *InvoiceTemplateConfig, data *InvoiceData) {
-	currentY := pdf.GetY() + 5
+	currentY := pdf.GetY() + 3
 
-	// Company details card (left column)
+	// Company details card (left column) - reduced height
 	s.addInfoCard(pdf, 12, currentY, 88, "SOLD BY", []string{
 		config.CompanyName,
 		config.CompanyAddress,
 		fmt.Sprintf("Phone: %s", config.CompanyPhone),
 		fmt.Sprintf("Email: %s", config.CompanyEmail),
-		fmt.Sprintf("Website: %s", config.CompanyWebsite),
 		fmt.Sprintf("PAN: %s", config.CompanyPAN),
 		fmt.Sprintf("GST: %s", config.CompanyGST),
 	}, config)
 
-	// Customer details card (right column)
+	// Customer details card (right column) - reduced height
 	customerDetails := []string{
 		data.CustomerName,
 		data.ShippingAddress,
 		fmt.Sprintf("Phone: %s", data.CustomerPhone),
-		fmt.Sprintf("Email: %s", data.CustomerEmail),
 	}
 
 	s.addInfoCard(pdf, 110, currentY, 88, "BILL TO", customerDetails, config)
 
-	pdf.SetY(currentY + 70) // Move below both cards
+	pdf.SetY(currentY + 55) // Move below both cards - reduced spacing
 }
 
 // addInfoCard creates a modern information card
 func (s *PDFTemplateService) addInfoCard(pdf *gofpdf.Fpdf, x, y, width float64, title string, details []string, config *InvoiceTemplateConfig) {
-	// Card background with subtle shadow effect - increased height
+	// Card background with subtle shadow effect - reduced height
 	pdf.SetFillColor(248, 249, 250)
 	pdf.SetDrawColor(229, 231, 235)
-	pdf.RoundedRect(x, y, width, 65, 3, "1111", "FD")
+	pdf.RoundedRect(x, y, width, 50, 3, "1111", "FD")
 
 	// Card header
 	pdf.SetFillColor(config.SecondaryColor[0], config.SecondaryColor[1], config.SecondaryColor[2])
-	pdf.RoundedRect(x, y, width, 12, 3, "1100", "F")
+	pdf.RoundedRect(x, y, width, 10, 3, "1100", "F")
 
-	pdf.SetXY(x+5, y+2)
-	pdf.SetFont("Arial", "B", 10)
+	pdf.SetXY(x+5, y+1)
+	pdf.SetFont("Arial", "B", 9)
 	pdf.SetTextColor(255, 255, 255)
 	pdf.Cell(0, 8, title)
 
 	// Card content
 	pdf.SetTextColor(0, 0, 0)
-	yOffset := y + 16
+	yOffset := y + 12
 	for i, detail := range details {
 		if strings.TrimSpace(detail) == "" {
 			continue
@@ -334,25 +337,25 @@ func (s *PDFTemplateService) addInfoCard(pdf *gofpdf.Fpdf, x, y, width float64, 
 
 		pdf.SetXY(x+5, yOffset)
 		if i == 0 {
-			pdf.SetFont("Arial", "B", 10)
+			pdf.SetFont("Arial", "B", 9)
 		} else {
-			pdf.SetFont("Arial", "", 9)
+			pdf.SetFont("Arial", "", 8)
 		}
 
 		// Handle long text with word wrapping
-		if len(detail) > 30 {
-			lines := s.wrapText(detail, 30)
+		if len(detail) > 35 {
+			lines := s.wrapText(detail, 35)
 			for j, line := range lines {
 				if j > 0 {
-					yOffset += 4
+					yOffset += 3
 					pdf.SetXY(x+5, yOffset)
 				}
-				pdf.Cell(0, 4, line)
+				pdf.Cell(0, 3, line)
 			}
 		} else {
-			pdf.Cell(0, 4, detail)
+			pdf.Cell(0, 3, detail)
 		}
-		yOffset += 4
+		yOffset += 3
 	}
 }
 
@@ -385,82 +388,70 @@ func (s *PDFTemplateService) wrapText(text string, width int) []string {
 
 // addInvoiceMetadata adds invoice metadata in a modern layout
 func (s *PDFTemplateService) addInvoiceMetadata(pdf *gofpdf.Fpdf, data *InvoiceData) {
-	currentY := pdf.GetY() + 5
+	currentY := pdf.GetY() + 3
 
-	// Metadata container
+	// Metadata container - reduced height
 	pdf.SetFillColor(255, 255, 255)
 	pdf.SetDrawColor(229, 231, 235)
-	pdf.Rect(12, currentY, 186, 25, "D")
+	pdf.Rect(12, currentY, 186, 20, "D")
 
-	// Metadata items in grid layout
+	// Metadata items in grid layout - simplified
 	metadata := []struct {
 		Label string
 		Value string
 	}{
 		{"Invoice Number", fmt.Sprintf("INV-%s", data.OrderID)},
-		{"Order Number", data.OrderID},
 		{"Invoice Date", data.Date.Format("02 Jan 2006")},
-		{"Due Date", data.DueDate.Format("02 Jan 2006")},
 		{"Payment Method", data.PaymentMethod},
 		{"Shipping Mode", data.ShippingMode},
 	}
 
-	pdf.SetFont("Arial", "", 8)
+	pdf.SetFont("Arial", "", 7)
 	for i, item := range metadata {
-		x := 16 + float64(i%3)*62
-		y := currentY + 4 + float64(i/3)*8
+		x := 16 + float64(i%2)*93
+		y := currentY + 3 + float64(i/2)*7
 
 		pdf.SetXY(x, y)
 		pdf.SetTextColor(107, 114, 128)
-		pdf.Cell(0, 4, item.Label+":")
+		pdf.Cell(0, 3, item.Label+":")
 
-		pdf.SetXY(x, y+4)
+		pdf.SetXY(x, y+3)
 		pdf.SetTextColor(0, 0, 0)
-		pdf.SetFont("Arial", "B", 8)
-		pdf.Cell(0, 4, item.Value)
-		pdf.SetFont("Arial", "", 8)
+		pdf.SetFont("Arial", "B", 7)
+		pdf.Cell(0, 3, item.Value)
+		pdf.SetFont("Arial", "", 7)
 	}
 
-	pdf.SetY(currentY + 30)
+	pdf.SetY(currentY + 25)
 }
 
 // addModernItemsTable creates a modern items table
 func (s *PDFTemplateService) addModernItemsTable(pdf *gofpdf.Fpdf, data *InvoiceData, config *InvoiceTemplateConfig) {
-	// Table title
-	pdf.SetFont("Arial", "B", 14)
+	// Table title - reduced spacing
+	pdf.SetFont("Arial", "B", 12)
 	pdf.SetTextColor(0, 0, 0)
-	pdf.Cell(0, 10, "ITEMS & SERVICES")
-	pdf.Ln(12)
+	pdf.Cell(0, 8, "ITEMS & SERVICES")
+	pdf.Ln(8)
 
 	// Table header with modern styling
 	pdf.SetFillColor(config.PrimaryColor[0], config.PrimaryColor[1], config.PrimaryColor[2])
 	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont("Arial", "B", 9)
+	pdf.SetFont("Arial", "B", 8)
 
-	// Define column widths for better alignment
-	colWidths := []float64{12, 70, 18, 12, 18, 12, 12, 20}
-	headers := []string{"#", "Item Description", "HSN", "Qty", "Rate", "Disc%", "Tax%", "Amount"}
+	// Define column widths for better alignment - simplified columns
+	colWidths := []float64{15, 100, 20, 20, 25}
+	headers := []string{"#", "Item Description", "Qty", "Rate", "Amount"}
 
 	for i, header := range headers {
-		pdf.CellFormat(colWidths[i], 10, header, "1", 0, "C", true, 0, "")
+		pdf.CellFormat(colWidths[i], 8, header, "1", 0, "C", true, 0, "")
 	}
 	pdf.Ln(-1)
 
 	// Table rows with alternating colors and better formatting
 	pdf.SetTextColor(0, 0, 0)
-	pdf.SetFont("Arial", "", 8)
-
-	subtotal := 0.0
-	totalTax := 0.0
-	totalDiscount := 0.0
+	pdf.SetFont("Arial", "", 7)
 
 	for i, item := range data.Items {
-		// Calculate item totals
-		discountAmount := item.UnitPrice * item.Discount / 100 * float64(item.Quantity)
-		netAmount := (item.UnitPrice * float64(item.Quantity)) - discountAmount
-		taxAmount := netAmount * item.TaxRate / 100
-		totalAmount := netAmount + taxAmount
-
 		// Alternate row colors
 		if i%2 == 0 {
 			pdf.SetFillColor(248, 249, 250)
@@ -468,35 +459,28 @@ func (s *PDFTemplateService) addModernItemsTable(pdf *gofpdf.Fpdf, data *Invoice
 			pdf.SetFillColor(255, 255, 255)
 		}
 
-		// Row data
+		// Row data - simplified
 		rowData := []string{
 			strconv.Itoa(i + 1),
-			s.truncateText(item.ProductName, 30),
-			item.HSNCode,
+			s.truncateText(item.ProductName, 40),
 			strconv.Itoa(item.Quantity),
 			fmt.Sprintf("%.2f", item.UnitPrice),
-			fmt.Sprintf("%.1f", item.Discount),
-			fmt.Sprintf("%.1f", item.TaxRate),
-			fmt.Sprintf("%.2f", totalAmount),
+			fmt.Sprintf("%.2f", item.LineTotal),
 		}
 
 		for j, data := range rowData {
 			align := "C"
 			if j == 1 { // Item description - left align
 				align = "L"
-			} else if j >= 3 { // Numeric columns (HSN, Qty, Rate, Disc%, Tax%, Amount) - right align
+			} else if j >= 2 { // Numeric columns - right align
 				align = "R"
 			}
-			pdf.CellFormat(colWidths[j], 8, data, "1", 0, align, true, 0, "")
+			pdf.CellFormat(colWidths[j], 6, data, "1", 0, align, true, 0, "")
 		}
 		pdf.Ln(-1)
-
-		subtotal += netAmount
-		totalTax += taxAmount
-		totalDiscount += discountAmount
 	}
 
-	pdf.Ln(5)
+	pdf.Ln(3)
 }
 
 // addModernTotalsSection creates a modern totals summary
@@ -507,34 +491,33 @@ func (s *PDFTemplateService) addModernTotalsSection(pdf *gofpdf.Fpdf, data *Invo
 		subtotal += item.LineTotal
 	}
 
-	// Calculate tax amount
-	taxRate := 0.0
-	if config.ShowCGST && config.ShowSGST {
-		taxRate = config.CGSTRate + config.SGSTRate
-	} else if config.ShowTax {
-		taxRate = config.TaxRate
+	// Use provided subtotal if available, otherwise calculate from items
+	if data.SubtotalAmount > 0 {
+		subtotal = data.SubtotalAmount
 	}
-	totalTax := subtotal * taxRate / 100
 
-	// Calculate the correct total: subtotal + tax + shipping
-	calculatedTotal := subtotal + totalTax + data.ShippingCharge
+	// Calculate final total: subtotal + shipping - discount (no tax)
+	finalTotal := subtotal + data.ShippingCharge - data.DiscountAmount
 
-	// Use the calculated total instead of the stored TotalAmount to ensure accuracy
-	finalTotal := calculatedTotal
+	// Use provided discounted total if available
+	if data.DiscountedTotal > 0 {
+		finalTotal = data.DiscountedTotal
+	}
 
 	// Log the calculation for debugging (can be removed in production)
-	fmt.Printf("Invoice Total Calculation - Subtotal: %.2f, Tax: %.2f, Shipping: %.2f, Calculated Total: %.2f, Stored Total: %.2f\n",
-		subtotal, totalTax, data.ShippingCharge, calculatedTotal, data.TotalAmount)
+	fmt.Printf("Invoice Total Calculation - Subtotal: %.2f, Shipping: %.2f, Discount: %.2f, Final Total: %.2f\n",
+		subtotal, data.ShippingCharge, data.DiscountAmount, finalTotal)
 
-	// Summary card
+	// Summary card - compact height
 	currentY := pdf.GetY()
 	cardWidth := 90.0
 	cardX := 198 - cardWidth - 12 // Right aligned
+	cardHeight := 45.0            // Reduced height since no tax
 
 	// Card background
 	pdf.SetFillColor(248, 249, 250)
 	pdf.SetDrawColor(229, 231, 235)
-	pdf.RoundedRect(cardX, currentY, cardWidth, 45, 3, "1111", "FD")
+	pdf.RoundedRect(cardX, currentY, cardWidth, cardHeight, 3, "1111", "FD")
 
 	// Card header
 	pdf.SetFillColor(config.SecondaryColor[0], config.SecondaryColor[1], config.SecondaryColor[2])
@@ -545,51 +528,58 @@ func (s *PDFTemplateService) addModernTotalsSection(pdf *gofpdf.Fpdf, data *Invo
 	pdf.SetTextColor(255, 255, 255)
 	pdf.Cell(0, 6, "SUMMARY")
 
-	// Summary items - only show non-zero amounts
+	// Summary items - show all relevant amounts
 	summaryItems := []struct {
-		Label  string
-		Amount float64
-		IsBold bool
+		Label      string
+		Amount     float64
+		IsBold     bool
+		IsDiscount bool
 	}{
-		{"Subtotal", subtotal, false},
+		{"Subtotal", subtotal, false, false},
 	}
 
-	// Add tax only if it's greater than 0
-	if totalTax > 0 {
+	// Add discount if applied
+	if data.DiscountAmount > 0 && data.CouponCode != "" {
 		summaryItems = append(summaryItems, struct {
-			Label  string
-			Amount float64
-			IsBold bool
-		}{"Tax", totalTax, false})
+			Label      string
+			Amount     float64
+			IsBold     bool
+			IsDiscount bool
+		}{fmt.Sprintf("Discount (%s)", data.CouponCode), -data.DiscountAmount, false, true})
 	}
 
 	// Add shipping only if it's greater than 0
 	if data.ShippingCharge > 0 {
 		summaryItems = append(summaryItems, struct {
-			Label  string
-			Amount float64
-			IsBold bool
-		}{"Shipping", data.ShippingCharge, false})
+			Label      string
+			Amount     float64
+			IsBold     bool
+			IsDiscount bool
+		}{"Shipping", data.ShippingCharge, false, false})
 	}
 
 	// Add total
 	summaryItems = append(summaryItems, struct {
-		Label  string
-		Amount float64
-		IsBold bool
-	}{"TOTAL", finalTotal, true})
+		Label      string
+		Amount     float64
+		IsBold     bool
+		IsDiscount bool
+	}{"TOTAL", finalTotal, true, false})
 
 	yPos := currentY + 15
 	pdf.SetTextColor(0, 0, 0)
 
 	for _, item := range summaryItems {
-
 		if item.IsBold {
 			pdf.SetFont("Arial", "B", 11)
 			pdf.SetTextColor(config.PrimaryColor[0], config.PrimaryColor[1], config.PrimaryColor[2])
 		} else {
 			pdf.SetFont("Arial", "", 9)
-			pdf.SetTextColor(0, 0, 0)
+			if item.IsDiscount {
+				pdf.SetTextColor(34, 197, 94) // Green for discount
+			} else {
+				pdf.SetTextColor(0, 0, 0)
+			}
 		}
 
 		pdf.SetXY(cardX+5, yPos)
@@ -606,7 +596,7 @@ func (s *PDFTemplateService) addModernTotalsSection(pdf *gofpdf.Fpdf, data *Invo
 	}
 
 	// Amount in words
-	pdf.SetY(currentY + 50)
+	pdf.SetY(currentY + cardHeight + 5)
 	pdf.SetFont("Arial", "", 9)
 	pdf.SetTextColor(107, 114, 128)
 	pdf.Cell(0, 5, fmt.Sprintf("Amount in Words: %s only", s.numberToWords(int(finalTotal))))
@@ -635,33 +625,33 @@ func (s *PDFTemplateService) addTermsAndConditions(pdf *gofpdf.Fpdf, terms []str
 
 // addModernFooter creates a modern footer
 func (s *PDFTemplateService) addModernFooter(pdf *gofpdf.Fpdf, config *InvoiceTemplateConfig, data *InvoiceData) {
-	currentY := pdf.GetY() + 10
+	currentY := pdf.GetY() + 5
 
-	// Footer background
+	// Footer background - reduced height
 	pdf.SetFillColor(248, 249, 250)
-	pdf.Rect(12, currentY, 186, 25, "F")
+	pdf.Rect(12, currentY, 186, 20, "F")
 
 	// Signature section
-	pdf.SetXY(12, currentY+5)
-	pdf.SetFont("Arial", "B", 10)
+	pdf.SetXY(12, currentY+3)
+	pdf.SetFont("Arial", "B", 9)
 	pdf.SetTextColor(0, 0, 0)
-	pdf.Cell(0, 6, "Authorized Signatory")
+	pdf.Cell(0, 5, "Authorized Signatory")
 
-	pdf.SetXY(12, currentY+15)
-	pdf.SetFont("Arial", "", 8)
+	pdf.SetXY(12, currentY+12)
+	pdf.SetFont("Arial", "", 7)
 	pdf.SetTextColor(107, 114, 128)
-	pdf.Cell(0, 4, "Signature")
+	pdf.Cell(0, 3, "Signature")
 
 	// Footer message and generation info
 	if config.FooterMessage != "" {
-		pdf.SetXY(100, currentY+5)
-		pdf.SetFont("Arial", "", 8)
+		pdf.SetXY(100, currentY+3)
+		pdf.SetFont("Arial", "", 7)
 		pdf.SetTextColor(107, 114, 128)
-		pdf.MultiCell(86, 4, config.FooterMessage, "", "", false)
+		pdf.MultiCell(86, 3, config.FooterMessage, "", "", false)
 	}
 
-	pdf.SetXY(100, currentY+15)
-	pdf.SetFont("Arial", "", 7)
+	pdf.SetXY(100, currentY+12)
+	pdf.SetFont("Arial", "", 6)
 	pdf.Cell(0, 3, fmt.Sprintf("Generated on: %s", time.Now().Format("02 Jan 2006, 15:04:05")))
 
 	// Page border for professional look
@@ -731,13 +721,13 @@ func (s *PDFTemplateService) numberToWords(num int) string {
 func (s *PDFTemplateService) getDefaultConfig() *InvoiceTemplateConfig {
 	return &InvoiceTemplateConfig{
 		CompanyName:     "AMRTI - NATURE'S ELIXIR",
-		CompanyAddress:  "123 Business Park, Tech City, Hyderabad, Telangana - 500081, India",
-		CompanyPhone:    "+91-40-12345678",
-		CompanyEmail:    "support@amrti.com",
+		CompanyAddress:  "NANDHI HILLS 5-85/27, Plot No 27 3rd 3rd Hyderabad Nandagiri Hills Rear Road",
+		CompanyPhone:    "+91-7386727007",
+		CompanyEmail:    "amrticontact@gmail.com",
 		CompanyWebsite:  "www.amrti.com",
-		CompanyPAN:      "ABCDE1234F",
-		CompanyGST:      "36ABCDE1234F1Z5",
-		Currency:        "₹",
+		CompanyPAN:      "AAWCA6575D",
+		CompanyGST:      "36AAWCA6575D1Z7",
+		Currency:        "Rs",
 		ShowTax:         true,
 		TaxRate:         18.0,
 		ShowCGST:        true,
