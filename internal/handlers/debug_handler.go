@@ -1,19 +1,30 @@
 package handlers
 
 import (
+	"net/http"
+
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
 type DebugHandler struct {
-	logger *zap.Logger
+	logger       *zap.Logger
+	orderService services.OrderServiceInterface
 }
 
 func NewDebugHandler(logger *zap.Logger) *DebugHandler {
 	return &DebugHandler{
 		logger: logger,
+	}
+}
+
+func NewDebugHandlerWithServices(logger *zap.Logger, orderService services.OrderServiceInterface) *DebugHandler {
+	return &DebugHandler{
+		logger:       logger,
+		orderService: orderService,
 	}
 }
 
@@ -81,4 +92,74 @@ func (h *DebugHandler) CheckDelhiveryConfig(c *gin.Context) {
 		zap.Strings("issues", issues))
 
 	utils.RespondWithSuccess(c, response)
+}
+
+// GenerateInvoiceDebug generates an invoice for an existing order (debug only)
+// @Summary Debug: generate invoice for order
+// @Description Generate and test invoice generation for an existing order
+// @Tags Debug
+// @Produce json
+// @Param id path string true "Order ID"
+// @Router /debug/invoice/{id} [post]
+func (h *DebugHandler) GenerateInvoiceDebug(c *gin.Context) {
+	if h.orderService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Order service not available in debug handler",
+		})
+		return
+	}
+
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+
+	h.logger.Info("Debug invoice generation requested", zap.String("order_id", orderID))
+
+	// Generate invoice
+	url, err := h.orderService.GenerateAndAttachInvoice(c.Request.Context(), orderID)
+	if err != nil {
+		h.logger.Error("Failed to generate invoice in debug mode",
+			zap.String("order_id", orderID),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":    "Failed to generate invoice",
+			"details":  err.Error(),
+			"order_id": orderID,
+		})
+		return
+	}
+
+	// Get updated order details
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil {
+		h.logger.Warn("Invoice generated but failed to get updated order",
+			zap.String("order_id", orderID),
+			zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{
+			"success":     true,
+			"message":     "Invoice generated successfully but failed to get updated order",
+			"invoice_url": url,
+			"order_id":    orderID,
+		})
+		return
+	}
+
+	response := gin.H{
+		"success":           true,
+		"message":           "Invoice generated successfully",
+		"order_id":          orderID,
+		"invoice_url":       url,
+		"order_invoice_url": order.InvoiceURL,
+		"urls_match":        url == order.InvoiceURL,
+		"debug_note":        "This is a debug endpoint for testing invoice generation",
+	}
+
+	h.logger.Info("Debug invoice generation completed successfully",
+		zap.String("order_id", orderID),
+		zap.String("invoice_url", url),
+		zap.Bool("urls_match", url == order.InvoiceURL))
+
+	c.JSON(http.StatusOK, response)
 }

@@ -35,8 +35,10 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 
 	// Debug endpoints
 	debugHandler := handlers.NewDebugHandler(logger)
+	debugHandlerWithServices := handlers.NewDebugHandlerWithServices(logger, serviceManager.OrderService)
 	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
 	r.GET("/debug/delhivery-config", debugHandler.CheckDelhiveryConfig)
+	r.POST("/debug/invoice/:id", debugHandlerWithServices.GenerateInvoiceDebug)
 
 	// API versioning
 	v1 := r.Group("/api/v1")

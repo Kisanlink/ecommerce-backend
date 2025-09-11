@@ -145,7 +145,7 @@ func main() {
 			StockStatus:     "In Stock",
 			ReviewCount:     42,
 			Rating:          4.7,
-			IsActive:        true,
+	3		IsActive:        true,
 		},
 		{
 			BaseModel:       base.NewBaseModel("PROD", hash.Medium),

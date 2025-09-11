@@ -51,6 +51,7 @@ type EstimateShippingRequest struct {
 		PostalCode string `json:"postal_code" binding:"required" validate:"required,min=1,max=20"`
 		Country    string `json:"country" binding:"required" validate:"required,min=1,max=100"`
 	} `json:"address" binding:"required"`
+	Phone          string `json:"phone,omitempty" validate:"omitempty"`
 	ShippingMethod string `json:"shipping_method,omitempty" validate:"omitempty,oneof=standard express overnight"`
 }
 

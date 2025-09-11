@@ -727,7 +727,7 @@ func (s *PDFTemplateService) getDefaultConfig() *InvoiceTemplateConfig {
 		CompanyWebsite:  "www.amrti.com",
 		CompanyPAN:      "AAWCA6575D",
 		CompanyGST:      "36AAWCA6575D1Z7",
-		Currency:        "Rs",
+		Currency:        "Rs ",
 		ShowTax:         true,
 		TaxRate:         18.0,
 		ShowCGST:        true,
