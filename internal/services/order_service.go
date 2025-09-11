@@ -459,7 +459,13 @@ func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID str
 	if err := s.orderRepo.Update(ctx, order); err != nil {
 		s.logger.Error("Failed to update order with invoice URL",
 			zap.String("order_id", orderID),
+			zap.String("invoice_url", url),
 			zap.Error(err))
+		// Still return the URL even if database update fails
+	} else {
+		s.logger.Info("Order updated with invoice URL successfully",
+			zap.String("order_id", orderID),
+			zap.String("invoice_url", url))
 	}
 
 	return url, nil

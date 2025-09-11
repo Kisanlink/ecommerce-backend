@@ -246,39 +246,11 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		zap.String("first_name", req.FirstName),
 		zap.String("mobile_length", fmt.Sprintf("%d", len(req.Mobile))))
 
-	// Validate and normalize primary mobile number
-	normalizedMobile, err := h.validateAndNormalizePhoneNumber(req.Mobile)
-	if err != nil {
-		h.logger.Error("Mobile number validation failed",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.String("original_mobile", req.Mobile),
-			zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mobile number: " + err.Error()})
-		return
-	}
-	req.Mobile = normalizedMobile
-
-	// Validate and normalize secondary mobile if provided
-	if req.MobileSecondary != "" {
-		normalizedMobileSecondary, err := h.validateAndNormalizePhoneNumber(req.MobileSecondary)
-		if err != nil {
-			h.logger.Error("Secondary mobile number validation failed",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.String("original_mobile_secondary", req.MobileSecondary),
-				zap.Error(err))
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid secondary mobile number: " + err.Error()})
-			return
-		}
-		req.MobileSecondary = normalizedMobileSecondary
-	}
-
-	h.logger.Info("Mobile numbers validated and normalized",
+	h.logger.Info("Customer details validated",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("mobile", req.Mobile),
-		zap.String("mobile_secondary", req.MobileSecondary))
+		zap.String("first_name", req.FirstName),
+		zap.String("mobile", req.Mobile))
 
 	// Always use INR currency - require address_id to be provided
 	useCurrency := "INR" // Always INR for all transactions
@@ -364,10 +336,22 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		cartTotal += item.TotalPrice
 	}
 
+	// Apply discount if coupon was applied
+	discountedCartTotal := cartTotal
+	if cart.DiscountAmount > 0 {
+		discountedCartTotal = cartTotal - cart.DiscountAmount
+		if discountedCartTotal < 0 {
+			discountedCartTotal = 0
+		}
+	}
+
 	h.logger.Info("Cart total calculated",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.Float64("cart_total", cartTotal))
+		zap.Float64("cart_total", cartTotal),
+		zap.Float64("discount_amount", cart.DiscountAmount),
+		zap.Float64("discounted_cart_total", discountedCartTotal),
+		zap.String("coupon_code", cart.CouponCode))
 
 	// Force INR currency always
 	req.Currency = useCurrency // Always "INR"
@@ -377,7 +361,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		// Calculate from provided subtotal or get dynamic shipping charges
 		subtotal := req.Subtotal
 		if subtotal > 0 {
-			shippingCharges = subtotal - cartTotal
+			shippingCharges = subtotal - discountedCartTotal
 			if shippingCharges < 0 {
 				shippingCharges = 0
 			}
@@ -386,38 +370,42 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
 				zap.Float64("provided_subtotal", subtotal),
+				zap.Float64("discounted_cart_total", discountedCartTotal),
 				zap.Float64("calculated_shipping", shippingCharges))
 		} else {
 			// Get shipping charges dynamically from delivery service API with robust fallback
 			h.logger.Info("Calculating dynamic shipping charges",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
-				zap.Float64("cart_total", cartTotal),
+				zap.Float64("discounted_cart_total", discountedCartTotal),
 				zap.Int("item_count", len(cart.Items)))
 
-			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, cartTotal, len(cart.Items))
-			finalAmount = cartTotal + shippingCharges
+			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
+			finalAmount = discountedCartTotal + shippingCharges
 		}
 
 		h.logger.Info("Shipping charges calculated",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.Float64("cart_total", cartTotal),
+			zap.Float64("original_cart_total", cartTotal),
+			zap.Float64("discounted_cart_total", discountedCartTotal),
 			zap.Float64("shipping_charges", shippingCharges),
 			zap.Float64("final_amount", finalAmount))
 	}
 
 	// Apply business rule: Free delivery on cart total of 500 or more
 	// Assumption: threshold is inclusive (>= 500)
+	// Note: Free delivery is based on original cart total, not discounted total
 	freeDelivery := false
 	if cartTotal >= 500 {
 		freeDelivery = true
 		shippingCharges = 0
-		finalAmount = cartTotal
+		finalAmount = discountedCartTotal // Use discounted total for final amount
 		h.logger.Info("Free delivery threshold met",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.Float64("cart_total", cartTotal),
+			zap.Float64("original_cart_total", cartTotal),
+			zap.Float64("discounted_cart_total", discountedCartTotal),
 			zap.Float64("threshold", 500),
 			zap.Bool("free_delivery", true),
 			zap.Float64("adjusted_final_amount", finalAmount))
@@ -426,31 +414,33 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	h.logger.Info("Final payment amounts calculated",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.Float64("cart_total", cartTotal),
+		zap.Float64("original_cart_total", cartTotal),
+		zap.Float64("discount_amount", cart.DiscountAmount),
+		zap.Float64("discounted_cart_total", discountedCartTotal),
 		zap.Float64("shipping_charges", shippingCharges),
 		zap.Float64("final_amount", finalAmount),
+		zap.String("coupon_code", cart.CouponCode),
 		zap.Bool("free_delivery", freeDelivery))
 
 	// Step 3: Create ONLY Razorpay payment order (NO database order!)
-	// Store all necessary information in notes for later order creation
+	// Store essential information in notes (max 15 fields for Razorpay)
 	notes := map[string]interface{}{
-		"user_id":             userID,
-		"shipping_address":    shippingAddress,
-		"shipping_address_id": shippingAddressID, // Use resolved address ID
-		"cart_total":          cartTotal,
-		"shipping_charges":    shippingCharges,
-		"subtotal":            finalAmount, // Total including shipping
-		"cart_items_count":    len(cart.Items),
-		"currency":            "INR", // Always INR
-		// Customer details for order + shipping label
+		"user_id":          userID,
+		"shipping_addr_id": shippingAddressID, // Use resolved address ID
+		"cart_total":       cartTotal,
+		"discount":         cart.DiscountAmount,
+		"coupon":           cart.CouponCode,
+		"shipping":         shippingCharges,
+		"final_amount":     finalAmount, // Total including shipping
+		"items_count":      len(cart.Items),
+		"currency":         "INR", // Always INR
 		"first_name":       req.FirstName,
 		"last_name":        req.LastName,
 		"mobile":           req.Mobile,
-		"mobile_secondary": req.MobileSecondary,
+		"mobile_alt":       req.MobileSecondary,
 	}
 	if freeDelivery {
 		notes["free_delivery"] = true
-		notes["free_delivery_threshold"] = 500
 	}
 
 	h.logger.Info("Creating Razorpay payment order",
@@ -674,15 +664,13 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		var firstName, lastName, mobile, mobileSecondary string
 		if rzpOrder != nil && rzpOrder.Notes != nil {
 			notes = rzpOrder.Notes
-			if v, ok := notes["shipping_address"].(string); ok {
-				shippingAddress = v
-			}
-			if v, ok := notes["shipping_address_id"].(string); ok {
+			// Note: shipping_address removed from notes to reduce field count
+			if v, ok := notes["shipping_addr_id"].(string); ok {
 				shippingAddressID = v
 			}
-			if v, ok := notes["subtotal"].(float64); ok {
+			if v, ok := notes["final_amount"].(float64); ok {
 				subtotal = v
-			} else if v, ok := notes["subtotal"].(int); ok {
+			} else if v, ok := notes["final_amount"].(int); ok {
 				subtotal = float64(v)
 			}
 			if v, ok := notes["cart_total"].(float64); ok {
@@ -690,9 +678,9 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			} else if v, ok := notes["cart_total"].(int); ok {
 				cartTotal = float64(v)
 			}
-			if v, ok := notes["shipping_charges"].(float64); ok {
+			if v, ok := notes["shipping"].(float64); ok {
 				shippingCharges = v
-			} else if v, ok := notes["shipping_charges"].(int); ok {
+			} else if v, ok := notes["shipping"].(int); ok {
 				shippingCharges = float64(v)
 			}
 			if shippingCharges == 0 && subtotal > 0 && cartTotal >= 0 {
@@ -717,7 +705,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			if v, ok := notes["mobile"].(string); ok {
 				mobile = strings.TrimSpace(v)
 			}
-			if v, ok := notes["mobile_secondary"].(string); ok {
+			if v, ok := notes["mobile_alt"].(string); ok {
 				mobileSecondary = strings.TrimSpace(v)
 			}
 
@@ -1377,18 +1365,6 @@ func (h *PaymentHandler) parseShippingAddress(addressStr string) (struct {
 	return address, nil
 }
 
-// onlyDigits returns a string containing only 0-9 digits
-func onlyDigits(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, ch := range s {
-		if ch >= '0' && ch <= '9' {
-			b.WriteRune(ch)
-		}
-	}
-	return b.String()
-}
-
 // calculateShippingChargesRobust provides a robust shipping calculation with intelligent fallback
 func (h *PaymentHandler) calculateShippingChargesRobust(ctx context.Context, userID, shippingAddress string, cartTotal float64, itemCount int) float64 {
 	// First, try to get real API charges from Delhivery
@@ -1476,45 +1452,4 @@ func isMetroPincode(pincode string) bool {
 	}
 
 	return false
-}
-
-// validateAndNormalizePhoneNumber validates and normalizes an Indian mobile number
-func (h *PaymentHandler) validateAndNormalizePhoneNumber(phone string) (string, error) {
-	if phone == "" {
-		return "", fmt.Errorf("phone number cannot be empty")
-	}
-
-	// Extract only digits
-	digits := onlyDigits(phone)
-
-	// Handle international format (+91 prefix)
-	if strings.HasPrefix(digits, "91") && len(digits) == 12 {
-		digits = digits[2:] // Remove country code
-	}
-
-	// Must be exactly 10 digits for Indian mobile numbers
-	if len(digits) != 10 {
-		return "", fmt.Errorf("phone number must be exactly 10 digits, got %d digits", len(digits))
-	}
-
-	// Validate Indian mobile number format - must start with 6, 7, 8, or 9
-	firstDigit := digits[0]
-	if firstDigit < '6' || firstDigit > '9' {
-		return "", fmt.Errorf("Indian mobile numbers must start with 6, 7, 8, or 9, got %c", firstDigit)
-	}
-
-	// Additional validation: second digit restrictions
-	if firstDigit == '6' {
-		// 6 series: 60-69, but 60 and 61 are not common
-		secondDigit := digits[1]
-		if secondDigit < '0' || secondDigit > '9' {
-			return "", fmt.Errorf("invalid mobile number format")
-		}
-	}
-
-	h.logger.Info("Phone number validated and normalized",
-		zap.String("original", phone),
-		zap.String("normalized", digits))
-
-	return digits, nil
 }

@@ -163,6 +163,9 @@ func (h *DeliveryHandler) Estimate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
 	}
+
+	// Phone number is optional for shipping estimation
+
 	est, err := h.deliveryService.Estimate(c.Request.Context(), userID, req)
 	if err != nil {
 		h.logger.Warn("Estimate failed", zap.Error(err), zap.String("user_id", userID))

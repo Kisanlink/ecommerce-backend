@@ -26,6 +26,10 @@ func NewS3Service(s3Manager *db.S3Manager) *S3Service {
 
 // UploadFile uploads a file to S3 and returns the file URL
 func (s *S3Service) UploadFile(ctx context.Context, key string, data []byte, contentType string) (string, error) {
+	if s.s3Manager == nil {
+		return "", fmt.Errorf("S3 manager not initialized")
+	}
+
 	reader := bytes.NewReader(data)
 	err := s.s3Manager.UploadFile(ctx, key, reader, contentType, nil)
 	if err != nil {
@@ -43,6 +47,10 @@ func (s *S3Service) UploadFile(ctx context.Context, key string, data []byte, con
 
 // GeneratePresignedURL generates a presigned URL for file access
 func (s *S3Service) GeneratePresignedURL(ctx context.Context, key string, expiration time.Duration) (string, error) {
+	if s.s3Manager == nil {
+		return "", fmt.Errorf("S3 manager not initialized")
+	}
+
 	url, err := s.s3Manager.GetPresignedURL(ctx, key, expiration)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
@@ -53,6 +61,10 @@ func (s *S3Service) GeneratePresignedURL(ctx context.Context, key string, expira
 
 // DeleteFile deletes a file from S3 using the key
 func (s *S3Service) DeleteFile(ctx context.Context, key string) error {
+	if s.s3Manager == nil {
+		return fmt.Errorf("S3 manager not initialized")
+	}
+
 	err := s.s3Manager.Delete(ctx, key)
 	if err != nil {
 		return fmt.Errorf("failed to delete file from S3: %w", err)

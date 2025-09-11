@@ -80,26 +80,7 @@ func (s *ReviewService) initDynamoDB() error {
 func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (string, error) {
 	s.logger.Info("Getting user display name", zap.String("user_id", userID))
 
-	// First, try to get the name from Users table
-	userResponse, err := s.userService.GetUserByID(ctx, userID)
-	if err == nil && userResponse.Success {
-		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
-			if userName, ok := userData["name"].(string); ok && strings.TrimSpace(userName) != "" {
-				s.logger.Info("Found user name from Users table",
-					zap.String("user_id", userID),
-					zap.String("user_name", userName))
-				return userName, nil
-			} else {
-				s.logger.Info("No name found in Users table", zap.String("user_id", userID))
-			}
-		}
-	} else {
-		s.logger.Warn("Failed to get user from Users table",
-			zap.String("user_id", userID),
-			zap.Error(err))
-	}
-
-	// If Users table doesn't have a name, try Profile table
+	// First, try to get the name from Profile table (most up-to-date)
 	if s.profileService != nil {
 		profile, err := s.profileService.GetProfileByUserID(ctx, userID)
 		if err == nil && profile != nil {
@@ -133,6 +114,25 @@ func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (
 		}
 	} else {
 		s.logger.Warn("Profile service not available", zap.String("user_id", userID))
+	}
+
+	// If Profile table doesn't have a name, try Users table as fallback
+	userResponse, err := s.userService.GetUserByID(ctx, userID)
+	if err == nil && userResponse.Success {
+		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+			if userName, ok := userData["name"].(string); ok && strings.TrimSpace(userName) != "" {
+				s.logger.Info("Found user name from Users table (fallback)",
+					zap.String("user_id", userID),
+					zap.String("user_name", userName))
+				return userName, nil
+			} else {
+				s.logger.Info("No name found in Users table", zap.String("user_id", userID))
+			}
+		}
+	} else {
+		s.logger.Warn("Failed to get user from Users table",
+			zap.String("user_id", userID),
+			zap.Error(err))
 	}
 
 	// If both fail, return a fallback name instead of error
@@ -169,7 +169,22 @@ func (s *ReviewService) CreateReview(ctx context.Context, req *requests.CreateRe
 	// Check if user has already reviewed this product
 	existingReview, err := s.GetReviewByUserAndProduct(ctx, userID, req.ProductID)
 	if err == nil && existingReview != nil && existingReview.IsActive {
+		s.logger.Warn("User already has an active review for this product",
+			zap.String("user_id", userID),
+			zap.String("product_id", req.ProductID),
+			zap.String("existing_review_id", existingReview.GetID()))
 		return nil, errors.New("user has already reviewed this product")
+	} else if err != nil {
+		// This is expected when no review exists or review is inactive (deleted)
+		s.logger.Info("No active review found for user and product (user can create new review)",
+			zap.String("user_id", userID),
+			zap.String("product_id", req.ProductID),
+			zap.Error(err))
+	} else if existingReview != nil && !existingReview.IsActive {
+		s.logger.Info("Found inactive (deleted) review - user can create new review",
+			zap.String("user_id", userID),
+			zap.String("product_id", req.ProductID),
+			zap.String("deleted_review_id", existingReview.GetID()))
 	}
 
 	// TODO: Check if user has purchased this product (for verification)
@@ -656,9 +671,17 @@ func (s *ReviewService) GetReviewByUserAndProduct(ctx context.Context, userID, p
 
 	// Check if the review is active (not deleted)
 	if !review.IsActive {
+		s.logger.Info("Found inactive (deleted) review - treating as not found",
+			zap.String("user_id", userID),
+			zap.String("product_id", productID),
+			zap.String("review_id", review.GetID()))
 		return nil, errors.New("review not found")
 	}
 
+	s.logger.Info("Found active review",
+		zap.String("user_id", userID),
+		zap.String("product_id", productID),
+		zap.String("review_id", review.GetID()))
 	return review, nil
 }
 
@@ -719,19 +742,7 @@ func (s *ReviewService) refreshUserNamesFromPostgres(ctx context.Context, review
 	// Fetch users from PostgreSQL using userService and profileService
 	userMap := make(map[string]string)
 	for _, userID := range userIDs {
-		// First try to get name from Users table
-		userResponse, err := s.userService.GetUserByID(ctx, userID)
-		if err == nil && userResponse.Success {
-			// Extract user data from the response
-			if userData, ok := userResponse.Data.(map[string]interface{}); ok {
-				if userName, ok := userData["name"].(string); ok && userName != "" {
-					userMap[userID] = userName
-					continue // Found name, move to next user
-				}
-			}
-		}
-
-		// If Users table doesn't have a name, try Profile table
+		// First try to get name from Profile table (most up-to-date)
 		if s.profileService != nil {
 			profile, err := s.profileService.GetProfileByUserID(ctx, userID)
 			if err == nil && profile != nil {
@@ -741,10 +752,24 @@ func (s *ReviewService) refreshUserNamesFromPostgres(ctx context.Context, review
 
 				if firstName != "" && lastName != "" {
 					userMap[userID] = firstName + " " + lastName
+					continue // Found name, move to next user
 				} else if firstName != "" {
 					userMap[userID] = firstName
+					continue // Found name, move to next user
 				} else if lastName != "" {
 					userMap[userID] = lastName
+					continue // Found name, move to next user
+				}
+			}
+		}
+
+		// If Profile table doesn't have a name, try Users table as fallback
+		userResponse, err := s.userService.GetUserByID(ctx, userID)
+		if err == nil && userResponse.Success {
+			// Extract user data from the response
+			if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+				if userName, ok := userData["name"].(string); ok && userName != "" {
+					userMap[userID] = userName
 				}
 			}
 		}

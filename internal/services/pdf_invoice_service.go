@@ -31,8 +31,13 @@ func NewPDFInvoiceService(s3Service *S3Service, logger *zap.Logger) *PDFInvoiceS
 // GeneratePDFInvoice creates a PDF invoice and uploads it to S3
 func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *models.Order, items []*models.OrderItem, productRepo ProductRepositoryInterface) (string, error) {
 	if s.s3Service == nil {
+		s.logger.Error("S3 service is nil", zap.String("order_id", order.ID))
 		return "", fmt.Errorf("s3 service unavailable")
 	}
+
+	s.logger.Info("Starting PDF invoice generation",
+		zap.String("order_id", order.ID),
+		zap.Int("items_count", len(items)))
 
 	// Prepare invoice data
 	invoiceData := s.prepareInvoiceData(order, items, productRepo, ctx)
@@ -40,18 +45,30 @@ func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *model
 	// Generate PDF using template service
 	pdfBytes, err := s.templateService.GenerateCustomPDFInvoice(invoiceData, nil)
 	if err != nil {
+		s.logger.Error("Failed to generate PDF content",
+			zap.String("order_id", order.ID),
+			zap.Error(err))
 		return "", fmt.Errorf("failed to create PDF invoice: %w", err)
 	}
+
+	s.logger.Info("PDF content generated successfully",
+		zap.String("order_id", order.ID),
+		zap.Int("pdf_size_bytes", len(pdfBytes)))
 
 	// Upload to S3
 	key := fmt.Sprintf("invoices/%s.pdf", order.ID)
 	url, err := s.s3Service.UploadFile(ctx, key, pdfBytes, "application/pdf")
 	if err != nil {
+		s.logger.Error("Failed to upload PDF to S3",
+			zap.String("order_id", order.ID),
+			zap.String("s3_key", key),
+			zap.Error(err))
 		return "", fmt.Errorf("failed to upload PDF invoice: %w", err)
 	}
 
-	s.logger.Info("PDF invoice generated successfully",
+	s.logger.Info("PDF invoice generated and uploaded successfully",
 		zap.String("order_id", order.ID),
+		zap.String("s3_key", key),
 		zap.String("invoice_url", url))
 
 	return url, nil

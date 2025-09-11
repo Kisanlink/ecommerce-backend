@@ -753,15 +753,18 @@ func (h *CartHandler) RemoveCoupon(c *gin.Context) {
 		h.handleCartServiceError(c, err, "remove coupon", userID)
 		return
 	}
-	total := round2(cart.TotalPrice)
+
+	// Get the original total price (without any discount)
+	originalTotal := round2(cart.TotalPrice)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"cart_total":       total,
+			"cart_total":       originalTotal,
 			"discount_amount":  0,
-			"discounted_total": total,
+			"discounted_total": originalTotal,
 			"coupon":           nil,
 		},
-		"message": "Coupon removed",
+		"message": "Coupon removed successfully",
 	})
 }
