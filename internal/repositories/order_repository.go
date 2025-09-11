@@ -104,6 +104,94 @@ func (r *OrderRepository) GetOrderWithItems(ctx context.Context, orderID string)
 	return &order, orderItems, nil
 }
 
+// OrderItemWithProduct represents an order item with product details
+type OrderItemWithProduct struct {
+	models.OrderItem
+	ProductName     string `json:"product_name"`
+	ProductImageURL string `json:"product_image_url"`
+}
+
+// GetOrderWithItemsAndProducts retrieves an order with its items including product details
+func (r *OrderRepository) GetOrderWithItemsAndProducts(ctx context.Context, orderID string) (*models.Order, []OrderItemWithProduct, error) {
+	// Get order using base repository
+	var order models.Order
+	if err := r.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return nil, nil, fmt.Errorf("failed to get order: %w", err)
+	}
+
+	// Get order items
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "order_id", Operator: base.OpEqual, Value: orderID},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var orderItems []models.OrderItem
+	if err := r.dbManager.List(ctx, filter, &orderItems); err != nil {
+		return nil, nil, fmt.Errorf("failed to get order items: %w", err)
+	}
+
+	// Collect unique product IDs
+	productIDSet := make(map[string]bool)
+	for _, item := range orderItems {
+		productIDSet[item.ProductID] = true
+	}
+
+	// Fetch all products in a single query for better performance
+	var productIDs []string
+	for productID := range productIDSet {
+		productIDs = append(productIDs, productID)
+	}
+
+	// Get all products at once
+	var products []models.Product
+	if len(productIDs) > 0 {
+		productFilter := &base.Filter{
+			Group: base.FilterGroup{
+				Conditions: []base.FilterCondition{
+					{Field: "id", Operator: base.OpIn, Value: productIDs},
+				},
+				Logic: base.LogicAnd,
+			},
+		}
+		if err := r.dbManager.List(ctx, productFilter, &products); err != nil {
+			// If we can't fetch products, continue with default values
+			products = []models.Product{}
+		}
+	}
+
+	// Create a map for quick product lookup
+	productMap := make(map[string]models.Product)
+	for _, product := range products {
+		productMap[product.ID] = product
+	}
+
+	// Enrich order items with product details
+	var enrichedItems []OrderItemWithProduct
+	for _, item := range orderItems {
+		enrichedItem := OrderItemWithProduct{
+			OrderItem: item,
+		}
+
+		// Get product details from the map
+		if product, exists := productMap[item.ProductID]; exists {
+			enrichedItem.ProductName = product.Name
+			enrichedItem.ProductImageURL = product.ImageURL
+		} else {
+			// If product not found, set default values
+			enrichedItem.ProductName = "Product Not Found"
+			enrichedItem.ProductImageURL = ""
+		}
+
+		enrichedItems = append(enrichedItems, enrichedItem)
+	}
+
+	return &order, enrichedItems, nil
+}
+
 // GetOrdersByUserID retrieves all orders for a specific user
 func (r *OrderRepository) GetOrdersByUserID(ctx context.Context, userID string) ([]*models.Order, error) {
 	filter := &base.Filter{

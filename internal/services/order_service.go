@@ -23,6 +23,7 @@ type OrderServiceInterface interface {
 	UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error
 	UpdatePaymentStatusAndOrderStatus(ctx context.Context, orderID string, paymentStatus, paymentID string, orderStatus models.OrderStatus) error
 	GetOrderWithItems(ctx context.Context, orderID string) (*models.Order, []models.OrderItem, error)
+	GetOrderWithItemsAndProducts(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error)
 	ConfirmOrderPayment(ctx context.Context, razorpayOrderID, paymentID string) error
 	UpdateOrderNotes(ctx context.Context, orderID string, notes string) error
 	ClearUserCart(ctx context.Context, userID string) error
@@ -558,6 +559,11 @@ func (s *OrderService) ClearUserCart(ctx context.Context, userID string) error {
 // GetOrderWithItems retrieves an order with its items
 func (s *OrderService) GetOrderWithItems(ctx context.Context, orderID string) (*models.Order, []models.OrderItem, error) {
 	return s.orderRepo.GetOrderWithItems(ctx, orderID)
+}
+
+// GetOrderWithItemsAndProducts retrieves an order with its items including product details
+func (s *OrderService) GetOrderWithItemsAndProducts(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error) {
+	return s.orderRepo.GetOrderWithItemsAndProducts(ctx, orderID)
 }
 
 // ConfirmOrderPayment confirms an order payment and updates relevant statuses

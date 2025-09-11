@@ -266,8 +266,8 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 		zap.String("user_id", userID),
 		zap.String("order_id", orderID))
 
-	// Get order with items
-	order, orderItems, err := h.orderService.GetOrderWithItems(c.Request.Context(), orderID)
+	// Get order with items and product details
+	order, orderItemsWithProducts, err := h.orderService.GetOrderWithItemsAndProducts(c.Request.Context(), orderID)
 	if err != nil {
 		h.logger.Error("Failed to get order details from service",
 			zap.String("request_id", requestID),
@@ -311,11 +311,11 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 		zap.String("order_id", orderID),
 		zap.String("order_status", string(order.Status)),
 		zap.Float64("total_amount", order.TotalAmount),
-		zap.Int("item_count", len(orderItems)))
+		zap.Int("item_count", len(orderItemsWithProducts)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"order": order,
-		"items": orderItems,
+		"items": orderItemsWithProducts,
 	})
 }
 
