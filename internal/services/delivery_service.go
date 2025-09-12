@@ -16,6 +16,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
 )
@@ -488,11 +489,48 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		}
 	}
 
-	// Build products description
+	// Build products description with actual product names
 	productDescs := []string{}
 	totalWeight := 0
+
+	// Collect unique product IDs
+	productIDSet := make(map[string]bool)
 	for _, item := range orderItems {
-		productDescs = append(productDescs, fmt.Sprintf("Product %s (Qty: %d)", item.ProductID, item.Quantity))
+		productIDSet[item.ProductID] = true
+	}
+
+	// Fetch all products to get their names
+	var productIDs []string
+	for productID := range productIDSet {
+		productIDs = append(productIDs, productID)
+	}
+
+	// Get all products at once for better performance
+	productMap := make(map[string]models.Product)
+	if len(productIDs) > 0 && s.repoManager != nil && s.repoManager.ProductRepository != nil {
+		productFilter := &base.Filter{
+			Group: base.FilterGroup{
+				Conditions: []base.FilterCondition{
+					{Field: "id", Operator: base.OpIn, Value: productIDs},
+				},
+				Logic: base.LogicAnd,
+			},
+		}
+		if products, err := s.repoManager.ProductRepository.Find(ctx, productFilter); err == nil {
+			// Create a map for quick product lookup
+			for _, product := range products {
+				productMap[product.ID] = *product
+			}
+		}
+	}
+
+	// Build product descriptions with actual names
+	for _, item := range orderItems {
+		productName := item.ProductID // fallback to product ID
+		if product, exists := productMap[item.ProductID]; exists {
+			productName = product.Name
+		}
+		productDescs = append(productDescs, fmt.Sprintf("%s (Qty: %d)", productName, item.Quantity))
 		totalWeight += item.Quantity * 100 // 100g per item
 	}
 
@@ -505,9 +543,15 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	uniqueOrderID := fmt.Sprintf("%s_%d", order.ID, time.Now().Unix())
 
+	// Include phone number subtly in the address - not highlighted, just there if needed
+	enhancedAddress := order.ShippingAddr
+	if custPhone != "" {
+		enhancedAddress = fmt.Sprintf("%s, %s", order.ShippingAddr, custPhone)
+	}
+
 	shipmentDetail := requests.DelhiveryShipmentDetail{
 		Name:          custName,
-		Add:           order.ShippingAddr,
+		Add:           enhancedAddress,
 		Pin:           pincode,
 		City:          destCity,
 		State:         destState,
@@ -525,7 +569,7 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		ProductsDesc:  strings.Join(productDescs, ", "),
 		HsnCode:       "1234",
 		TotalAmount:   fmt.Sprintf("%.0f", order.TotalAmount),
-		SellerName:    "Kisanlink",
+		SellerName:    "Amrti",
 		SellerInv:     order.ID,
 		Quantity:      fmt.Sprintf("%d", len(orderItems)),
 		Weight:        fmt.Sprintf("%d", totalWeight),
