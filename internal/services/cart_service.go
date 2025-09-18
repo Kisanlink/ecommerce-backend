@@ -585,22 +585,30 @@ func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string
 	// Check if user is first time (simplified check)
 	isFirstTime := true // In a real implementation, check user's order history
 
-	// Validate coupon
-	if !coupon.CanUse(cart.TotalPrice, userID, isFirstTime) {
+	// Extract product IDs from cart items
+	cartProductIDs := make([]string, len(cart.Items))
+	for i, item := range cart.Items {
+		cartProductIDs[i] = item.ProductID
+	}
+
+	// Validate coupon with product restrictions
+	if !coupon.CanUseWithItems(cart.TotalPrice, userID, isFirstTime, cartProductIDs) {
 		s.logger.Error("Coupon cannot be used",
 			zap.String("code", code),
 			zap.String("user_id", userID),
-			zap.Float64("cart_total", cart.TotalPrice))
+			zap.Float64("cart_total", cart.TotalPrice),
+			zap.Strings("cart_products", cartProductIDs))
 		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
 	}
 
-	// Get the best rule for this cart
-	bestRule := coupon.GetBestRule(cart.TotalPrice, userID, isFirstTime)
+	// Get the best rule for this cart with items
+	bestRule := coupon.GetBestRuleWithItems(cart.TotalPrice, userID, isFirstTime, cartProductIDs)
 	if bestRule == nil {
 		s.logger.Error("No applicable rules found for coupon",
 			zap.String("code", code),
 			zap.String("user_id", userID),
-			zap.Float64("cart_total", cart.TotalPrice))
+			zap.Float64("cart_total", cart.TotalPrice),
+			zap.Strings("cart_products", cartProductIDs))
 		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
 	}
 

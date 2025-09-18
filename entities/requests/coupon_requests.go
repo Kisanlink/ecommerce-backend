@@ -26,7 +26,7 @@ type CreateCouponRequest struct {
 
 // UpdateCouponRequest represents the request to update an existing coupon
 type UpdateCouponRequest struct {
-	ID            string                `json:"id" binding:"required"`
+	ID            string                `json:"id,omitempty"`
 	Description   string                `json:"description,omitempty"`
 	RuleType      models.CouponRuleType `json:"rule_type,omitempty"`
 	Value         float64               `json:"value,omitempty"`
@@ -79,7 +79,7 @@ type CreateCouponRuleRequest struct {
 
 // UpdateCouponRuleRequest represents the request to update an existing coupon rule
 type UpdateCouponRuleRequest struct {
-	ID            string                `json:"id" binding:"required"`
+	ID            string                `json:"id,omitempty"`
 	RuleType      models.CouponRuleType `json:"rule_type,omitempty"`
 	DiscountValue float64               `json:"discount_value,omitempty"`
 	MinAmount     float64               `json:"min_amount,omitempty"`

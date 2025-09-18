@@ -146,6 +146,35 @@ func (cr *CouponRule) CanApplyToCart(cartTotal float64, userID string, isFirstTi
 	return true
 }
 
+// CanApplyToCartWithItems checks if the rule can be applied to a specific cart with items
+func (cr *CouponRule) CanApplyToCartWithItems(cartTotal float64, userID string, isFirstTime bool, cartItems []string) bool {
+	if !cr.CanApplyToCart(cartTotal, userID, isFirstTime) {
+		return false
+	}
+
+	// Check product restrictions if any
+	if len(cr.Products) > 0 {
+		// Check if any cart item matches the coupon's product restrictions
+		for _, cartProductID := range cartItems {
+			if cr.AppliesToProduct(cartProductID) {
+				return true
+			}
+		}
+		// If coupon has product restrictions but no cart items match, return false
+		return false
+	}
+
+	// Check category restrictions if any
+	if len(cr.Categories) > 0 {
+		// For now, we'll assume category restrictions are handled at the product level
+		// This would require additional product category information
+		// For simplicity, we'll return true if no product restrictions
+		return true
+	}
+
+	return true
+}
+
 // CalculateDiscount calculates the discount amount for a given cart total
 func (cr *CouponRule) CalculateDiscount(cartTotal float64) float64 {
 	if !cr.IsValid() {

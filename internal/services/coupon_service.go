@@ -9,6 +9,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
+	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"go.uber.org/zap"
 )
 
@@ -37,11 +38,17 @@ type CouponService struct {
 
 // NewCouponService creates a new coupon service
 func NewCouponService(couponRepo repositories.CouponRepositoryInterface, couponRuleRepo repositories.CouponRuleRepositoryInterface, logger *zap.Logger) CouponServiceInterface {
-	return &CouponService{
+	service := &CouponService{
 		couponRepo:     couponRepo,
 		couponRuleRepo: couponRuleRepo,
 		logger:         logger,
 	}
+
+	// Initialize ID generators from existing database records
+	service.initializeCouponIDGenerator()
+	service.initializeCouponRuleIDGenerator()
+
+	return service
 }
 
 // CreateCoupon creates a new coupon
@@ -236,7 +243,7 @@ func (s *CouponService) ValidateCoupon(ctx context.Context, code string, cartTot
 	// Check if user is first time (simplified check)
 	isFirstTime := s.isFirstTimeUser(ctx, userID)
 
-	// Validate coupon
+	// Validate coupon (without product restrictions for validation endpoint)
 	if !coupon.CanUse(cartTotal, userID, isFirstTime) {
 		return base.NewErrorResponse("Invalid coupon", base.NewValidationError("coupon", "Coupon cannot be used for this cart")), nil
 	}
@@ -483,4 +490,56 @@ func (s *CouponService) isFirstTimeUser(ctx context.Context, userID string) bool
 	// if the user has any previous orders or coupon usage history
 	// For now, we'll assume all users are first-time users
 	return true
+}
+
+// initializeCouponIDGenerator initializes the coupon ID generator from existing database records
+func (s *CouponService) initializeCouponIDGenerator() {
+	ctx := context.Background()
+	s.logger.Info("Initializing coupon ID generator")
+
+	// Query all existing coupon IDs to prevent conflicts (exclude soft-deleted)
+	coupons, err := s.couponRepo.GetAll(ctx, 10000, 0)
+	if err != nil {
+		s.logger.Error("Failed to get existing coupons for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("COUP", []string{}, hash.Medium)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, len(coupons))
+		for i, coupon := range coupons {
+			if coupon != nil {
+				existingIDs[i] = coupon.GetID()
+			}
+		}
+		s.logger.Info("Found existing coupon IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("COUP", existingIDs, hash.Medium)
+	}
+
+	s.logger.Info("Coupon ID generator initialized")
+}
+
+// initializeCouponRuleIDGenerator initializes the coupon rule ID generator from existing database records
+func (s *CouponService) initializeCouponRuleIDGenerator() {
+	ctx := context.Background()
+	s.logger.Info("Initializing coupon rule ID generator")
+
+	// Query all existing coupon rule IDs to prevent conflicts
+	rules, err := s.couponRuleRepo.GetAll(ctx, 10000, 0)
+	if err != nil {
+		s.logger.Error("Failed to get existing coupon rules for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("RULE", []string{}, hash.Medium)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, len(rules))
+		for i, rule := range rules {
+			if rule != nil {
+				existingIDs[i] = rule.GetID()
+			}
+		}
+		s.logger.Info("Found existing coupon rule IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("RULE", existingIDs, hash.Medium)
+	}
+
+	s.logger.Info("Coupon rule ID generator initialized")
 }

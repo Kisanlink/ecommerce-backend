@@ -82,3 +82,4 @@ func main() {
 		fmt.Printf("Coupon_rules table columns: %v\n", columns)
 	}
 }
+

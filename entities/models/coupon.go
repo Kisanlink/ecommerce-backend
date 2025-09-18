@@ -77,6 +77,22 @@ func (c *Coupon) CanUse(cartTotal float64, userID string, isFirstTime bool) bool
 	return false
 }
 
+// CanUseWithItems checks if the coupon can be used for a specific cart with items
+func (c *Coupon) CanUseWithItems(cartTotal float64, userID string, isFirstTime bool, cartItems []string) bool {
+	if !c.IsValid() {
+		return false
+	}
+
+	// Check if any rule can be applied to this cart with items
+	for _, rule := range c.Rules {
+		if rule.CanApplyToCartWithItems(cartTotal, userID, isFirstTime, cartItems) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CalculateDiscount calculates the discount amount for a given cart total
 func (c *Coupon) CalculateDiscount(cartTotal float64) float64 {
 	if !c.IsValid() {
@@ -110,6 +126,29 @@ func (c *Coupon) GetBestRule(cartTotal float64, userID string, isFirstTime bool)
 	for i := range c.Rules {
 		rule := &c.Rules[i]
 		if rule.CanApplyToCart(cartTotal, userID, isFirstTime) {
+			discount := rule.CalculateDiscount(cartTotal)
+			if discount > maxDiscount {
+				maxDiscount = discount
+				bestRule = rule
+			}
+		}
+	}
+
+	return bestRule
+}
+
+// GetBestRuleWithItems returns the rule that provides the best discount for the given cart with items
+func (c *Coupon) GetBestRuleWithItems(cartTotal float64, userID string, isFirstTime bool, cartItems []string) *CouponRule {
+	if !c.IsValid() {
+		return nil
+	}
+
+	var bestRule *CouponRule
+	var maxDiscount float64
+
+	for i := range c.Rules {
+		rule := &c.Rules[i]
+		if rule.CanApplyToCartWithItems(cartTotal, userID, isFirstTime, cartItems) {
 			discount := rule.CalculateDiscount(cartTotal)
 			if discount > maxDiscount {
 				maxDiscount = discount

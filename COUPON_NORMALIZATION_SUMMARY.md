@@ -261,3 +261,4 @@ POST /api/v1/coupons/validate
 ## Conclusion
 
 The normalization of the coupons table provides a solid foundation for a more flexible and maintainable coupon system. The new structure supports multiple rules per coupon, better querying capabilities, and improved data integrity while maintaining backward compatibility through the API layer.
+

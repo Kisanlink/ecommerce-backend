@@ -147,3 +147,4 @@ To test the fixes:
 5. **Verify discount** - Check that correct discount is applied
 
 The coupon validation error should now be resolved, and the system will work with the new normalized structure seamlessly.
+

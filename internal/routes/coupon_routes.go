@@ -52,19 +52,24 @@ func RegisterCouponRoutes(router *gin.RouterGroup, repoManager *repositories.Rep
 		admin.GET("", couponHandler.GetAllCoupons)
 
 		// Update coupon (admin only)
-		admin.PUT("", couponHandler.UpdateCoupon)
+		admin.PUT("/:id", couponHandler.UpdateCoupon)
 
 		// Delete coupon (admin only)
 		admin.DELETE("/:id", couponHandler.DeleteCoupon)
+	}
 
-		// Coupon rule management routes
+	// Admin coupon rule routes (separate group to avoid conflicts)
+	adminRules := router.Group("/coupon-rules")
+	adminRules.Use(middleware.FirebaseAuthMiddleware())
+	adminRules.Use(middleware.AdminGuard(repoManager))
+	{
 		// Create coupon rule (admin only)
-		admin.POST("/rules", couponHandler.CreateCouponRule)
+		adminRules.POST("/:couponId", couponHandler.CreateCouponRule)
 
 		// Update coupon rule (admin only)
-		admin.PUT("/rules", couponHandler.UpdateCouponRule)
+		adminRules.PUT("/:couponId/:ruleId", couponHandler.UpdateCouponRule)
 
 		// Delete coupon rule (admin only)
-		admin.DELETE("/rules/:id", couponHandler.DeleteCouponRule)
+		adminRules.DELETE("/:couponId/:ruleId", couponHandler.DeleteCouponRule)
 	}
 }
