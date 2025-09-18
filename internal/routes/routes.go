@@ -61,6 +61,10 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		// Register image routes
 		imageHandler := handlers.NewImageHandler(serviceManager.ImageService, nil, logger) // AuthContext will be set in the handler
 		image.SetupImageRoutes(v1, imageHandler, middleware.FirebaseAuthMiddleware())
+
+		// Register inventory routes
+		inventoryHandler := handlers.NewInventoryHandler(serviceManager.InventoryService)
+		SetupInventoryRoutes(v1, inventoryHandler)
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

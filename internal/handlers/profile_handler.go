@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
@@ -121,9 +122,12 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 		zap.String("profile_id", profile.ID),
 		zap.String("firebase_email", firebaseEmail))
 
+	// Convert to response structure
+	profileResponse := responses.ToProfileResponse(profile)
+	
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Profile created successfully",
-		"data":    profile,
+		"data":    profileResponse,
 	})
 }
 
@@ -189,9 +193,12 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 		zap.Bool("has_profile_picture", profile.ProfilePictureS3Key != ""),
 		zap.Bool("has_full_name", profile.FirstName != "" && profile.LastName != ""))
 
+	// Convert to response structure
+	profileResponse := responses.ToProfileResponse(profile)
+	
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile retrieved successfully",
-		"data":    profile,
+		"data":    profileResponse,
 	})
 }
 
@@ -278,9 +285,12 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		zap.String("user_id", userID),
 		zap.String("profile_id", profile.ID))
 
+	// Convert to response structure
+	profileResponse := responses.ToProfileResponse(profile)
+	
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile updated successfully",
-		"data":    profile,
+		"data":    profileResponse,
 	})
 }
 
@@ -404,9 +414,12 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 		zap.String("filename", header.Filename),
 		zap.Int64("file_size", header.Size))
 
+	// Convert to response structure
+	profileResponse := responses.ToProfileResponse(profile)
+	
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Profile image uploaded successfully",
-		"data":      profile,
+		"data":      profileResponse,
 		"image_url": imageURL,
 		"s3_key":    s3Key,
 	})

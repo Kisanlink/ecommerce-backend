@@ -8,17 +8,18 @@ import (
 
 // ServiceManager manages all services following the development rules
 type ServiceManager struct {
-	UserService     *UserService
-	ProductService  *ProductService
-	ProfileService  *ProfileService
-	FavoriteService *FavoriteService
-	AddressService  AddressServiceInterface
-	CartService     CartServiceInterface
-	S3Service       *S3Service
-	DeliveryService DeliveryServiceInterface
-	OrderService    OrderServiceInterface
-	ReviewService   *ReviewService
-	ImageService    ImageServiceInterface
+	UserService      *UserService
+	ProductService   *ProductService
+	InventoryService *InventoryService
+	ProfileService   *ProfileService
+	FavoriteService  *FavoriteService
+	AddressService   AddressServiceInterface
+	CartService      CartServiceInterface
+	S3Service        *S3Service
+	DeliveryService  DeliveryServiceInterface
+	OrderService     OrderServiceInterface
+	ReviewService    *ReviewService
+	ImageService     ImageServiceInterface
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -50,16 +51,17 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	imageService := NewImageService(repoManager.ImageRepository, repoManager.ProductRepository, logger)
 
 	return &ServiceManager{
-		UserService:     userService,
-		ProductService:  NewProductService(repoManager),
-		ProfileService:  NewProfileService(repoManager),
-		FavoriteService: NewFavoriteService(repoManager),
-		AddressService:  addressService,
-		CartService:     cartService,
-		S3Service:       s3Service,
-		DeliveryService: deliveryService,
-		OrderService:    orderService,
-		ReviewService:   reviewService,
-		ImageService:    imageService,
+		UserService:      userService,
+		ProductService:   NewProductService(repoManager),
+		InventoryService: NewInventoryService(repoManager),
+		ProfileService:   NewProfileService(repoManager),
+		FavoriteService:  NewFavoriteService(repoManager),
+		AddressService:   addressService,
+		CartService:      cartService,
+		S3Service:        s3Service,
+		DeliveryService:  deliveryService,
+		OrderService:     orderService,
+		ReviewService:    reviewService,
+		ImageService:     imageService,
 	}
 }

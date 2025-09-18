@@ -7,14 +7,12 @@ import (
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 )
 
-// Profile represents a user profile with all personal information
+// Profile represents a user profile with personal information (no duplicate fields)
 type Profile struct {
 	*base.BaseModel `gorm:"embedded"`
 	UserID          string     `json:"user_id" gorm:"uniqueIndex;not null"`
 	FirstName       string     `json:"first_name" gorm:"size:100;not null"`
 	LastName        string     `json:"last_name" gorm:"size:100;not null"`
-	Email           string     `json:"email" gorm:"size:255;uniqueIndex;not null"`
-	Phone           string     `json:"phone" gorm:"size:20"`
 	DateOfBirth     *time.Time `json:"date_of_birth" gorm:"type:date"`
 	Gender          string     `json:"gender" gorm:"size:10"` // Male, Female, Other
 
@@ -41,14 +39,13 @@ type Profile struct {
 }
 
 // NewProfile creates a new profile instance
-func NewProfile(userID, firstName, lastName, email string) *Profile {
+func NewProfile(userID, firstName, lastName string) *Profile {
 	baseModel := base.NewBaseModel("PROF", hash.Small)
 	return &Profile{
 		BaseModel:            baseModel,
 		UserID:               userID,
 		FirstName:            firstName,
 		LastName:             lastName,
-		Email:                email,
 		IsActive:             true,
 		IsVerified:           false,
 		NewsletterSubscribed: false,

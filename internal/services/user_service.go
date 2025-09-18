@@ -8,6 +8,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
@@ -165,21 +166,10 @@ func (s *UserService) GetUserByID(ctx context.Context, userID string) (*base.Bas
 			base.NewNotFoundError("User", userID)), nil
 	}
 
-	// Return user data without password
-	userData := map[string]interface{}{
-		"id":           user.GetID(),
-		"email":        user.Email,
-		"name":         user.Name,
-		"firebase_uid": user.FirebaseUID,
-		"phone_number": user.PhoneNumber,
-		"is_verified":  user.IsVerified,
-		"is_active":    user.IsActive,
-		"role":         user.Role,
-		"created_at":   user.GetCreatedAt(),
-		"updated_at":   user.GetUpdatedAt(),
-	}
+	// Convert to response structure
+	userResponse := responses.ToUserResponse(user)
 
-	return base.NewSuccessResponse("User retrieved successfully", userData), nil
+	return base.NewSuccessResponse("User retrieved successfully", userResponse), nil
 }
 
 // GetUserByEmail retrieves a user by email

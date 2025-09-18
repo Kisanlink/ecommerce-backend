@@ -5,7 +5,7 @@ import (
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 )
 
-// User represents a user in the system
+// User represents a user in the system (Authentication only)
 type User struct {
 	*base.BaseModel `gorm:"embedded"`
 	Email           string `json:"email" gorm:"unique;not null"`

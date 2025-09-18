@@ -47,7 +47,7 @@ func main() {
 		"Tomato":      "PROD00000002", // Tomato Powder
 	}
 
-	// Image data organized by product
+	// Image data organized by product - Complete data from user
 	imageData := map[string][]string{
 		"Amla": {
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Amla/10.png",
@@ -59,16 +59,20 @@ func main() {
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Aswagandha/8.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Aswagandha/9.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Aswagandha/web+aswagandha+powder.jpg",
+			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Aswagandha/aswagandha+backside.jpg",
 		},
 		"Beetroot": {
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Beetroot/14.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Beetroot/15.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Beetroot/web+beetroot+powder.jpg",
+			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Beetroot/beetroot+backside.jpg",
 		},
 		"Moringa": {
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Moringa/1.png",
+			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Moringa/Copy+of+pouch+front+mockup.jpg",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Moringa/2.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Moringa/3.png",
+			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Moringa/pouch+back+mockup.jpg",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Moringa/moringa+pouch+PACKANGING+back.jpg",
 		},
 		"Papaya": {
@@ -81,6 +85,7 @@ func main() {
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Spinach/4.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Spinach/5.png",
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Spinach/web+spinach+powder.jpg",
+			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Spinach/spinach+backside.jpg",
 		},
 		"Tomato": {
 			"https://amrti.s3.ap-south-1.amazonaws.com/images/product-images/Tomato/6.png",
@@ -130,11 +135,11 @@ func main() {
 func generateAltText(productName string, index int) string {
 	altTexts := map[string][]string{
 		"Amla":        {"Amla Powder Product", "Amla Powder Back View", "Amla Powder Close-up", "Amla Powder Web Image"},
-		"Ashwagandha": {"Ashwagandha Powder Product", "Ashwagandha Powder Detail", "Ashwagandha Powder Web Image"},
-		"Beetroot":    {"Beetroot Powder Product", "Beetroot Powder Detail", "Beetroot Powder Web Image"},
-		"Moringa":     {"Moringa Powder Product", "Moringa Powder Detail", "Moringa Powder Close-up", "Moringa Powder Packaging"},
+		"Ashwagandha": {"Ashwagandha Powder Product", "Ashwagandha Powder Detail", "Ashwagandha Powder Web Image", "Ashwagandha Powder Back View"},
+		"Beetroot":    {"Beetroot Powder Product", "Beetroot Powder Detail", "Beetroot Powder Web Image", "Beetroot Powder Back View"},
+		"Moringa":     {"Moringa Powder Product", "Moringa Pouch Front Mockup", "Moringa Powder Detail", "Moringa Powder Close-up", "Moringa Pouch Back Mockup", "Moringa Powder Packaging"},
 		"Papaya":      {"Papaya Powder Product", "Papaya Powder Detail", "Papaya Powder Back View", "Papaya Powder Web Image"},
-		"Spinach":     {"Spinach Powder Product", "Spinach Powder Detail", "Spinach Powder Web Image"},
+		"Spinach":     {"Spinach Powder Product", "Spinach Powder Detail", "Spinach Powder Web Image", "Spinach Powder Back View"},
 		"Tomato":      {"Tomato Powder Product", "Tomato Powder Detail", "Tomato Powder Back View", "Tomato Powder Web Image"},
 	}
 
@@ -148,11 +153,11 @@ func generateAltText(productName string, index int) string {
 func generateCaption(productName string, index int) string {
 	captions := map[string][]string{
 		"Amla":        {"Premium Amla Powder", "Amla Powder Back View", "Amla Powder Detail", "Amla Powder Product"},
-		"Ashwagandha": {"Premium Ashwagandha Powder", "Ashwagandha Powder Detail", "Ashwagandha Powder Product"},
-		"Beetroot":    {"Premium Beetroot Powder", "Beetroot Powder Detail", "Beetroot Powder Product"},
-		"Moringa":     {"Premium Moringa Powder", "Moringa Powder Detail", "Moringa Powder Close-up", "Moringa Powder Packaging"},
+		"Ashwagandha": {"Premium Ashwagandha Powder", "Ashwagandha Powder Detail", "Ashwagandha Powder Product", "Ashwagandha Powder Back View"},
+		"Beetroot":    {"Premium Beetroot Powder", "Beetroot Powder Detail", "Beetroot Powder Product", "Beetroot Powder Back View"},
+		"Moringa":     {"Premium Moringa Powder", "Moringa Pouch Front Mockup", "Moringa Powder Detail", "Moringa Powder Close-up", "Moringa Pouch Back Mockup", "Moringa Powder Packaging"},
 		"Papaya":      {"Premium Papaya Powder", "Papaya Powder Detail", "Papaya Powder Back View", "Papaya Powder Product"},
-		"Spinach":     {"Premium Spinach Powder", "Spinach Powder Detail", "Spinach Powder Product"},
+		"Spinach":     {"Premium Spinach Powder", "Spinach Powder Detail", "Spinach Powder Product", "Spinach Powder Back View"},
 		"Tomato":      {"Premium Tomato Powder", "Tomato Powder Detail", "Tomato Powder Back View", "Tomato Powder Product"},
 	}
 
