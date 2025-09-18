@@ -11,6 +11,34 @@ import (
 // Additional methods for OrderRepository beyond the base repository
 // The OrderRepository is already defined in repository_manager.go
 
+// CreateOrderCustomer creates a new order customer
+func (r *OrderRepository) CreateOrderCustomer(ctx context.Context, customer *models.OrderCustomer) error {
+	return r.dbManager.Create(ctx, customer)
+}
+
+// CreateOrderAddress creates a new order address
+func (r *OrderRepository) CreateOrderAddress(ctx context.Context, address *models.OrderAddress) error {
+	return r.dbManager.Create(ctx, address)
+}
+
+// GetOrderCustomer retrieves an order customer by ID
+func (r *OrderRepository) GetOrderCustomer(ctx context.Context, customerID string) (*models.OrderCustomer, error) {
+	var customer models.OrderCustomer
+	if err := r.dbManager.GetByID(ctx, customerID, &customer); err != nil {
+		return nil, fmt.Errorf("failed to get order customer: %w", err)
+	}
+	return &customer, nil
+}
+
+// GetOrderAddress retrieves an order address by ID
+func (r *OrderRepository) GetOrderAddress(ctx context.Context, addressID string) (*models.OrderAddress, error) {
+	var address models.OrderAddress
+	if err := r.dbManager.GetByID(ctx, addressID, &address); err != nil {
+		return nil, fmt.Errorf("failed to get order address: %w", err)
+	}
+	return &address, nil
+}
+
 // Create creates a new order in the database
 func (r *OrderRepository) Create(ctx context.Context, order *models.Order) error {
 	return r.dbManager.Create(ctx, order)
@@ -102,6 +130,199 @@ func (r *OrderRepository) GetOrderWithItems(ctx context.Context, orderID string)
 	}
 
 	return &order, orderItems, nil
+}
+
+// GetOrderWithDetails retrieves an order with customer, address, and items
+func (r *OrderRepository) GetOrderWithDetails(ctx context.Context, orderID string) (*models.Order, error) {
+	var order models.Order
+
+	// Get order using standard DBManager method
+	if err := r.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return nil, fmt.Errorf("failed to get order: %w", err)
+	}
+
+	// Get customer data if customer_id exists
+	if order.CustomerID != "" {
+		customer, err := r.GetOrderCustomer(ctx, order.CustomerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get order customer: %w", err)
+		}
+		order.Customer = customer
+	}
+
+	// Get shipping address data if shipping_address_id exists
+	if order.ShippingAddressID != "" {
+		address, err := r.GetOrderAddress(ctx, order.ShippingAddressID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get order address: %w", err)
+		}
+		order.ShippingAddress = address
+	}
+
+	// Get order items
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "order_id", Operator: base.OpEqual, Value: orderID},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var orderItems []models.OrderItem
+	if err := r.dbManager.List(ctx, filter, &orderItems); err != nil {
+		return nil, fmt.Errorf("failed to get order items: %w", err)
+	}
+	order.OrderItems = orderItems
+
+	return &order, nil
+}
+
+// GetOrdersByUserWithDetails retrieves all orders for a user with details
+func (r *OrderRepository) GetOrdersByUserWithDetails(ctx context.Context, userID string) ([]models.Order, error) {
+	// Get orders for user
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "user_id", Operator: base.OpEqual, Value: userID},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var orders []models.Order
+	if err := r.dbManager.List(ctx, filter, &orders); err != nil {
+		return nil, fmt.Errorf("failed to get orders: %w", err)
+	}
+
+	// For each order, load the normalized data
+	for i := range orders {
+		order := &orders[i]
+
+		// Get customer data if customer_id exists
+		if order.CustomerID != "" {
+			customer, err := r.GetOrderCustomer(ctx, order.CustomerID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get order customer for order %s: %w", order.ID, err)
+			}
+			order.Customer = customer
+		}
+
+		// Get shipping address data if shipping_address_id exists
+		if order.ShippingAddressID != "" {
+			address, err := r.GetOrderAddress(ctx, order.ShippingAddressID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get order address for order %s: %w", order.ID, err)
+			}
+			order.ShippingAddress = address
+		}
+
+		// Get order items
+		itemFilter := &base.Filter{
+			Group: base.FilterGroup{
+				Conditions: []base.FilterCondition{
+					{Field: "order_id", Operator: base.OpEqual, Value: order.ID},
+				},
+				Logic: base.LogicAnd,
+			},
+		}
+
+		var orderItems []models.OrderItem
+		if err := r.dbManager.List(ctx, itemFilter, &orderItems); err != nil {
+			return nil, fmt.Errorf("failed to get order items for order %s: %w", order.ID, err)
+		}
+		order.OrderItems = orderItems
+	}
+
+	return orders, nil
+}
+
+// OrderItemWithProduct represents an order item with product details
+type OrderItemWithProduct struct {
+	models.OrderItem
+	ProductName     string `json:"product_name"`
+	ProductImageURL string `json:"product_image_url"`
+}
+
+// GetOrderWithItemsAndProducts retrieves an order with its items including product details
+func (r *OrderRepository) GetOrderWithItemsAndProducts(ctx context.Context, orderID string) (*models.Order, []OrderItemWithProduct, error) {
+	// Get order using base repository
+	var order models.Order
+	if err := r.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return nil, nil, fmt.Errorf("failed to get order: %w", err)
+	}
+
+	// Get order items
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "order_id", Operator: base.OpEqual, Value: orderID},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var orderItems []models.OrderItem
+	if err := r.dbManager.List(ctx, filter, &orderItems); err != nil {
+		return nil, nil, fmt.Errorf("failed to get order items: %w", err)
+	}
+
+	// Collect unique product IDs
+	productIDSet := make(map[string]bool)
+	for _, item := range orderItems {
+		productIDSet[item.ProductID] = true
+	}
+
+	// Fetch all products in a single query for better performance
+	var productIDs []string
+	for productID := range productIDSet {
+		productIDs = append(productIDs, productID)
+	}
+
+	// Get all products at once
+	var products []models.Product
+	if len(productIDs) > 0 {
+		productFilter := &base.Filter{
+			Group: base.FilterGroup{
+				Conditions: []base.FilterCondition{
+					{Field: "id", Operator: base.OpIn, Value: productIDs},
+				},
+				Logic: base.LogicAnd,
+			},
+		}
+		if err := r.dbManager.List(ctx, productFilter, &products); err != nil {
+			// If we can't fetch products, continue with default values
+			products = []models.Product{}
+		}
+	}
+
+	// Create a map for quick product lookup
+	productMap := make(map[string]models.Product)
+	for _, product := range products {
+		productMap[product.ID] = product
+	}
+
+	// Enrich order items with product details
+	var enrichedItems []OrderItemWithProduct
+	for _, item := range orderItems {
+		enrichedItem := OrderItemWithProduct{
+			OrderItem: item,
+		}
+
+		// Get product details from the map
+		if product, exists := productMap[item.ProductID]; exists {
+			enrichedItem.ProductName = product.Name
+			enrichedItem.ProductImageURL = product.ImageURL
+		} else {
+			// If product not found, set default values
+			enrichedItem.ProductName = "Product Not Found"
+			enrichedItem.ProductImageURL = ""
+		}
+
+		enrichedItems = append(enrichedItems, enrichedItem)
+	}
+
+	return &order, enrichedItems, nil
 }
 
 // GetOrdersByUserID retrieves all orders for a specific user

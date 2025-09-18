@@ -433,12 +433,18 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		"shipping":         shippingCharges,
 		"final_amount":     finalAmount, // Total including shipping
 		"items_count":      len(cart.Items),
-		"currency":         "INR", // Always INR
-		"first_name":       req.FirstName,
-		"last_name":        req.LastName,
-		"mobile":           req.Mobile,
-		"mobile_alt":       req.MobileSecondary,
+		"currency":         "INR",                                                                             // Always INR
+		"customer_info":    req.FirstName + "," + req.LastName + "," + req.Mobile + "," + req.MobileSecondary, // Combine customer fields
 	}
+
+	// Add structured address data to notes for clean extraction during verification
+	// Combine address fields to stay within 15-field limit
+	if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, shippingAddressID); err == nil && addr != nil {
+		// Combine all address components into one field
+		notes["address"] = addr.AddressLine1 + "|" + addr.City + "|" + addr.State + "|" + addr.PostalCode
+	}
+
+	// Add free delivery flag only if true (conditional field)
 	if freeDelivery {
 		notes["free_delivery"] = true
 	}
@@ -696,17 +702,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			} else if v, ok := notes["eta_max_days"].(float64); ok {
 				etaMax = int(v)
 			}
-			if v, ok := notes["first_name"].(string); ok {
-				firstName = strings.TrimSpace(v)
-			}
-			if v, ok := notes["last_name"].(string); ok {
-				lastName = strings.TrimSpace(v)
-			}
-			if v, ok := notes["mobile"].(string); ok {
-				mobile = strings.TrimSpace(v)
-			}
-			if v, ok := notes["mobile_alt"].(string); ok {
-				mobileSecondary = strings.TrimSpace(v)
+
+			// Extract customer info from combined field: "firstName,lastName,mobile,mobileAlt"
+			if customerInfo, ok := notes["customer_info"].(string); ok && customerInfo != "" {
+				parts := strings.Split(customerInfo, ",")
+				if len(parts) >= 4 {
+					firstName = strings.TrimSpace(parts[0])
+					lastName = strings.TrimSpace(parts[1])
+					mobile = strings.TrimSpace(parts[2])
+					mobileSecondary = strings.TrimSpace(parts[3])
+				} else if len(parts) >= 3 {
+					firstName = strings.TrimSpace(parts[0])
+					lastName = strings.TrimSpace(parts[1])
+					mobile = strings.TrimSpace(parts[2])
+					mobileSecondary = ""
+				} else if len(parts) >= 2 {
+					firstName = strings.TrimSpace(parts[0])
+					lastName = strings.TrimSpace(parts[1])
+					mobile = ""
+					mobileSecondary = ""
+				} else if len(parts) >= 1 {
+					firstName = strings.TrimSpace(parts[0])
+					lastName = ""
+					mobile = ""
+					mobileSecondary = ""
+				}
 			}
 
 			h.logger.Info("Extracted order metadata from Razorpay notes",
@@ -752,13 +772,112 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("razorpay_order_id", req.OrderID),
 			zap.Float64("shipping_charges", shippingCharges))
 
-		order, err := h.orderService.CreateOrderFromCartWithShippingAtomic(
+		// Create normalized customer and address data for the order
+		// Provide default last name if not available
+		if lastName == "" {
+			lastName = "Customer" // Default value for required field
+		}
+
+		customerData := models.NewOrderCustomer(
+			firstName,
+			lastName,
+			mobile,
+			"", // phoneAlt not available
+			"", // email not available
+		)
+
+		// Create normalized address data - extract structured address from Razorpay notes
+		var addressData *models.OrderAddress
+
+		// Try to extract structured address data from Razorpay notes first
+		if rzpOrder != nil && rzpOrder.Notes != nil {
+			notes := rzpOrder.Notes
+			if addressStr, ok := notes["address"].(string); ok && addressStr != "" {
+				// Parse combined address field: "street|city|state|postal"
+				parts := strings.Split(addressStr, "|")
+				street := ""
+				city := ""
+				state := ""
+				postalCode := ""
+				country := "India" // Default to India
+
+				if len(parts) >= 4 {
+					street = strings.TrimSpace(parts[0])
+					city = strings.TrimSpace(parts[1])
+					state = strings.TrimSpace(parts[2])
+					postalCode = strings.TrimSpace(parts[3])
+				} else if len(parts) >= 3 {
+					street = strings.TrimSpace(parts[0])
+					city = strings.TrimSpace(parts[1])
+					state = strings.TrimSpace(parts[2])
+					postalCode = "000000"
+				} else if len(parts) >= 2 {
+					street = strings.TrimSpace(parts[0])
+					city = strings.TrimSpace(parts[1])
+					state = "Unknown State"
+					postalCode = "000000"
+				} else if len(parts) >= 1 {
+					street = strings.TrimSpace(parts[0])
+					city = "Unknown City"
+					state = "Unknown State"
+					postalCode = "000000"
+				}
+
+				addressData = models.NewOrderAddress(
+					street,
+					"", // address line 2 not stored in notes
+					city,
+					state,
+					postalCode,
+					country,
+				)
+
+				h.logger.Info("Using structured address from Razorpay notes",
+					zap.String("request_id", requestID),
+					zap.String("street", street),
+					zap.String("city", city),
+					zap.String("state", state),
+					zap.String("postal_code", postalCode),
+					zap.String("country", country))
+			}
+		}
+
+		// Fallback to database lookup if structured data not available in notes
+		if addressData == nil && shippingAddressID != "" {
+			if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, shippingAddressID); err == nil && addr != nil {
+				addressData = models.NewOrderAddress(
+					addr.AddressLine1,
+					addr.AddressLine2,
+					addr.City,
+					addr.State,
+					addr.PostalCode,
+					addr.Country,
+				)
+				h.logger.Info("Using structured address from database",
+					zap.String("request_id", requestID),
+					zap.String("address_id", shippingAddressID),
+					zap.String("city", addr.City),
+					zap.String("state", addr.State),
+					zap.String("postal_code", addr.PostalCode))
+			}
+		}
+
+		// Final fallback to string parsing
+		if addressData == nil {
+			h.logger.Warn("No structured address data available, falling back to string parsing",
+				zap.String("request_id", requestID),
+				zap.String("shipping_address", shippingAddress))
+			addressData = h.parseShippingAddressToOrderAddress(shippingAddress)
+		}
+
+		// Use the new normalized order creation method
+		order, err := h.orderService.CreateOrder(
 			c.Request.Context(),
 			userID,
-			shippingAddress,
+			customerData,
+			addressData,
 			"razorpay",
 			shippingCharges,
-			req.OrderID, // Pass Razorpay order ID for duplicate prevention
 		)
 		if err != nil {
 			h.logger.Error("Failed to create database order after payment verification",
@@ -787,6 +906,21 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verified but failed to create order"})
 			}
 			return
+		}
+
+		// Update the order with Razorpay order ID and payment details
+		order.RazorpayOrderID = req.OrderID
+		order.PaymentStatus = "paid"
+		order.Status = models.OrderStatusConfirmed
+
+		if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
+			h.logger.Error("Failed to update order with Razorpay details",
+				zap.String("request_id", requestID),
+				zap.Error(err),
+				zap.String("user_id", userID),
+				zap.String("order_id", order.ID),
+				zap.String("razorpay_order_id", req.OrderID))
+			// Don't fail the entire operation, just log the error
 		}
 
 		h.logger.Info("Database order created successfully after payment verification",
@@ -1433,7 +1567,7 @@ func isMetroPincode(pincode string) bool {
 	}
 
 	// Major metro pincode prefixes
-	metroPrefiexs := []string{
+	metroPrefixes := []string{
 		"110", "111", "112", // Delhi
 		"400", "401", "402", "403", "421", "422", // Mumbai
 		"560", "561", "562", // Bangalore
@@ -1445,11 +1579,120 @@ func isMetroPincode(pincode string) bool {
 	}
 
 	prefix := pincode[:3]
-	for _, metroPrefix := range metroPrefiexs {
+	for _, metroPrefix := range metroPrefixes {
 		if prefix == metroPrefix {
 			return true
 		}
 	}
 
 	return false
+}
+
+// parseShippingAddressToOrderAddress parses a formatted shipping address string into OrderAddress struct
+func (h *PaymentHandler) parseShippingAddressToOrderAddress(shippingAddress string) *models.OrderAddress {
+	// Initialize with defaults
+	addressLine1 := ""
+	addressLine2 := ""
+	city := ""
+	state := ""
+	postalCode := ""
+	country := "India"
+
+	// Clean the input address
+	shippingAddress = strings.TrimSpace(shippingAddress)
+	if shippingAddress == "" {
+		return models.NewOrderAddress("Address not provided", "", "Unknown", "Unknown", "000000", "India")
+	}
+
+	// Try to parse structured address format: "Name, Address, City, State, Pincode, Country"
+	if strings.Contains(shippingAddress, ",") {
+		parts := strings.Split(shippingAddress, ",")
+
+		// Trim all parts
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+
+		// Handle different address formats
+		if len(parts) >= 4 {
+			// Format: "Name, Address, City, State, Pincode, Country"
+			// Skip name (parts[0]) and use actual address
+			if len(parts) > 1 {
+				addressLine1 = parts[1]
+			}
+			if len(parts) > 2 {
+				city = parts[2]
+			}
+			if len(parts) > 3 {
+				state = parts[3]
+			}
+			if len(parts) > 4 {
+				postalCode = parts[4]
+			}
+			if len(parts) > 5 {
+				country = parts[5]
+			}
+		} else if len(parts) >= 3 {
+			// Format: "Address, City, State" - try to extract pincode from address
+			addressLine1 = parts[0]
+			city = parts[1]
+			state = parts[2]
+		}
+	} else {
+		// Single line address - try to extract components
+		addressLine1 = shippingAddress
+	}
+
+	// Extract postal code using regex if not found in parsing
+	if postalCode == "" {
+		re := regexp.MustCompile(`\b\d{6}\b`)
+		if matches := re.FindString(shippingAddress); matches != "" {
+			postalCode = matches
+		}
+	}
+
+	// Clean up postal code - extract only 6 digits
+	if postalCode != "" {
+		re := regexp.MustCompile(`\d{6}`)
+		if matches := re.FindString(postalCode); matches != "" {
+			postalCode = matches
+		} else {
+			postalCode = ""
+		}
+	}
+
+	// Validate and provide sensible defaults
+	if addressLine1 == "" {
+		addressLine1 = "Address not provided"
+	}
+	if city == "" {
+		city = "Unknown City"
+	}
+	if state == "" {
+		state = "Unknown State"
+	}
+	if postalCode == "" {
+		postalCode = "000000"
+	}
+	if country == "" {
+		country = "India"
+	}
+
+	// Log the parsed address for debugging
+	h.logger.Info("Parsed shipping address",
+		zap.String("original", shippingAddress),
+		zap.String("address_line1", addressLine1),
+		zap.String("city", city),
+		zap.String("state", state),
+		zap.String("postal_code", postalCode),
+		zap.String("country", country))
+
+	return models.NewOrderAddress(
+		addressLine1,
+		addressLine2,
+		city,
+		state,
+		postalCode,
+		country,
+	)
 }

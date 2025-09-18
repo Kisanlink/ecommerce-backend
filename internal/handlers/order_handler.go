@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
@@ -36,8 +37,8 @@ func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Lo
 // @Accept json
 // @Produce json
 // @Security FirebaseAuth
-// @Param request body object{cart_id=string,shipping_address=string,payment_method=string,notes=string} true "Order creation payload"
-// @Success 201 {object} map[string]interface{} "Order created successfully"
+// @Param request body object{cart_id=string,customer_first_name=string,customer_last_name=string,customer_phone=string,customer_phone_alt=string,customer_email=string,address_line_1=string,address_line_2=string,city=string,state=string,postal_code=string,country=string,payment_method=string,notes=string} true "Order creation payload"
+// @Success 201 {object} responses.CreateOrderResponse "Order created successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid request data"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 500 {object} map[string]interface{} "Failed to create order"
@@ -64,10 +65,24 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	var req struct {
-		CartID          string `json:"cart_id" binding:"required"`
-		ShippingAddress string `json:"shipping_address" binding:"required"`
-		PaymentMethod   string `json:"payment_method" binding:"required"`
-		Notes           string `json:"notes"`
+		CartID        string `json:"cart_id" binding:"required"`
+		PaymentMethod string `json:"payment_method" binding:"required"`
+		Notes         string `json:"notes"`
+		// Customer data for normalized schema
+		CustomerFirstName string `json:"customer_first_name" binding:"required"`
+		CustomerLastName  string `json:"customer_last_name" binding:"required"`
+		CustomerPhone     string `json:"customer_phone" binding:"required"`
+		CustomerPhoneAlt  string `json:"customer_phone_alt"`
+		CustomerEmail     string `json:"customer_email"`
+		// Address data for normalized schema
+		AddressLine1 string `json:"address_line_1" binding:"required"`
+		AddressLine2 string `json:"address_line_2"`
+		City         string `json:"city" binding:"required"`
+		State        string `json:"state" binding:"required"`
+		PostalCode   string `json:"postal_code" binding:"required"`
+		Country      string `json:"country"`
+		// Legacy support
+		ShippingAddress string `json:"shipping_address"` // Optional for backward compatibility
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -80,18 +95,49 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// Set default country if not provided
+	if req.Country == "" {
+		req.Country = "India"
+	}
+
+	// If legacy shipping_address is provided but normalized fields are missing, extract them
+	if req.ShippingAddress != "" && (req.AddressLine1 == "" || req.CustomerFirstName == "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Please provide customer and address details in the new format"})
+		return
+	}
+
+	// Create normalized customer data
+	customerData := models.NewOrderCustomer(
+		req.CustomerFirstName,
+		req.CustomerLastName,
+		req.CustomerPhone,
+		req.CustomerPhoneAlt,
+		req.CustomerEmail,
+	)
+
+	// Create normalized address data
+	addressData := models.NewOrderAddress(
+		req.AddressLine1,
+		req.AddressLine2,
+		req.City,
+		req.State,
+		req.PostalCode,
+		req.Country,
+	)
+
 	h.logger.Info("Order creation request validated",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("cart_id", req.CartID),
 		zap.String("payment_method", req.PaymentMethod))
 
-	order, err := h.orderService.CreateOrderFromCart(
+	order, err := h.orderService.CreateOrder(
 		c.Request.Context(),
 		userID,
-		req.CartID,
-		req.ShippingAddress,
+		customerData,
+		addressData,
 		req.PaymentMethod,
+		0, // Default shipping charges
 	)
 
 	if err != nil {
@@ -115,10 +161,8 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		zap.String("status", string(order.Status)),
 		zap.String("payment_method", req.PaymentMethod))
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Order created successfully",
-		"order":   order,
-	})
+	response := responses.NewCreateOrderResponse(order)
+	c.JSON(http.StatusCreated, response)
 }
 
 // GetUserOrders retrieves all orders for the authenticated user
@@ -131,7 +175,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 // @Security FirebaseAuth
 // @Param page query int false "Page number" default(1)
 // @Param limit query int false "Items per page" default(10)
-// @Success 200 {object} map[string]interface{} "Orders retrieved successfully"
+// @Success 200 {object} responses.GetUserOrdersResponse "Orders retrieved successfully"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /orders [get]
@@ -191,7 +235,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 	start := (page - 1) * limit
 	end := start + limit
 	if start >= len(orders) {
-		orders = []*models.Order{}
+		orders = []models.Order{}
 	} else if end > len(orders) {
 		orders = orders[start:]
 	} else {
@@ -206,15 +250,8 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 		zap.Int("returned_count", len(orders)),
 		zap.Bool("has_more", end < len(orders)))
 
-	c.JSON(http.StatusOK, gin.H{
-		"orders": orders,
-		"pagination": gin.H{
-			"page":     page,
-			"limit":    limit,
-			"total":    len(orders),
-			"has_more": end < len(orders),
-		},
-	})
+	response := responses.NewGetUserOrdersResponse(orders, page, limit)
+	c.JSON(http.StatusOK, response)
 }
 
 // GetOrderDetails retrieves details of a specific order
@@ -226,7 +263,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 // @Produce json
 // @Security FirebaseAuth
 // @Param id path string true "Order ID"
-// @Success 200 {object} map[string]interface{} "Order details retrieved successfully"
+// @Success 200 {object} responses.GetOrderDetailsResponse "Order details retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Order ID is required"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 403 {object} map[string]interface{} "Access denied"
@@ -266,8 +303,8 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 		zap.String("user_id", userID),
 		zap.String("order_id", orderID))
 
-	// Get order with items
-	order, orderItems, err := h.orderService.GetOrderWithItems(c.Request.Context(), orderID)
+	// Get order with details
+	order, err := h.orderService.GetOrderDetails(c.Request.Context(), orderID)
 	if err != nil {
 		h.logger.Error("Failed to get order details from service",
 			zap.String("request_id", requestID),
@@ -311,12 +348,10 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 		zap.String("order_id", orderID),
 		zap.String("order_status", string(order.Status)),
 		zap.Float64("total_amount", order.TotalAmount),
-		zap.Int("item_count", len(orderItems)))
+		zap.Int("item_count", len(order.OrderItems)))
 
-	c.JSON(http.StatusOK, gin.H{
-		"order": order,
-		"items": orderItems,
-	})
+	response := responses.NewGetOrderDetailsResponse(order)
+	c.JSON(http.StatusOK, response)
 }
 
 // GetOrderStatus retrieves the current status of an order
@@ -328,7 +363,7 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 // @Produce json
 // @Security FirebaseAuth
 // @Param id path string true "Order ID"
-// @Success 200 {object} map[string]interface{} "Order status retrieved successfully"
+// @Success 200 {object} responses.GetOrderStatusResponse "Order status retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Order ID is required"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 403 {object} map[string]interface{} "Access denied"
@@ -349,8 +384,7 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 
 	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
 	if err != nil {
-		h.logger.Error("Failed to get order status", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order status"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
 		return
 	}
 
@@ -360,25 +394,20 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"order_id":       order.ID,
-		"status":         order.Status,
-		"payment_status": order.PaymentStatus,
-		"created_at":     order.CreatedAt,
-		"updated_at":     order.UpdatedAt,
-	})
+	response := responses.NewGetOrderStatusResponse(order)
+	c.JSON(http.StatusOK, response)
 }
 
 // GetOrderTracking retrieves tracking information for an order
 // GET /api/v1/orders/:id/tracking
-// @Summary Get order tracking info
-// @Description Get tracking timeline and basic shipment info for an order
+// @Summary Get order tracking
+// @Description Get tracking details and shipping status of an order
 // @Tags Orders
 // @Accept json
 // @Produce json
 // @Security FirebaseAuth
 // @Param id path string true "Order ID"
-// @Success 200 {object} map[string]interface{} "Order tracking retrieved successfully"
+// @Success 200 {object} responses.GetOrderTrackingResponse "Order tracking retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Order ID is required"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 403 {object} map[string]interface{} "Access denied"
@@ -399,7 +428,6 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 
 	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
 	if err != nil {
-		h.logger.Error("Failed to get order for tracking", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
 		return
 	}
@@ -410,106 +438,25 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 		return
 	}
 
-	// Basic tracking information
-	trackingInfo := gin.H{
-		"order_id":    order.ID,
-		"status":      order.Status,
-		"created_at":  order.CreatedAt,
-		"updated_at":  order.UpdatedAt,
-		"tracking_id": "", // Will be populated when Delhivery integration is added
-		"carrier":     "", // Will be populated when Delhivery integration is added
-	}
-
-	// Status timeline (basic implementation)
-	timeline := []gin.H{
-		{
-			"status":      "pending",
-			"description": "Order created and waiting for payment",
-			"timestamp":   order.CreatedAt,
-			"completed":   order.Status != models.OrderStatusPending,
-		},
-	}
-
-	if order.Status != models.OrderStatusPending {
-		timeline = append(timeline, gin.H{
-			"status":      "confirmed",
-			"description": "Payment confirmed, order is being processed",
-			"timestamp":   order.UpdatedAt, // In production, you'd track status change timestamps
-			"completed":   order.Status != models.OrderStatusConfirmed,
-		})
-	}
-
-	if order.Status == models.OrderStatusShipped || order.Status == models.OrderStatusDelivered {
-		timeline = append(timeline, gin.H{
-			"status":      "shipped",
-			"description": "Order has been shipped",
-			"timestamp":   order.UpdatedAt,
-			"completed":   order.Status == models.OrderStatusDelivered,
-		})
-	}
-
-	if order.Status == models.OrderStatusDelivered {
-		timeline = append(timeline, gin.H{
-			"status":      "delivered",
-			"description": "Order has been delivered",
-			"timestamp":   order.UpdatedAt,
-			"completed":   true,
-		})
-	}
-
-	trackingInfo["timeline"] = timeline
-
-	// TODO: Integrate with Delhivery API for real tracking
-	// This would involve:
-	// 1. Storing Delhivery waybill/tracking ID when order is shipped
-	// 2. Calling Delhivery API to get real-time tracking updates
-	// 3. Returning actual carrier information and delivery estimates
-
-	c.JSON(http.StatusOK, trackingInfo)
+	response := responses.NewGetOrderTrackingResponse(order)
+	c.JSON(http.StatusOK, response)
 }
 
-// Future methods for admin functionality
-// These can be added later when admin middleware is implemented
-
-// GetAllOrders retrieves all orders (admin only)
-// @Summary Admin: list all orders
-// @Tags Orders
-// @Produce json
-// @Router /admin/orders [get]
-func (h *OrderHandler) GetAllOrders(c *gin.Context) {
-	// TODO: Implement admin-only order retrieval
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
-}
-
-// UpdateOrderStatus updates order status (admin only)
-// @Summary Admin: update order status
-// @Tags Orders
+// GetOrderDetailsDebug is a debug endpoint to retrieve order details without authentication
+// GET /api/v1/debug/order/:id
+// @Summary Debug order details (no auth)
+// @Description Get order details without authentication - for debugging only
+// @Tags Debug
 // @Accept json
 // @Produce json
-// @Router /admin/orders/{id}/status [put]
-func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
-	// TODO: Implement admin order status updates
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
-}
-
-// GetOrderStats retrieves order statistics (admin only)
-// @Summary Admin: get order statistics
-// @Tags Orders
-// @Produce json
-// @Router /admin/orders/stats [get]
-func (h *OrderHandler) GetOrderStats(c *gin.Context) {
-	// TODO: Implement order statistics
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "Admin functionality not yet implemented"})
-}
-
-// GetOrderDetailsDebug retrieves order details without authentication (debug only)
-// @Summary Debug: get order details (no auth)
-// @Tags Debug
-// @Produce json
 // @Param id path string true "Order ID"
+// @Success 200 {object} map[string]interface{} "Order details retrieved successfully (debug endpoint)"
+// @Failure 400 {object} map[string]interface{} "Order ID is required"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /debug/order/{id} [get]
 func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
 	orderID := c.Param("id")
+
 	if orderID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
 		return
@@ -517,27 +464,25 @@ func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
 
 	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
 	if err != nil {
-		h.logger.Error("Failed to get order for debug", zap.Error(err), zap.String("order_id", orderID))
-		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
 		return
 	}
 
-	// Return detailed order info including Delhivery fields
-	response := gin.H{
-		"order_id":          order.ID,
-		"user_id":           order.UserID,
-		"total_amount":      order.TotalAmount,
-		"status":            order.Status,
-		"payment_status":    order.PaymentStatus,
-		"shipping_address":  order.ShippingAddr,
-		"razorpay_order_id": order.RazorpayOrderID,
-		"delhivery_waybill": order.DelhiveryWaybill, // Check this field
-		"delhivery_status":  order.DelhiveryStatus,  // Check this field
-		"tracking_url":      order.TrackingURL,      // Check this field
-		"created_at":        order.CreatedAt,
-		"updated_at":        order.UpdatedAt,
-		"debug_note":        "This is a debug endpoint without authentication",
+	response := responses.NewGetOrderDetailsDebugResponse(order)
+	// Add debug note to the response
+	debugResponse := gin.H{
+		"order_id":         response.OrderID,
+		"user_id":          response.UserID,
+		"status":           response.Status,
+		"payment_status":   response.PaymentStatus,
+		"total_amount":     response.TotalAmount,
+		"shipping_address": response.ShippingAddress,
+		"waybill":          response.Waybill,
+		"tracking_url":     response.TrackingURL,
+		"created_at":       response.CreatedAt,
+		"updated_at":       response.UpdatedAt,
+		"debug_note":       "This is a debug endpoint without authentication",
 	}
 
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, debugResponse)
 }

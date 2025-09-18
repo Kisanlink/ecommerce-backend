@@ -49,13 +49,15 @@ func (m *Migration) RunMigrations() error {
 
 // runPostgresMigrations runs PostgreSQL migrations using GORM
 func (m *Migration) runPostgresMigrations() error {
-	// List of all models to migrate
+	// List of all models to migrate in dependency order
 	modelsToMigrate := []interface{}{
 		&models.User{},
 		&models.Profile{},
 		&models.Address{},
 		&models.Product{},
-		&models.Image{}, // Add Image model for auto-migration
+		&models.Image{},         // Add Image model for auto-migration
+		&models.OrderCustomer{}, // NEW: Order customer normalization
+		&models.OrderAddress{},  // NEW: Order address normalization
 		&models.Cart{},
 		&models.CartItem{},
 		&models.Favorite{},
@@ -206,10 +208,12 @@ func RunMigrationsWithDB() error {
 func (m *Migration) DropAllTables() error {
 	log.Println("Warning: Dropping all tables...")
 
-	// List of all models to drop
+	// List of all models to drop in reverse dependency order
 	modelsToDrop := []interface{}{
 		&models.OrderItem{},
 		&models.Order{},
+		&models.OrderAddress{},  // NEW: Order address normalization
+		&models.OrderCustomer{}, // NEW: Order customer normalization
 		&models.Favorite{},
 		&models.CartItem{},
 		&models.Cart{},
@@ -254,7 +258,9 @@ func (m *Migration) GetMigrationStatus() (map[string]bool, error) {
 		&models.Profile{},
 		&models.Address{},
 		&models.Product{},
-		&models.Image{}, // Add Image model to status check
+		&models.Image{},         // Add Image model to status check
+		&models.OrderCustomer{}, // NEW: Order customer normalization
+		&models.OrderAddress{},  // NEW: Order address normalization
 		&models.Cart{},
 		&models.CartItem{},
 		&models.Favorite{},

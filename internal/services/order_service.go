@@ -15,14 +15,18 @@ import (
 type OrderServiceInterface interface {
 	CreateOrderFromCart(ctx context.Context, userID string, cartID string, shippingAddress string, paymentMethod string) (*models.Order, error)
 	CreateOrderFromCartWithShipping(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64) (*models.Order, error)
+	// Create order with customer and address data
+	CreateOrder(ctx context.Context, userID string, customerData *models.OrderCustomer, addressData *models.OrderAddress, paymentMethod string, shippingCharges float64) (*models.Order, error)
 	GetUserCart(ctx context.Context, userID string) (*models.Cart, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
-	GetUserOrders(ctx context.Context, userID string) ([]*models.Order, error)
+	GetUserOrders(ctx context.Context, userID string) ([]models.Order, error)
+	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
 	UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error
 	UpdatePaymentStatusAndOrderStatus(ctx context.Context, orderID string, paymentStatus, paymentID string, orderStatus models.OrderStatus) error
 	GetOrderWithItems(ctx context.Context, orderID string) (*models.Order, []models.OrderItem, error)
+	GetOrderWithItemsAndProducts(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error)
 	ConfirmOrderPayment(ctx context.Context, razorpayOrderID, paymentID string) error
 	UpdateOrderNotes(ctx context.Context, orderID string, notes string) error
 	ClearUserCart(ctx context.Context, userID string) error
@@ -176,8 +180,8 @@ func (s *OrderService) CreateOrderFromCart(ctx context.Context, userID string, c
 	// Calculate final total including tax
 	totalAmount := cartTotal + taxAmount
 
-	// Create order
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
+	// Create order (using legacy method for backward compatibility)
+	order := models.NewOrderLegacy(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 
 	// Add coupon information and tax to notes if applied
 	notes := ""
@@ -276,7 +280,7 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 		zap.Float64("total_amount", totalAmount))
 
 	// Create order with total amount including shipping
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
+	order := models.NewOrderLegacy(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	// Set shipping metadata
 	order.ShippingCarrier = "Delhivery"
 	order.ShippingMode = "Surface"
@@ -486,9 +490,13 @@ func (s *OrderService) GetOrderByID(ctx context.Context, orderID string) (*model
 	return &order, nil
 }
 
-// GetUserOrders retrieves all orders for a specific user
-func (s *OrderService) GetUserOrders(ctx context.Context, userID string) ([]*models.Order, error) {
-	return s.orderRepo.GetOrdersByUserID(ctx, userID)
+// GetUserOrders retrieves all orders for a specific user with details
+func (s *OrderService) GetUserOrders(ctx context.Context, userID string) ([]models.Order, error) {
+	orders, err := s.orderRepo.GetOrdersByUserWithDetails(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user orders: %w", err)
+	}
+	return orders, nil
 }
 
 // UpdateOrderStatus updates the status of an order
@@ -560,6 +568,11 @@ func (s *OrderService) GetOrderWithItems(ctx context.Context, orderID string) (*
 	return s.orderRepo.GetOrderWithItems(ctx, orderID)
 }
 
+// GetOrderWithItemsAndProducts retrieves an order with its items including product details
+func (s *OrderService) GetOrderWithItemsAndProducts(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error) {
+	return s.orderRepo.GetOrderWithItemsAndProducts(ctx, orderID)
+}
+
 // ConfirmOrderPayment confirms an order payment and updates relevant statuses
 func (s *OrderService) ConfirmOrderPayment(ctx context.Context, razorpayOrderID, paymentID string) error {
 	// This is a simplified implementation - you might need to store razorpay_order_id differently
@@ -620,7 +633,7 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 	totalAmount := cart.TotalPrice + shippingCharges - cart.DiscountAmount
 
 	// Create order
-	order := models.NewOrder(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
+	order := models.NewOrderLegacy(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 	order.ShippingCharge = shippingCharges
 	order.RazorpayOrderID = razorpayOrderID
 	// Add discount information
@@ -689,4 +702,122 @@ func (s *OrderService) ReduceCouponUsage(ctx context.Context, couponCode string)
 		zap.String("coupon_code", couponCode))
 
 	return nil
+}
+
+// CreateOrder creates a new order using normalized customer and address data
+func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerData *models.OrderCustomer, addressData *models.OrderAddress, paymentMethod string, shippingCharges float64) (*models.Order, error) {
+	s.logger.Info("Starting normalized order creation",
+		zap.String("user_id", userID),
+		zap.String("payment_method", paymentMethod),
+		zap.Float64("shipping_charges", shippingCharges))
+
+	// Get user's cart with items
+	cart, err := s.cartService.GetUserCart(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
+	}
+
+	if cart == nil {
+		return nil, fmt.Errorf("no cart found for user %s", userID)
+	}
+
+	if len(cart.Items) == 0 {
+		return nil, fmt.Errorf("cart is empty")
+	}
+
+	// Calculate cart total amount including any discounts
+	cartTotal := cart.GetTotalAmount()
+	if cart.DiscountAmount > 0 {
+		cartTotal -= cart.DiscountAmount
+		if cartTotal < 0 {
+			cartTotal = 0
+		}
+	}
+
+	// Calculate tax (18% as per default configuration)
+	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
+	taxAmount := cartTotal * taxRate / 100
+
+	// Add shipping charges and tax to get final total
+	totalAmount := cartTotal + taxAmount + shippingCharges
+
+	// Create order customer record
+	if err := s.orderRepo.CreateOrderCustomer(ctx, customerData); err != nil {
+		return nil, fmt.Errorf("failed to create order customer: %w", err)
+	}
+
+	// Create order address record
+	if err := s.orderRepo.CreateOrderAddress(ctx, addressData); err != nil {
+		return nil, fmt.Errorf("failed to create order address: %w", err)
+	}
+
+	// Create order with normalized references
+	order := models.NewOrder(userID, customerData.ID, addressData.ID, totalAmount, paymentMethod, models.OrderStatusPending, "pending")
+
+	// Set shipping metadata
+	order.ShippingCarrier = "Delhivery"
+	order.ShippingMode = "Surface"
+	order.ShippingCharge = shippingCharges
+
+	// Add coupon information, tax, and shipping to notes if applicable
+	notes := ""
+	if cart.CouponCode != "" {
+		notes += fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
+	}
+	if taxAmount > 0 {
+		if notes != "" {
+			notes += ", "
+		}
+		notes += fmt.Sprintf("Tax (%.1f%%): %.2f", taxRate, taxAmount)
+	}
+	if shippingCharges > 0 {
+		if notes != "" {
+			notes += ", "
+		}
+		notes += fmt.Sprintf("Shipping: %.2f", shippingCharges)
+	}
+	order.Notes = notes
+
+	// Save order to database
+	if err := s.orderRepo.Create(ctx, order); err != nil {
+		return nil, fmt.Errorf("failed to create order: %w", err)
+	}
+
+	// Create order items
+	var orderItems []models.OrderItem
+	for _, cartItem := range cart.Items {
+		orderItem := models.NewOrderItem(order.ID, cartItem.ProductID, cartItem.Quantity, cartItem.UnitPrice)
+		orderItems = append(orderItems, *orderItem)
+	}
+
+	// Save order items
+	if err := s.createOrderItems(ctx, orderItems); err != nil {
+		s.logger.Error("Failed to create order items", zap.Error(err), zap.String("order_id", order.ID))
+		// Don't fail the order creation, but log the error
+	}
+
+	// Clear user cart after successful order creation
+	if err := s.ClearUserCart(ctx, userID); err != nil {
+		s.logger.Error("Failed to clear user cart after order creation", zap.Error(err), zap.String("user_id", userID))
+		// Don't fail the order creation, but log the error
+	}
+
+	s.logger.Info("Normalized order created successfully",
+		zap.String("order_id", order.ID),
+		zap.String("user_id", userID),
+		zap.String("customer_id", customerData.ID),
+		zap.String("address_id", addressData.ID),
+		zap.Float64("total_amount", totalAmount),
+		zap.Int("item_count", len(orderItems)))
+
+	return order, nil
+}
+
+// GetOrderDetails retrieves an order with customer, address, and items data
+func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error) {
+	order, err := s.orderRepo.GetOrderWithDetails(ctx, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get order details: %w", err)
+	}
+	return order, nil
 }
