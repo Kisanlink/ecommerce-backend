@@ -41,9 +41,10 @@ func (r *UpdateProfileRequest) ApplyToModel(profile *models.Profile) error {
 	if r.LastName != nil {
 		profile.LastName = *r.LastName
 	}
-	if r.Phone != nil {
-		profile.Phone = *r.Phone
-	}
+	// Note: Phone field removed from profiles - now only in users table
+	// if r.Phone != nil {
+	//	profile.Phone = *r.Phone
+	// }
 	if r.DateOfBirth != nil {
 		// Parse date string to time.Time
 		parsedDate, err := time.Parse("2006-01-02", *r.DateOfBirth)

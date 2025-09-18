@@ -8,39 +8,39 @@ import (
 
 // ProfileResponse represents a profile response (personal information only)
 type ProfileResponse struct {
-	ID                   string     `json:"id"`
-	UserID               string     `json:"user_id"`
-	FirstName            string     `json:"first_name"`
-	LastName             string     `json:"last_name"`
-	FullName             string     `json:"full_name"`
-	DateOfBirth          *time.Time `json:"date_of_birth,omitempty"`
-	Gender               string     `json:"gender"`
-	
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	FirstName   string     `json:"first_name"`
+	LastName    string     `json:"last_name"`
+	FullName    string     `json:"full_name"`
+	DateOfBirth *time.Time `json:"date_of_birth,omitempty"`
+	Gender      string     `json:"gender"`
+
 	// Address Information
-	AddressLine1         string     `json:"address_line_1"`
-	AddressLine2         string     `json:"address_line_2"`
-	City                 string     `json:"city"`
-	State                string     `json:"state"`
-	Country              string     `json:"country"`
-	Pincode              string     `json:"pincode"`
-	FullAddress          string     `json:"full_address"`
-	IsAddressComplete    bool       `json:"is_address_complete"`
-	
+	AddressLine1      string `json:"address_line_1"`
+	AddressLine2      string `json:"address_line_2"`
+	City              string `json:"city"`
+	State             string `json:"state"`
+	Country           string `json:"country"`
+	Pincode           string `json:"pincode"`
+	FullAddress       string `json:"full_address"`
+	IsAddressComplete bool   `json:"is_address_complete"`
+
 	// Profile Image
-	ProfilePictureURL    string     `json:"profile_picture_url"`
-	ProfilePictureS3Key  string     `json:"profile_picture_s3_key"`
-	Bio                  string     `json:"bio"`
-	
+	ProfilePictureURL   string `json:"profile_picture_url"`
+	ProfilePictureS3Key string `json:"profile_picture_s3_key"`
+	Bio                 string `json:"bio"`
+
 	// Preferences
-	NewsletterSubscribed bool       `json:"newsletter_subscribed"`
-	PreferredLanguage    string     `json:"preferred_language"`
-	
+	NewsletterSubscribed bool   `json:"newsletter_subscribed"`
+	PreferredLanguage    string `json:"preferred_language"`
+
 	// Account Status
-	IsActive             bool       `json:"is_active"`
-	IsVerified           bool       `json:"is_verified"`
-	
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	IsActive   bool `json:"is_active"`
+	IsVerified bool `json:"is_verified"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ProfileListResponse represents a list of profiles
@@ -61,12 +61,12 @@ type ProfileUpdateResponse struct {
 
 // ProfileStatsResponse represents profile statistics
 type ProfileStatsResponse struct {
-	TotalProfiles        int64 `json:"total_profiles"`
-	ActiveProfiles       int64 `json:"active_profiles"`
-	VerifiedProfiles     int64 `json:"verified_profiles"`
-	CompleteProfiles     int64 `json:"complete_profiles"`
-	ProfilesWithAddress  int64 `json:"profiles_with_address"`
-	ProfilesWithPicture  int64 `json:"profiles_with_picture"`
+	TotalProfiles       int64 `json:"total_profiles"`
+	ActiveProfiles      int64 `json:"active_profiles"`
+	VerifiedProfiles    int64 `json:"verified_profiles"`
+	CompleteProfiles    int64 `json:"complete_profiles"`
+	ProfilesWithAddress int64 `json:"profiles_with_address"`
+	ProfilesWithPicture int64 `json:"profiles_with_picture"`
 }
 
 // ToProfileResponse converts a Profile model to ProfileResponse

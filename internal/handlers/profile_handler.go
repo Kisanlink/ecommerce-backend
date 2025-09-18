@@ -124,7 +124,7 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 
 	// Convert to response structure
 	profileResponse := responses.ToProfileResponse(profile)
-	
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Profile created successfully",
 		"data":    profileResponse,
@@ -195,7 +195,7 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 
 	// Convert to response structure
 	profileResponse := responses.ToProfileResponse(profile)
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile retrieved successfully",
 		"data":    profileResponse,
@@ -287,7 +287,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 
 	// Convert to response structure
 	profileResponse := responses.ToProfileResponse(profile)
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Profile updated successfully",
 		"data":    profileResponse,
@@ -416,7 +416,7 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 
 	// Convert to response structure
 	profileResponse := responses.ToProfileResponse(profile)
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Profile image uploaded successfully",
 		"data":      profileResponse,

@@ -51,11 +51,12 @@ func (m *Migration) RunMigrations() error {
 func (m *Migration) runPostgresMigrations() error {
 	// List of all models to migrate in dependency order
 	modelsToMigrate := []interface{}{
-		&models.User{},
-		&models.Profile{},
+		&models.User{},    // ✅ Authentication data only
+		&models.Profile{}, // ✅ Personal info only (no duplicate fields)
 		&models.Address{},
 		&models.Product{},
 		&models.Image{},         // Add Image model for auto-migration
+		&models.Inventory{},     // Add Inventory model for auto-migration
 		&models.OrderCustomer{}, // NEW: Order customer normalization
 		&models.OrderAddress{},  // NEW: Order address normalization
 		&models.Cart{},
@@ -72,6 +73,49 @@ func (m *Migration) runPostgresMigrations() error {
 		if err := m.migrateModel(model); err != nil {
 			return fmt.Errorf("failed to migrate model %T: %w", model, err)
 		}
+	}
+
+	// Run custom migrations for schema changes
+	if err := m.runCustomMigrations(); err != nil {
+		return fmt.Errorf("custom migrations failed: %w", err)
+	}
+
+	return nil
+}
+
+// runCustomMigrations runs custom SQL migrations for schema changes
+func (m *Migration) runCustomMigrations() error {
+	log.Println("Running custom migrations for schema changes...")
+
+	// Check if users and profiles normalization has been applied
+	if err := m.checkAndApplyUsersProfilesNormalization(); err != nil {
+		return fmt.Errorf("users and profiles normalization failed: %w", err)
+	}
+
+	return nil
+}
+
+// checkAndApplyUsersProfilesNormalization checks and applies users/profiles normalization
+func (m *Migration) checkAndApplyUsersProfilesNormalization() error {
+	// Check if profiles table still has email column (denormalized state)
+	var emailColumnExists bool
+	err := m.db.Raw(`
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns 
+			WHERE table_name = 'profiles' AND column_name = 'email'
+		)
+	`).Scan(&emailColumnExists).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check profiles table structure: %w", err)
+	}
+
+	if emailColumnExists {
+		log.Println("⚠️  Profiles table still has duplicate fields (email, phone)")
+		log.Println("📋 To apply normalization, run: go run cmd/migrate-users-profiles/main.go")
+		log.Println("📋 To rollback later, run: go run cmd/migrate-users-profiles/main.go rollback")
+	} else {
+		log.Println("✅ Users and Profiles tables are already normalized")
 	}
 
 	return nil
@@ -217,11 +261,12 @@ func (m *Migration) DropAllTables() error {
 		&models.Favorite{},
 		&models.CartItem{},
 		&models.Cart{},
-		&models.Image{}, // Add Image model to drop list
+		&models.Image{},     // Add Image model to drop list
+		&models.Inventory{}, // Add Inventory model to drop list
 		&models.Product{},
 		&models.Address{},
-		&models.Profile{},
-		&models.User{},
+		&models.Profile{}, // ✅ Normalized profile table
+		&models.User{},    // ✅ Normalized user table
 		&models.Recipe{},
 		&models.Coupon{}, // Add Coupon model to drop list
 	}
@@ -254,11 +299,12 @@ func (m *Migration) GetMigrationStatus() (map[string]bool, error) {
 
 	// Check if each table exists
 	modelsToCheck := []interface{}{
-		&models.User{},
-		&models.Profile{},
+		&models.User{},    // ✅ Normalized user table
+		&models.Profile{}, // ✅ Normalized profile table
 		&models.Address{},
 		&models.Product{},
 		&models.Image{},         // Add Image model to status check
+		&models.Inventory{},     // Add Inventory model to status check
 		&models.OrderCustomer{}, // NEW: Order customer normalization
 		&models.OrderAddress{},  // NEW: Order address normalization
 		&models.Cart{},

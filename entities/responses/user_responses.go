@@ -37,11 +37,11 @@ type UserListResponse struct {
 
 // UserStatsResponse represents user statistics
 type UserStatsResponse struct {
-	TotalUsers      int64 `json:"total_users"`
-	ActiveUsers     int64 `json:"active_users"`
-	VerifiedUsers   int64 `json:"verified_users"`
-	NewUsersToday   int64 `json:"new_users_today"`
-	NewUsersThisWeek int64 `json:"new_users_this_week"`
+	TotalUsers        int64 `json:"total_users"`
+	ActiveUsers       int64 `json:"active_users"`
+	VerifiedUsers     int64 `json:"verified_users"`
+	NewUsersToday     int64 `json:"new_users_today"`
+	NewUsersThisWeek  int64 `json:"new_users_this_week"`
 	NewUsersThisMonth int64 `json:"new_users_this_month"`
 }
 
@@ -75,10 +75,10 @@ func ToUserWithProfileResponse(user *models.User, profile *models.Profile) UserW
 	response := UserWithProfileResponse{
 		User: ToUserResponse(user),
 	}
-	
+
 	if profile != nil {
 		response.Profile = ToProfileResponse(profile)
 	}
-	
+
 	return response
 }
