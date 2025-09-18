@@ -65,7 +65,8 @@ func (m *Migration) runPostgresMigrations() error {
 		&models.Order{},
 		&models.OrderItem{},
 		&models.Recipe{},
-		&models.Coupon{}, // Add Coupon model for auto-migration
+		&models.Coupon{},     // Add Coupon model for auto-migration
+		&models.CouponRule{}, // Add CouponRule model for auto-migration
 	}
 
 	// Run auto migration for each model
@@ -268,7 +269,8 @@ func (m *Migration) DropAllTables() error {
 		&models.Profile{}, // ✅ Normalized profile table
 		&models.User{},    // ✅ Normalized user table
 		&models.Recipe{},
-		&models.Coupon{}, // Add Coupon model to drop list
+		&models.CouponRule{}, // Add CouponRule model to drop list
+		&models.Coupon{},     // Add Coupon model to drop list
 	}
 
 	// Drop tables in reverse order to handle foreign key constraints

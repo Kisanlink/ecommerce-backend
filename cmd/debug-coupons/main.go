@@ -65,8 +65,17 @@ func main() {
 		fmt.Printf("Coupons table exists: %t\n", tableExists)
 	}
 
+	// Check if coupon_rules table exists
+	fmt.Println("\n2. Checking if coupon_rules table exists...")
+	err = dbConn.Raw("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'coupon_rules')").Scan(&tableExists).Error
+	if err != nil {
+		log.Printf("Error checking coupon_rules table existence: %v", err)
+	} else {
+		fmt.Printf("Coupon_rules table exists: %t\n", tableExists)
+	}
+
 	// Get all coupons
-	fmt.Println("\n2. Getting all coupons from database...")
+	fmt.Println("\n3. Getting all coupons from database...")
 	coupons, err := repoManager.CouponRepository.GetAll(ctx, 100, 0)
 	if err != nil {
 		log.Printf("Failed to get coupons: %v", err)
@@ -78,21 +87,47 @@ func main() {
 		}
 	}
 
-	// Test specific coupon lookup
-	fmt.Println("\n3. Testing specific coupon lookup...")
-	testCodes := []string{"KaushikMax18", "KAUSHIKMAX18", "kaushikmax18"}
+	// Test specific coupon lookup with rules
+	fmt.Println("\n4. Testing specific coupon lookup with rules...")
+	testCodes := []string{"KAUSHIKMAX18", "MANIELITE18", "CHARANPRIME18", "MEHERFEST18"}
 	for _, code := range testCodes {
+		fmt.Printf("\n--- Testing coupon: %s ---\n", code)
+
+		// Test basic lookup
 		var coupon models.Coupon
 		_, err := repoManager.CouponRepository.GetByCode(ctx, code, &coupon)
 		if err != nil {
-			fmt.Printf("Coupon %s: NOT FOUND (%v)\n", code, err)
-		} else {
-			fmt.Printf("Coupon %s: FOUND - %s (Active: %t)\n", code, coupon.Description, coupon.IsActive)
+			fmt.Printf("Basic lookup: NOT FOUND (%v)\n", err)
+			continue
 		}
+		fmt.Printf("Basic lookup: FOUND - %s (Active: %t)\n", coupon.Description, coupon.IsActive)
+
+		// Test lookup with rules
+		couponWithRules, err := repoManager.CouponRepository.GetByCodeWithRules(ctx, code)
+		if err != nil {
+			fmt.Printf("With rules lookup: FAILED (%v)\n", err)
+			continue
+		}
+		fmt.Printf("With rules lookup: SUCCESS\n")
+		fmt.Printf("  - Coupon ID: %s\n", couponWithRules.ID)
+		fmt.Printf("  - Rules count: %d\n", len(couponWithRules.Rules))
+
+		// Check if coupon is valid
+		fmt.Printf("  - IsValid(): %t\n", couponWithRules.IsValid())
+
+		// Check each rule
+		for j, rule := range couponWithRules.Rules {
+			fmt.Printf("  - Rule %d: Type=%s, Value=%.2f, MinAmount=%.2f, Valid=%t\n",
+				j+1, rule.RuleType, rule.DiscountValue, rule.MinAmount, rule.IsValid())
+		}
+
+		// Test cart validation
+		testCartTotal := 150.0
+		fmt.Printf("  - CanUse(cartTotal=%.2f): %t\n", testCartTotal, couponWithRules.CanUse(testCartTotal, "test-user", true))
 	}
 
 	// Check cart table structure
-	fmt.Println("\n4. Checking cart table structure...")
+	fmt.Println("\n5. Checking cart table structure...")
 	var columns []string
 	err = dbConn.Raw("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'carts' ORDER BY ordinal_position").Scan(&columns).Error
 	if err != nil {
@@ -102,7 +137,7 @@ func main() {
 	}
 
 	// Check if any carts exist
-	fmt.Println("\n5. Checking existing carts...")
+	fmt.Println("\n6. Checking existing carts...")
 	var cartCount int64
 	err = dbConn.Raw("SELECT COUNT(*) FROM carts").Scan(&cartCount).Error
 	if err != nil {

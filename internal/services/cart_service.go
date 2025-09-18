@@ -563,9 +563,8 @@ func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string
 
 	code := strings.TrimSpace(strings.ToUpper(couponCode))
 
-	// Get coupon from database
-	var coupon models.Coupon
-	_, err := s.couponRepo.GetByCode(ctx, code, &coupon)
+	// Get coupon with rules from database
+	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
 	if err != nil {
 		s.logger.Error("Invalid coupon code",
 			zap.String("code", code),
@@ -595,8 +594,18 @@ func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string
 		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
 	}
 
-	// Calculate discount
-	discount := coupon.CalculateDiscount(cart.TotalPrice)
+	// Get the best rule for this cart
+	bestRule := coupon.GetBestRule(cart.TotalPrice, userID, isFirstTime)
+	if bestRule == nil {
+		s.logger.Error("No applicable rules found for coupon",
+			zap.String("code", code),
+			zap.String("user_id", userID),
+			zap.Float64("cart_total", cart.TotalPrice))
+		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
+	}
+
+	// Calculate discount using the best rule
+	discount := bestRule.CalculateDiscount(cart.TotalPrice)
 	discount = round2(discount)
 
 	// Update cart with coupon
@@ -609,7 +618,8 @@ func (s *CartService) ApplyCoupon(ctx context.Context, userID, couponCode string
 	s.logger.Info("Coupon applied successfully",
 		zap.String("code", code),
 		zap.String("user_id", userID),
-		zap.Float64("discount", discount))
+		zap.Float64("discount", discount),
+		zap.String("rule_type", string(bestRule.RuleType)))
 
 	return cart, discount, nil
 }

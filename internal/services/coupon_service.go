@@ -23,19 +23,24 @@ type CouponServiceInterface interface {
 	ValidateCoupon(ctx context.Context, code string, cartTotal float64, userID string) (*base.BaseResponse, error)
 	ApplyCouponToUser(ctx context.Context, code string, userID string) (*base.BaseResponse, error)
 	GetCouponUsageStats(ctx context.Context, code string) (*base.BaseResponse, error)
+	CreateCouponRule(ctx context.Context, req *requests.CreateCouponRuleRequest) (*base.BaseResponse, error)
+	UpdateCouponRule(ctx context.Context, req *requests.UpdateCouponRuleRequest) (*base.BaseResponse, error)
+	DeleteCouponRule(ctx context.Context, id string) (*base.BaseResponse, error)
 }
 
 // CouponService handles business logic for coupons
 type CouponService struct {
-	couponRepo repositories.CouponRepositoryInterface
-	logger     *zap.Logger
+	couponRepo     repositories.CouponRepositoryInterface
+	couponRuleRepo repositories.CouponRuleRepositoryInterface
+	logger         *zap.Logger
 }
 
 // NewCouponService creates a new coupon service
-func NewCouponService(couponRepo repositories.CouponRepositoryInterface, logger *zap.Logger) CouponServiceInterface {
+func NewCouponService(couponRepo repositories.CouponRepositoryInterface, couponRuleRepo repositories.CouponRuleRepositoryInterface, logger *zap.Logger) CouponServiceInterface {
 	return &CouponService{
-		couponRepo: couponRepo,
-		logger:     logger,
+		couponRepo:     couponRepo,
+		couponRuleRepo: couponRuleRepo,
+		logger:         logger,
 	}
 }
 
@@ -53,31 +58,50 @@ func (s *CouponService) CreateCoupon(ctx context.Context, req *requests.CreateCo
 		return base.NewErrorResponse("Coupon already exists", base.NewValidationError("code", "A coupon with this code already exists")), nil
 	}
 
-	// Create coupon rules
-	rules := models.CouponRule{
-		Type:          req.RuleType,
-		DiscountValue: req.Value,
-		MinAmount:     req.MinAmount,
-		MaxDiscount:   req.MaxDiscount,
-		Categories:    req.Categories,
-		Products:      req.Products,
-		ValidFrom:     req.ValidFrom,
-		ValidUntil:    req.ValidUntil,
-		UserLimit:     req.UserLimit,
-		FirstTimeOnly: req.FirstTimeOnly,
-	}
-
-	// Create new coupon
-	coupon := models.NewCoupon(req.Code, req.Description, req.CreatedBy, rules)
+	// Create new coupon (without rules initially)
+	coupon := models.NewCoupon(req.Code, req.Description, req.CreatedBy)
 	coupon.Count = req.Count
 
-	// Save to database
+	// Save coupon to database
 	if err := s.couponRepo.Create(ctx, coupon); err != nil {
 		s.logger.Error("Failed to create coupon",
 			zap.String("code", req.Code),
 			zap.Error(err))
 		return base.NewErrorResponse("Failed to create coupon", base.NewInternalServerError("Database error", err.Error())), nil
 	}
+
+	// Create coupon rule
+	rule := models.NewCouponRule(coupon.ID, req.RuleType, req.Value)
+	rule.SetMinAmount(req.MinAmount)
+	if req.MaxDiscount > 0 {
+		rule.SetMaxDiscount(req.MaxDiscount)
+	}
+	rule.SetValidityPeriod(req.ValidFrom, req.ValidUntil)
+	if req.UserLimit > 0 {
+		rule.SetUserLimit(req.UserLimit)
+	}
+	rule.SetFirstTimeOnly(req.FirstTimeOnly)
+
+	// Add categories and products
+	for _, category := range req.Categories {
+		rule.AddCategory(category)
+	}
+	for _, product := range req.Products {
+		rule.AddProduct(product)
+	}
+
+	// Save rule to database
+	if err := s.couponRuleRepo.Create(ctx, rule); err != nil {
+		s.logger.Error("Failed to create coupon rule",
+			zap.String("coupon_id", coupon.ID),
+			zap.Error(err))
+		// Rollback coupon creation
+		s.couponRepo.Delete(ctx, coupon.ID)
+		return base.NewErrorResponse("Failed to create coupon rule", base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	// Add rule to coupon for response
+	coupon.AddRule(rule)
 
 	s.logger.Info("Coupon created successfully",
 		zap.String("id", coupon.ID),
@@ -92,8 +116,7 @@ func (s *CouponService) GetCouponByCode(ctx context.Context, code string) (*base
 		return base.NewErrorResponse("Invalid request", base.NewValidationError("code", "Coupon code is required")), nil
 	}
 
-	var coupon models.Coupon
-	_, err := s.couponRepo.GetByCode(ctx, code, &coupon)
+	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
 	if err != nil {
 		s.logger.Error("Failed to get coupon by code",
 			zap.String("code", code),
@@ -106,7 +129,7 @@ func (s *CouponService) GetCouponByCode(ctx context.Context, code string) (*base
 
 // GetAllCoupons retrieves all coupons with pagination
 func (s *CouponService) GetAllCoupons(ctx context.Context, limit, offset int) (*base.BaseResponse, error) {
-	coupons, err := s.couponRepo.GetAll(ctx, limit, offset)
+	coupons, err := s.couponRepo.GetAllWithRules(ctx, limit, offset)
 	if err != nil {
 		s.logger.Error("Failed to get all coupons",
 			zap.Error(err))
@@ -125,7 +148,7 @@ func (s *CouponService) GetAllCoupons(ctx context.Context, limit, offset int) (*
 
 // GetActiveCoupons retrieves all active coupons with pagination
 func (s *CouponService) GetActiveCoupons(ctx context.Context, limit, offset int) (*base.BaseResponse, error) {
-	coupons, err := s.couponRepo.GetActive(ctx, limit, offset)
+	coupons, err := s.couponRepo.GetActiveWithRules(ctx, limit, offset)
 	if err != nil {
 		s.logger.Error("Failed to get active coupons",
 			zap.Error(err))
@@ -144,14 +167,13 @@ func (s *CouponService) GetActiveCoupons(ctx context.Context, limit, offset int)
 
 // UpdateCoupon updates an existing coupon
 func (s *CouponService) UpdateCoupon(ctx context.Context, req *requests.UpdateCouponRequest) (*base.BaseResponse, error) {
-	// Get existing coupon
-	var coupon models.Coupon
-	_, err := s.couponRepo.GetByID(ctx, req.ID, &coupon)
+	// Get existing coupon with rules
+	coupon, err := s.couponRepo.GetWithRules(ctx, req.ID)
 	if err != nil {
 		return base.NewErrorResponse("Coupon not found", base.NewNotFoundError("Coupon", req.ID)), nil
 	}
 
-	// Update fields if provided
+	// Update coupon fields if provided
 	if req.Description != "" {
 		coupon.Description = req.Description
 	}
@@ -162,45 +184,16 @@ func (s *CouponService) UpdateCoupon(ctx context.Context, req *requests.UpdateCo
 		coupon.IsActive = *req.IsActive
 	}
 
-	// Update rules if provided
-	if req.RuleType != "" {
-		coupon.Rules.Type = req.RuleType
-	}
-	if req.Value > 0 {
-		coupon.Rules.DiscountValue = req.Value
-	}
-	if req.MinAmount >= 0 {
-		coupon.Rules.MinAmount = req.MinAmount
-	}
-	if req.MaxDiscount >= 0 {
-		coupon.Rules.MaxDiscount = req.MaxDiscount
-	}
-	if req.Categories != nil {
-		coupon.Rules.Categories = req.Categories
-	}
-	if req.Products != nil {
-		coupon.Rules.Products = req.Products
-	}
-	if req.ValidFrom != nil {
-		coupon.Rules.ValidFrom = req.ValidFrom
-	}
-	if req.ValidUntil != nil {
-		coupon.Rules.ValidUntil = req.ValidUntil
-	}
-	if req.UserLimit >= 0 {
-		coupon.Rules.UserLimit = req.UserLimit
-	}
-	if req.FirstTimeOnly != nil {
-		coupon.Rules.FirstTimeOnly = *req.FirstTimeOnly
-	}
-
 	// Save updated coupon
-	if err := s.couponRepo.Update(ctx, &coupon); err != nil {
+	if err := s.couponRepo.Update(ctx, coupon); err != nil {
 		s.logger.Error("Failed to update coupon",
 			zap.String("id", req.ID),
 			zap.Error(err))
 		return base.NewErrorResponse("Failed to update coupon", base.NewInternalServerError("Database error", err.Error())), nil
 	}
+
+	// Note: Rule updates should be done through the separate rule management endpoints
+	// This maintains separation of concerns and follows the normalized structure
 
 	s.logger.Info("Coupon updated successfully",
 		zap.String("id", coupon.ID),
@@ -234,9 +227,8 @@ func (s *CouponService) ValidateCoupon(ctx context.Context, code string, cartTot
 		return base.NewErrorResponse("Invalid request", base.NewValidationError("code", "Coupon code is required")), nil
 	}
 
-	// Get coupon
-	var coupon models.Coupon
-	_, err := s.couponRepo.GetByCode(ctx, code, &coupon)
+	// Get coupon with rules
+	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
 	if err != nil {
 		return base.NewErrorResponse("Invalid coupon", base.NewNotFoundError("Coupon", code)), nil
 	}
@@ -249,11 +241,18 @@ func (s *CouponService) ValidateCoupon(ctx context.Context, code string, cartTot
 		return base.NewErrorResponse("Invalid coupon", base.NewValidationError("coupon", "Coupon cannot be used for this cart")), nil
 	}
 
+	// Get the best rule for this cart
+	bestRule := coupon.GetBestRule(cartTotal, userID, isFirstTime)
+	if bestRule == nil {
+		return base.NewErrorResponse("Invalid coupon", base.NewValidationError("coupon", "No applicable rules found for this cart")), nil
+	}
+
 	// Calculate discount
-	discount := coupon.CalculateDiscount(cartTotal)
+	discount := bestRule.CalculateDiscount(cartTotal)
 
 	response := map[string]interface{}{
 		"coupon":        coupon,
+		"best_rule":     bestRule,
 		"discount":      discount,
 		"is_valid":      true,
 		"is_first_time": isFirstTime,
@@ -264,9 +263,8 @@ func (s *CouponService) ValidateCoupon(ctx context.Context, code string, cartTot
 
 // ApplyCouponToUser applies a coupon and increments usage count
 func (s *CouponService) ApplyCouponToUser(ctx context.Context, code string, userID string) (*base.BaseResponse, error) {
-	// Get coupon first to check if it exists and is valid
-	var coupon models.Coupon
-	_, err := s.couponRepo.GetByCode(ctx, code, &coupon)
+	// Get coupon with rules first to check if it exists and is valid
+	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
 	if err != nil {
 		return base.NewErrorResponse("Invalid coupon", base.NewNotFoundError("Coupon", code)), nil
 	}
@@ -338,6 +336,143 @@ func (s *CouponService) validateCreateCouponRequest(req *requests.CreateCouponRe
 	}
 	if req.Count <= 0 {
 		return fmt.Errorf("count must be greater than 0")
+	}
+	return nil
+}
+
+// CreateCouponRule creates a new coupon rule
+func (s *CouponService) CreateCouponRule(ctx context.Context, req *requests.CreateCouponRuleRequest) (*base.BaseResponse, error) {
+	// Validate request
+	if err := s.validateCreateCouponRuleRequest(req); err != nil {
+		return base.NewErrorResponse("Invalid request", base.NewValidationError("request", err.Error())), nil
+	}
+
+	// Check if coupon exists
+	var coupon models.Coupon
+	_, err := s.couponRepo.GetByID(ctx, req.CouponID, &coupon)
+	if err != nil {
+		return base.NewErrorResponse("Coupon not found", base.NewNotFoundError("Coupon", req.CouponID)), nil
+	}
+
+	// Create new coupon rule
+	rule := models.NewCouponRule(req.CouponID, req.RuleType, req.DiscountValue)
+	rule.SetMinAmount(req.MinAmount)
+	if req.MaxDiscount > 0 {
+		rule.SetMaxDiscount(req.MaxDiscount)
+	}
+	rule.SetValidityPeriod(req.ValidFrom, req.ValidUntil)
+	if req.UserLimit > 0 {
+		rule.SetUserLimit(req.UserLimit)
+	}
+	rule.SetFirstTimeOnly(req.FirstTimeOnly)
+
+	// Add categories and products
+	for _, category := range req.Categories {
+		rule.AddCategory(category)
+	}
+	for _, product := range req.Products {
+		rule.AddProduct(product)
+	}
+
+	// Save rule to database
+	if err := s.couponRuleRepo.Create(ctx, rule); err != nil {
+		s.logger.Error("Failed to create coupon rule",
+			zap.String("coupon_id", req.CouponID),
+			zap.Error(err))
+		return base.NewErrorResponse("Failed to create coupon rule", base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	s.logger.Info("Coupon rule created successfully",
+		zap.String("rule_id", rule.ID),
+		zap.String("coupon_id", req.CouponID))
+
+	return base.NewSuccessResponse("Coupon rule created successfully", rule), nil
+}
+
+// UpdateCouponRule updates an existing coupon rule
+func (s *CouponService) UpdateCouponRule(ctx context.Context, req *requests.UpdateCouponRuleRequest) (*base.BaseResponse, error) {
+	// Get existing rule
+	var rule models.CouponRule
+	_, err := s.couponRuleRepo.GetByID(ctx, req.ID, &rule)
+	if err != nil {
+		return base.NewErrorResponse("Coupon rule not found", base.NewNotFoundError("CouponRule", req.ID)), nil
+	}
+
+	// Update fields if provided
+	if req.RuleType != "" {
+		rule.RuleType = req.RuleType
+	}
+	if req.DiscountValue > 0 {
+		rule.DiscountValue = req.DiscountValue
+	}
+	if req.MinAmount >= 0 {
+		rule.SetMinAmount(req.MinAmount)
+	}
+	if req.MaxDiscount >= 0 {
+		rule.SetMaxDiscount(req.MaxDiscount)
+	}
+	if req.ValidFrom != nil {
+		rule.ValidFrom = req.ValidFrom
+	}
+	if req.ValidUntil != nil {
+		rule.ValidUntil = req.ValidUntil
+	}
+	if req.UserLimit >= 0 {
+		rule.SetUserLimit(req.UserLimit)
+	}
+	if req.FirstTimeOnly != nil {
+		rule.SetFirstTimeOnly(*req.FirstTimeOnly)
+	}
+	if req.Categories != nil {
+		rule.Categories = req.Categories
+	}
+	if req.Products != nil {
+		rule.Products = req.Products
+	}
+
+	// Save updated rule
+	if err := s.couponRuleRepo.Update(ctx, &rule); err != nil {
+		s.logger.Error("Failed to update coupon rule",
+			zap.String("rule_id", req.ID),
+			zap.Error(err))
+		return base.NewErrorResponse("Failed to update coupon rule", base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	s.logger.Info("Coupon rule updated successfully",
+		zap.String("rule_id", rule.ID))
+
+	return base.NewSuccessResponse("Coupon rule updated successfully", rule), nil
+}
+
+// DeleteCouponRule deletes a coupon rule
+func (s *CouponService) DeleteCouponRule(ctx context.Context, id string) (*base.BaseResponse, error) {
+	if strings.TrimSpace(id) == "" {
+		return base.NewErrorResponse("Invalid request", base.NewValidationError("id", "Rule ID is required")), nil
+	}
+
+	if err := s.couponRuleRepo.Delete(ctx, id); err != nil {
+		s.logger.Error("Failed to delete coupon rule",
+			zap.String("id", id),
+			zap.Error(err))
+		return base.NewErrorResponse("Failed to delete coupon rule", base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	s.logger.Info("Coupon rule deleted successfully",
+		zap.String("id", id))
+
+	return base.NewSuccessResponse("Coupon rule deleted successfully", nil), nil
+}
+
+// validateCreateCouponRuleRequest validates the create coupon rule request
+func (s *CouponService) validateCreateCouponRuleRequest(req *requests.CreateCouponRuleRequest) error {
+	if strings.TrimSpace(req.CouponID) == "" {
+		return fmt.Errorf("coupon ID is required")
+	}
+	if req.RuleType == "" {
+		return fmt.Errorf("rule type is required")
+	}
+	if req.DiscountValue <= 0 {
+		return fmt.Errorf("discount value must be greater than 0")
 	}
 	return nil
 }

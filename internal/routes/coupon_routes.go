@@ -13,7 +13,8 @@ import (
 func RegisterCouponRoutes(router *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
 	// Initialize coupon service and handler using the repository manager's database connection
 	couponRepo := repositories.NewCouponRepository(repoManager.GetDBManager(), logger)
-	couponService := services.NewCouponService(couponRepo, logger)
+	couponRuleRepo := repositories.NewCouponRuleRepository(repoManager.GetDBManager(), logger)
+	couponService := services.NewCouponService(couponRepo, couponRuleRepo, logger)
 	couponHandler := handlers.NewCouponHandler(couponService, logger)
 	// Public routes (no authentication required)
 	coupons := router.Group("/coupons")
@@ -55,5 +56,15 @@ func RegisterCouponRoutes(router *gin.RouterGroup, repoManager *repositories.Rep
 
 		// Delete coupon (admin only)
 		admin.DELETE("/:id", couponHandler.DeleteCoupon)
+
+		// Coupon rule management routes
+		// Create coupon rule (admin only)
+		admin.POST("/rules", couponHandler.CreateCouponRule)
+
+		// Update coupon rule (admin only)
+		admin.PUT("/rules", couponHandler.UpdateCouponRule)
+
+		// Delete coupon rule (admin only)
+		admin.DELETE("/rules/:id", couponHandler.DeleteCouponRule)
 	}
 }
