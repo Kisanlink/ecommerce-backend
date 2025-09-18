@@ -81,8 +81,6 @@ func (r *UserRepository) CountUsersByStatus(ctx context.Context, isActive bool) 
 
 // CountActiveUsers counts all active (non-deleted) users
 func (r *UserRepository) CountActiveUsers(ctx context.Context) (int64, error) {
-	// Since Count methods have table identification issues in kisanlink-db,
-	// we'll retrieve all records and count them (not ideal for large datasets)
 	filter := base.NewFilterBuilder().
 		WhereNull("deleted_at").
 		Build()

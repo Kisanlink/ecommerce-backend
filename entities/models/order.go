@@ -15,15 +15,41 @@ const (
 	OrderStatusDelivered OrderStatus = "delivered"
 )
 
+// OrderCustomer represents customer information captured at order time
+type OrderCustomer struct {
+	*base.BaseModel `gorm:"embedded"`
+	FirstName       string `json:"first_name" gorm:"not null"`
+	LastName        string `json:"last_name" gorm:"not null"`
+	Phone           string `json:"phone" gorm:"not null"`
+	PhoneAlt        string `json:"phone_alt"`
+	Email           string `json:"email"`
+}
+
+// OrderAddress represents shipping address captured at order time
+type OrderAddress struct {
+	*base.BaseModel `gorm:"embedded"`
+	AddressLine1    string `json:"address_line_1" gorm:"not null"`
+	AddressLine2    string `json:"address_line_2"`
+	City            string `json:"city" gorm:"not null"`
+	State           string `json:"state" gorm:"not null"`
+	PostalCode      string `json:"postal_code" gorm:"not null"`
+	Country         string `json:"country" gorm:"not null;default:'India'"`
+}
+
 // Order represents an order in the system
 type Order struct {
 	*base.BaseModel `gorm:"embedded"`
 	UserID          string      `json:"user_id" gorm:"not null;index"`
 	TotalAmount     float64     `json:"total_amount" gorm:"not null"`
 	Status          OrderStatus `json:"status" gorm:"default:'pending'"`
-	ShippingAddr    string      `json:"shipping_address"`
-	ShippingAddrID  string      `json:"shipping_address_id" gorm:"index"` // Reference to addresses table
-	// Customer contact captured at checkout (used for shipping label)
+
+	// NORMALIZED: Foreign key references (nullable during migration)
+	CustomerID        string `json:"customer_id" gorm:"index"`         // FK to order_customers
+	ShippingAddressID string `json:"shipping_address_id" gorm:"index"` // FK to order_addresses
+
+	// LEGACY: Keep for backward compatibility during migration
+	ShippingAddr      string `json:"shipping_address"`
+	ShippingAddrID    string `json:"shipping_address_id_legacy" gorm:"index"` // Reference to addresses table
 	CustomerFirstName string `json:"customer_first_name"`
 	CustomerLastName  string `json:"customer_last_name"`
 	CustomerPhone     string `json:"customer_phone"`
@@ -32,7 +58,7 @@ type Order struct {
 	PaymentStatus     string `json:"payment_status" gorm:"default:'pending'"`
 	Notes             string `json:"notes"`
 	// Payment metadata (Razorpay)
-	RazorpayOrderID     string `json:"razorpay_order_id" gorm:"index"`
+	RazorpayOrderID     string `json:"razorpay_order_id" gorm:"index;unique"`
 	RazorpayReceipt     string `json:"razorpay_receipt"`
 	RazorpayAmountPaisa int    `json:"razorpay_amount_paisa"`
 	RazorpayNotesJSON   string `json:"razorpay_notes_json"`
@@ -54,6 +80,11 @@ type Order struct {
 	// Discount information
 	CouponCode     string  `json:"coupon_code" gorm:"index"`
 	DiscountAmount float64 `json:"discount_amount" gorm:"default:0"`
+
+	// GORM Relationships
+	Customer        *OrderCustomer `json:"customer,omitempty" gorm:"foreignKey:CustomerID"`
+	ShippingAddress *OrderAddress  `json:"shipping_address_normalized,omitempty" gorm:"foreignKey:ShippingAddressID"`
+	OrderItems      []OrderItem    `json:"order_items,omitempty" gorm:"foreignKey:OrderID"`
 }
 
 // OrderItem represents an item in an order
@@ -64,10 +95,55 @@ type OrderItem struct {
 	Quantity        int     `json:"quantity" gorm:"not null"`
 	UnitPrice       float64 `json:"unit_price" gorm:"not null"`
 	TotalPrice      float64 `json:"total_price" gorm:"not null"`
+
+	// GORM Relationship
+	Product *Product `json:"product,omitempty" gorm:"foreignKey:ProductID"`
 }
 
-// NewOrder creates a new order with base model
-func NewOrder(userID string, totalAmount float64, shippingAddr, paymentMethod string, status OrderStatus, paymentStatus string) *Order {
+// NewOrderCustomer creates a new order customer with base model
+func NewOrderCustomer(firstName, lastName, phone, phoneAlt, email string) *OrderCustomer {
+	baseModel := base.NewBaseModel("OCUS", hash.Medium)
+	return &OrderCustomer{
+		BaseModel: baseModel,
+		FirstName: firstName,
+		LastName:  lastName,
+		Phone:     phone,
+		PhoneAlt:  phoneAlt,
+		Email:     email,
+	}
+}
+
+// NewOrderAddress creates a new order address with base model
+func NewOrderAddress(addressLine1, addressLine2, city, state, postalCode, country string) *OrderAddress {
+	baseModel := base.NewBaseModel("OADR", hash.Medium)
+	return &OrderAddress{
+		BaseModel:    baseModel,
+		AddressLine1: addressLine1,
+		AddressLine2: addressLine2,
+		City:         city,
+		State:        state,
+		PostalCode:   postalCode,
+		Country:      country,
+	}
+}
+
+// NewOrder creates a new order with base model (normalized version)
+func NewOrder(userID, customerID, shippingAddressID string, totalAmount float64, paymentMethod string, status OrderStatus, paymentStatus string) *Order {
+	baseModel := base.NewBaseModel("ORDR", hash.Large)
+	return &Order{
+		BaseModel:         baseModel,
+		UserID:            userID,
+		CustomerID:        customerID,
+		ShippingAddressID: shippingAddressID,
+		TotalAmount:       totalAmount,
+		Status:            status,
+		PaymentMethod:     paymentMethod,
+		PaymentStatus:     paymentStatus,
+	}
+}
+
+// NewOrderLegacy creates a new order with base model (legacy version for backward compatibility)
+func NewOrderLegacy(userID string, totalAmount float64, shippingAddr, paymentMethod string, status OrderStatus, paymentStatus string) *Order {
 	baseModel := base.NewBaseModel("ORDR", hash.Large)
 	return &Order{
 		BaseModel:     baseModel,
@@ -91,6 +167,16 @@ func NewOrderItem(orderID, productID string, quantity int, unitPrice float64) *O
 		UnitPrice:  unitPrice,
 		TotalPrice: float64(quantity) * unitPrice,
 	}
+}
+
+// TableName returns the table name for GORM
+func (oc *OrderCustomer) TableName() string {
+	return "order_customers"
+}
+
+// TableName returns the table name for GORM
+func (oa *OrderAddress) TableName() string {
+	return "order_addresses"
 }
 
 // TableName returns the table name for GORM
