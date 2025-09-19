@@ -102,8 +102,24 @@ func (s *ProductService) CreateProduct(ctx context.Context, req *requests.Create
 		}
 	}
 
-	// Create response with product and images (no inventory - handled separately)
-	productResp := responses.NewProductCreateResponse(product, images, nil)
+	// Create inventory record for the new product
+	inventory := models.NewInventory(
+		product.ID,
+		0,    // Initial stock is 0
+		10,   // Min stock level
+		1000, // Max stock level
+		20,   // Reorder point
+	)
+	inventory.SetCreatedBy(req.GetUserID())
+
+	if err := s.repoManager.InventoryRepository.Create(ctx, inventory); err != nil {
+		// Log error but don't fail the product creation
+		fmt.Printf("Warning: Failed to create inventory for product %s: %v\n", product.ID, err)
+		inventory = nil
+	}
+
+	// Create response with product, images, and inventory
+	productResp := responses.NewProductCreateResponse(product, images, inventory)
 	return base.NewSuccessResponse("Product created successfully", productResp), nil
 }
 
@@ -129,8 +145,17 @@ func (s *ProductService) GetProductByID(ctx context.Context, req *requests.GetPr
 		images = []*models.Image{}
 	}
 
-	// Create product response with images (inventory handled separately via inventory endpoints)
-	productResp := responses.NewProductResponse(product, images, nil)
+	// Get inventory data from inventory table
+	var inventory *models.Inventory
+	inventory, err = s.repoManager.InventoryRepository.GetByProductID(ctx, req.ID)
+	if err != nil {
+		// Log warning but don't fail - product can still be returned without inventory
+		fmt.Printf("Warning: Failed to get inventory for product %s: %v\n", req.ID, err)
+		inventory = nil
+	}
+
+	// Create product response with images and inventory
+	productResp := responses.NewProductResponse(product, images, inventory)
 	return base.NewSuccessResponse("Product retrieved successfully", productResp), nil
 }
 
@@ -191,7 +216,7 @@ func (s *ProductService) GetProducts(ctx context.Context, req *requests.ListProd
 		return nil, fmt.Errorf("failed to count products: %w", err)
 	}
 
-	// Convert products to list responses with images (inventory handled separately)
+	// Convert products to list responses with images and inventory
 	var productListResponses []responses.ProductListResponse
 	for _, product := range products {
 		// Get primary image
@@ -202,11 +227,16 @@ func (s *ProductService) GetProducts(ctx context.Context, req *requests.ListProd
 			primaryImage = nil
 		}
 
-		// For in-stock filter, we would need to check inventory separately
-		// This is now handled by the inventory service endpoints
-		// For now, we'll include all products and let the frontend handle stock filtering
+		// Get inventory data from inventory table
+		var inventory *models.Inventory
+		inventory, err = s.repoManager.InventoryRepository.GetByProductID(ctx, product.ID)
+		if err != nil {
+			// Log warning but don't fail - product can still be returned without inventory
+			fmt.Printf("Warning: Failed to get inventory for product %s: %v\n", product.ID, err)
+			inventory = nil
+		}
 
-		productListResp := responses.NewProductListResponse(product, primaryImage, nil)
+		productListResp := responses.NewProductListResponse(product, primaryImage, inventory)
 		productListResponses = append(productListResponses, productListResp)
 	}
 
@@ -292,9 +322,14 @@ func (s *ProductService) DeleteProduct(ctx context.Context, req *requests.Delete
 		return nil, fmt.Errorf("failed to delete product: %w", err)
 	}
 
-	// Also soft delete related images (inventory handled separately)
+	// Also soft delete related images
 	if err := s.repoManager.ImageRepository.DeleteImagesByProductID(ctx, req.ID); err != nil {
 		fmt.Printf("Warning: Failed to delete images for product %s: %v\n", req.ID, err)
+	}
+
+	// Also delete related inventory record
+	if err := s.repoManager.InventoryRepository.DeleteByProductID(ctx, req.ID); err != nil {
+		fmt.Printf("Warning: Failed to delete inventory for product %s: %v\n", req.ID, err)
 	}
 
 	// Create response

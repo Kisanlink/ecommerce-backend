@@ -1,4 +1,4 @@
-package routes
+package coupons
 
 import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
