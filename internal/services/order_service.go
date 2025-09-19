@@ -164,7 +164,7 @@ func (s *OrderService) CreateOrderFromCart(ctx context.Context, userID string, c
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// Calculate total amount including any discounts
+	// Calculate total amount including any discounts (no tax)
 	cartTotal := cart.GetTotalAmount()
 	if cart.DiscountAmount > 0 {
 		cartTotal -= cart.DiscountAmount
@@ -173,26 +173,22 @@ func (s *OrderService) CreateOrderFromCart(ctx context.Context, userID string, c
 		}
 	}
 
-	// Calculate tax (18% as per default configuration)
-	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
-	taxAmount := cartTotal * taxRate / 100
-
-	// Calculate final total including tax
-	totalAmount := cartTotal + taxAmount
+	// Calculate final total (no tax calculation)
+	totalAmount := cartTotal
 
 	// Create order (using legacy method for backward compatibility)
 	order := models.NewOrderLegacy(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
 
-	// Add coupon information and tax to notes if applied
+	// Set coupon information in dedicated fields
+	if cart.CouponCode != "" {
+		order.CouponCode = cart.CouponCode
+		order.DiscountAmount = cart.DiscountAmount
+	}
+
+	// Add coupon information to notes if applied
 	notes := ""
 	if cart.CouponCode != "" {
 		notes += fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
-	}
-	if taxAmount > 0 {
-		if notes != "" {
-			notes += ", "
-		}
-		notes += fmt.Sprintf("Tax (%.1f%%): %.2f", taxRate, taxAmount)
 	}
 	order.Notes = notes
 
@@ -254,7 +250,7 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// Calculate cart total amount including any discounts
+	// Calculate cart total amount including any discounts (no tax)
 	cartTotal := cart.GetTotalAmount()
 	if cart.DiscountAmount > 0 {
 		cartTotal -= cart.DiscountAmount
@@ -263,19 +259,13 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 		}
 	}
 
-	// Calculate tax (18% as per default configuration)
-	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
-	taxAmount := cartTotal * taxRate / 100
-
-	// Add shipping charges and tax to get final total
-	totalAmount := cartTotal + taxAmount + shippingCharges
+	// Add shipping charges to get final total (no tax)
+	totalAmount := cartTotal + shippingCharges
 
 	s.logger.Info("Calculated amounts",
 		zap.String("user_id", userID),
 		zap.Float64("cart_total", cartTotal),
 		zap.Float64("discount_amount", cart.DiscountAmount),
-		zap.Float64("tax_rate", taxRate),
-		zap.Float64("tax_amount", taxAmount),
 		zap.Float64("shipping_charges", shippingCharges),
 		zap.Float64("total_amount", totalAmount))
 
@@ -286,21 +276,15 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 	order.ShippingMode = "Surface"
 	order.ShippingCharge = shippingCharges
 
-	// Add coupon information, tax, and shipping to notes if applicable
-	notes := ""
+	// Set coupon information in dedicated fields
 	if cart.CouponCode != "" {
-		notes += fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
+		order.CouponCode = cart.CouponCode
+		order.DiscountAmount = cart.DiscountAmount
 	}
-	if taxAmount > 0 {
-		if notes != "" {
-			notes += ", "
-		}
-		notes += fmt.Sprintf("Tax (%.1f%%): %.2f", taxRate, taxAmount)
-	}
+
+	// Add shipping to notes
+	notes := ""
 	if shippingCharges > 0 {
-		if notes != "" {
-			notes += ", "
-		}
 		notes += fmt.Sprintf("Shipping: %.2f", shippingCharges)
 	}
 	order.Notes = notes
@@ -734,12 +718,8 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 		}
 	}
 
-	// Calculate tax (18% as per default configuration)
-	taxRate := 18.0 // 18% GST (9% CGST + 9% SGST)
-	taxAmount := cartTotal * taxRate / 100
-
-	// Add shipping charges and tax to get final total
-	totalAmount := cartTotal + taxAmount + shippingCharges
+	// Add shipping charges to get final total (no tax)
+	totalAmount := cartTotal + shippingCharges
 
 	// Create order customer record
 	if err := s.orderRepo.CreateOrderCustomer(ctx, customerData); err != nil {
@@ -759,21 +739,15 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 	order.ShippingMode = "Surface"
 	order.ShippingCharge = shippingCharges
 
-	// Add coupon information, tax, and shipping to notes if applicable
-	notes := ""
+	// Set coupon information in dedicated fields
 	if cart.CouponCode != "" {
-		notes += fmt.Sprintf("Coupon: %s, Discount: %.2f", cart.CouponCode, cart.DiscountAmount)
+		order.CouponCode = cart.CouponCode
+		order.DiscountAmount = cart.DiscountAmount
 	}
-	if taxAmount > 0 {
-		if notes != "" {
-			notes += ", "
-		}
-		notes += fmt.Sprintf("Tax (%.1f%%): %.2f", taxRate, taxAmount)
-	}
+
+	// Add shipping to notes
+	notes := ""
 	if shippingCharges > 0 {
-		if notes != "" {
-			notes += ", "
-		}
 		notes += fmt.Sprintf("Shipping: %.2f", shippingCharges)
 	}
 	order.Notes = notes
@@ -813,11 +787,54 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 	return order, nil
 }
 
-// GetOrderDetails retrieves an order with customer, address, and items data
+// GetOrderDetails retrieves an order with customer, address, and items data including product information
 func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error) {
-	order, err := s.orderRepo.GetOrderWithDetails(ctx, orderID)
+	// Get order with enhanced product information
+	order, enrichedItems, err := s.orderRepo.GetOrderWithItemsAndProducts(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order details: %w", err)
 	}
+
+	// Get customer data if customer_id exists
+	if order.CustomerID != "" {
+		customer, err := s.orderRepo.GetOrderCustomer(ctx, order.CustomerID)
+		if err != nil {
+			s.logger.Warn("Failed to get order customer", zap.String("order_id", orderID), zap.Error(err))
+		} else {
+			order.Customer = customer
+		}
+	}
+
+	// Get shipping address data if shipping_address_id exists
+	if order.ShippingAddressID != "" {
+		address, err := s.orderRepo.GetOrderAddress(ctx, order.ShippingAddressID)
+		if err != nil {
+			s.logger.Warn("Failed to get order address", zap.String("order_id", orderID), zap.Error(err))
+		} else {
+			order.ShippingAddress = address
+		}
+	}
+
+	// Convert enriched items back to regular order items for the response
+	var orderItems []models.OrderItem
+	for _, enrichedItem := range enrichedItems {
+		// Create a regular order item with minimal product information
+		orderItem := enrichedItem.OrderItem
+
+		// Create a minimal product object with only name and primary image
+		if enrichedItem.ProductName != "" || enrichedItem.ProductImageURL != "" {
+			product := &models.Product{
+				Name:     enrichedItem.ProductName,
+				ImageURL: enrichedItem.ProductImageURL, // Primary image only
+			}
+			orderItem.Product = product
+		}
+
+		orderItems = append(orderItems, orderItem)
+	}
+
+	// Set the enriched order items
+	order.OrderItems = orderItems
+
 	return order, nil
 }
