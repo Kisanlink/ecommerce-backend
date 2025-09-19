@@ -15,6 +15,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -335,15 +336,10 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	for _, item := range cart.Items {
 		cartTotal += item.TotalPrice
 	}
+	cartTotal = utils.RoundToTwoDecimals(cartTotal)
 
 	// Apply discount if coupon was applied
-	discountedCartTotal := cartTotal
-	if cart.DiscountAmount > 0 {
-		discountedCartTotal = cartTotal - cart.DiscountAmount
-		if discountedCartTotal < 0 {
-			discountedCartTotal = 0
-		}
-	}
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
 
 	h.logger.Info("Cart total calculated",
 		zap.String("request_id", requestID),
@@ -381,7 +377,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 				zap.Int("item_count", len(cart.Items)))
 
 			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
-			finalAmount = discountedCartTotal + shippingCharges
+			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
 		}
 
 		h.logger.Info("Shipping charges calculated",

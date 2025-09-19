@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -371,7 +372,9 @@ func (r *CartRepositoryImpl) AddItemToCart(ctx context.Context, userID, productI
 	if existingItem != nil {
 		// Update existing item
 		existingItem.Quantity += quantity
-		existingItem.TotalPrice = existingItem.UnitPrice * float64(existingItem.Quantity)
+		existingItem.TotalPrice = float64(existingItem.Quantity) * existingItem.UnitPrice
+		// Round to 2 decimal places to avoid floating-point precision issues
+		existingItem.TotalPrice = math.Round(existingItem.TotalPrice*100) / 100
 
 		if err := r.dbManager.Update(ctx, existingItem); err != nil {
 			return nil, fmt.Errorf("failed to update existing cart item: %w", err)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"go.uber.org/zap"
@@ -166,15 +167,10 @@ func (s *OrderService) CreateOrderFromCart(ctx context.Context, userID string, c
 
 	// Calculate total amount including any discounts (no tax)
 	cartTotal := cart.GetTotalAmount()
-	if cart.DiscountAmount > 0 {
-		cartTotal -= cart.DiscountAmount
-		if cartTotal < 0 {
-			cartTotal = 0
-		}
-	}
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
 
 	// Calculate final total (no tax calculation)
-	totalAmount := cartTotal
+	totalAmount := discountedCartTotal
 
 	// Create order (using legacy method for backward compatibility)
 	order := models.NewOrderLegacy(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
@@ -252,19 +248,15 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 
 	// Calculate cart total amount including any discounts (no tax)
 	cartTotal := cart.GetTotalAmount()
-	if cart.DiscountAmount > 0 {
-		cartTotal -= cart.DiscountAmount
-		if cartTotal < 0 {
-			cartTotal = 0
-		}
-	}
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
 
 	// Add shipping charges to get final total (no tax)
-	totalAmount := cartTotal + shippingCharges
+	totalAmount := utils.AddShippingCharges(discountedCartTotal, shippingCharges)
 
 	s.logger.Info("Calculated amounts",
 		zap.String("user_id", userID),
 		zap.Float64("cart_total", cartTotal),
+		zap.Float64("discounted_cart_total", discountedCartTotal),
 		zap.Float64("discount_amount", cart.DiscountAmount),
 		zap.Float64("shipping_charges", shippingCharges),
 		zap.Float64("total_amount", totalAmount))
@@ -614,7 +606,9 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 	}
 
 	// Calculate total amount from cart items + shipping - discount (no tax)
-	totalAmount := cart.TotalPrice + shippingCharges - cart.DiscountAmount
+	cartTotal := cart.GetTotalAmount()
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
+	totalAmount := utils.AddShippingCharges(discountedCartTotal, shippingCharges)
 
 	// Create order
 	order := models.NewOrderLegacy(userID, totalAmount, shippingAddress, paymentMethod, models.OrderStatusPending, "pending")
@@ -711,15 +705,10 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 
 	// Calculate cart total amount including any discounts
 	cartTotal := cart.GetTotalAmount()
-	if cart.DiscountAmount > 0 {
-		cartTotal -= cart.DiscountAmount
-		if cartTotal < 0 {
-			cartTotal = 0
-		}
-	}
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
 
 	// Add shipping charges to get final total (no tax)
-	totalAmount := cartTotal + shippingCharges
+	totalAmount := utils.AddShippingCharges(discountedCartTotal, shippingCharges)
 
 	// Create order customer record
 	if err := s.orderRepo.CreateOrderCustomer(ctx, customerData); err != nil {

@@ -1,11 +1,27 @@
 package models
 
 import (
+	"math"
 	"time"
 
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 )
+
+// Currency utility functions to avoid floating-point precision issues
+
+// roundToTwoDecimals rounds a float64 to 2 decimal places
+func roundToTwoDecimals(amount float64) float64 {
+	return math.Round(amount*100) / 100
+}
+
+// calculateCartItemTotal calculates the total price for a cart item
+// with proper rounding to avoid floating-point precision issues
+func calculateCartItemTotal(quantity int, unitPrice float64) float64 {
+	// Round unit price to 2 decimal places first
+	roundedUnitPrice := roundToTwoDecimals(unitPrice)
+	return roundToTwoDecimals(float64(quantity) * roundedUnitPrice)
+}
 
 // Cart represents a shopping cart
 type Cart struct {
@@ -134,7 +150,7 @@ func NewCartItem(cartID, productID string, quantity int, unitPrice float64) *Car
 		ProductID:  productID,
 		Quantity:   quantity,
 		UnitPrice:  unitPrice,
-		TotalPrice: float64(quantity) * unitPrice,
+		TotalPrice: calculateCartItemTotal(quantity, unitPrice),
 	}
 }
 
@@ -165,7 +181,7 @@ func NewCartItemCache(productID string, quantity int, unitPrice float64) *CartIt
 		ProductID:  productID,
 		Quantity:   quantity,
 		UnitPrice:  unitPrice,
-		TotalPrice: float64(quantity) * unitPrice,
+		TotalPrice: calculateCartItemTotal(quantity, unitPrice),
 	}
 }
 
@@ -181,7 +197,7 @@ func (c *Cart) AddItem(item CartItem) {
 	for i, existingItem := range c.Items {
 		if existingItem.ProductID == item.ProductID {
 			c.Items[i].Quantity += item.Quantity
-			c.Items[i].TotalPrice = float64(c.Items[i].Quantity) * c.Items[i].UnitPrice
+			c.Items[i].TotalPrice = calculateCartItemTotal(c.Items[i].Quantity, c.Items[i].UnitPrice)
 			c.recalculateTotal()
 			return
 		}
@@ -206,7 +222,7 @@ func (c *Cart) UpdateItem(productID string, quantity int) bool {
 			} else {
 				// Update quantity
 				c.Items[i].Quantity = quantity
-				c.Items[i].TotalPrice = float64(quantity) * c.Items[i].UnitPrice
+				c.Items[i].TotalPrice = calculateCartItemTotal(quantity, c.Items[i].UnitPrice)
 			}
 			c.recalculateTotal()
 			return true
@@ -282,7 +298,7 @@ func (c *Cart) recalculateTotal() {
 	}
 
 	c.TotalItems = totalItems
-	c.TotalPrice = totalPrice
+	c.TotalPrice = roundToTwoDecimals(totalPrice)
 }
 
 // GetTotalAmount returns the total amount for the cart
@@ -306,7 +322,7 @@ func (cc *CartCache) AddItem(item CartItemCache) {
 		if existingItem.ProductID == item.ProductID {
 			// Update existing item
 			cc.Items[i].Quantity += item.Quantity
-			cc.Items[i].TotalPrice = float64(cc.Items[i].Quantity) * cc.Items[i].UnitPrice
+			cc.Items[i].TotalPrice = calculateCartItemTotal(cc.Items[i].Quantity, cc.Items[i].UnitPrice)
 			cc.recalculateTotal()
 			cc.UpdatedAt = time.Now()
 			return
@@ -333,7 +349,7 @@ func (cc *CartCache) UpdateItem(productID string, quantity int) bool {
 			} else {
 				// Update quantity
 				cc.Items[i].Quantity = quantity
-				cc.Items[i].TotalPrice = float64(quantity) * cc.Items[i].UnitPrice
+				cc.Items[i].TotalPrice = calculateCartItemTotal(quantity, cc.Items[i].UnitPrice)
 			}
 			cc.recalculateTotal()
 			cc.UpdatedAt = time.Now()
@@ -415,7 +431,7 @@ func (cc *CartCache) recalculateTotal() {
 	}
 
 	cc.TotalItems = totalItems
-	cc.TotalPrice = totalPrice
+	cc.TotalPrice = roundToTwoDecimals(totalPrice)
 }
 
 // ToSummary converts cart cache to summary
