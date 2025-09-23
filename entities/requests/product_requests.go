@@ -16,6 +16,11 @@ type CreateProductRequest struct {
 	Stock           int      `json:"stock" validate:"min=0"`
 	ReviewCount     int      `json:"review_count" validate:"min=0"`
 	Rating          float64  `json:"rating" validate:"min=0,max=5"`
+
+	// Optional inventory configuration fields
+	MinStockLevel *int `json:"min_stock_level,omitempty" validate:"omitempty,min=0"`
+	MaxStockLevel *int `json:"max_stock_level,omitempty" validate:"omitempty,min=0"`
+	ReorderPoint  *int `json:"reorder_point,omitempty" validate:"omitempty,min=0"`
 }
 
 // UpdateProductRequest represents request for updating a product
@@ -89,4 +94,23 @@ func (r *UpdateProductRequest) GetEffectiveImages() []string {
 	}
 
 	return []string{}
+}
+
+// GetInventoryDefaults returns the inventory configuration with defaults applied
+func (r *CreateProductRequest) GetInventoryDefaults(defaultMinStock, defaultMaxStock, defaultReorderPoint int) (int, int, int) {
+	minStock := defaultMinStock
+	maxStock := defaultMaxStock
+	reorderPoint := defaultReorderPoint
+
+	if r.MinStockLevel != nil {
+		minStock = *r.MinStockLevel
+	}
+	if r.MaxStockLevel != nil {
+		maxStock = *r.MaxStockLevel
+	}
+	if r.ReorderPoint != nil {
+		reorderPoint = *r.ReorderPoint
+	}
+
+	return minStock, maxStock, reorderPoint
 }

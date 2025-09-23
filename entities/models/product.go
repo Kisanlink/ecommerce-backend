@@ -51,6 +51,27 @@ func NewProduct(name, description, category string, price, actualPrice float64, 
 	}
 }
 
+// NewProductWithLegacyFields creates a new product with legacy imageURL and stock fields for backward compatibility
+// DEPRECATED: Use NewProduct() and handle images/inventory separately
+func NewProductWithLegacyFields(name, description, category string, price, actualPrice float64, reviewCount, discountPercent int, rating float64, imageURL string, stock int) *Product {
+	product := NewProduct(name, description, category, price, actualPrice, reviewCount, discountPercent, rating)
+
+	// Set legacy fields for backward compatibility
+	product.ImageURL = imageURL
+	product.Stock = stock
+
+	// Set stock status based on stock level
+	if stock <= 0 {
+		product.StockStatus = "Out of Stock"
+	} else if stock <= 10 { // Default low stock threshold
+		product.StockStatus = "Low Stock"
+	} else {
+		product.StockStatus = "In Stock"
+	}
+
+	return product
+}
+
 // TableName returns the table name for GORM
 func (p *Product) TableName() string {
 	return "products"

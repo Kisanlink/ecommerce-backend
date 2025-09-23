@@ -164,15 +164,22 @@ func (r *InventoryRepository) GetOutOfStockItems(ctx context.Context) ([]*models
 
 // GetItemsNeedingReorder retrieves items that need to be reordered
 func (r *InventoryRepository) GetItemsNeedingReorder(ctx context.Context) ([]*models.Inventory, error) {
-	filter := &base.Filter{
-		Group: base.FilterGroup{
-			Conditions: []base.FilterCondition{
-				{Field: "current_stock", Operator: base.OpLessEqual, Value: "reorder_point"},
-			},
-			Logic: base.LogicAnd,
-		},
+	var inventories []*models.Inventory
+
+	// Get database connection from manager
+	db, err := r.dbManager.(*db.PostgresManager).GetDB(ctx, true) // Use read-only connection
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
 	}
-	return r.Find(ctx, filter)
+
+	// Use raw SQL to compare current_stock with reorder_point field
+	query := "SELECT * FROM inventory WHERE current_stock <= reorder_point"
+
+	if err := db.WithContext(ctx).Raw(query).Scan(&inventories).Error; err != nil {
+		return nil, fmt.Errorf("failed to get items needing reorder: %w", err)
+	}
+
+	return inventories, nil
 }
 
 // UpdateStock updates the stock for a product

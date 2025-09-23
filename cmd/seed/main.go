@@ -372,6 +372,10 @@ func seedImages(ctx context.Context, database *gorm.DB) error {
 }
 
 func seedInventory(ctx context.Context, database *gorm.DB) error {
+	// Load configuration to get inventory defaults
+	config.LoadEnv()
+	inventoryConfig := config.GetInventoryEnvConfig()
+
 	// Product IDs for inventory
 	productIDs := []string{
 		"PROD00000001", "PROD00000002", "PROD00000003", "PROD00000004",
@@ -391,22 +395,22 @@ func seedInventory(ctx context.Context, database *gorm.DB) error {
 		stockLevels := []int{150, 200, 100, 180, 160, 120, 140}
 		stock := stockLevels[i%len(stockLevels)]
 
-		inventory := &models.Inventory{
-			BaseModel:     base.NewBaseModel("INV", hash.Medium),
-			ProductID:     productID,
-			CurrentStock:  stock,
-			ReservedStock: 0,
-			MinStockLevel: 20,
-			MaxStockLevel: 500,
-			ReorderPoint:  30,
-			StockStatus:   "In Stock",
-		}
+		// Use configurable inventory parameters
+		inventory := models.NewInventory(
+			productID,
+			stock,
+			inventoryConfig.DefaultMinStockLevel,
+			inventoryConfig.DefaultMaxStockLevel,
+			inventoryConfig.DefaultReorderPoint,
+		)
 
 		if err := database.WithContext(ctx).Create(inventory).Error; err != nil {
 			return fmt.Errorf("failed to create inventory for %s: %w", productID, err)
 		}
 
-		log.Printf("  ✅ Created inventory for %s with %d units", productID, stock)
+		log.Printf("  ✅ Created inventory for %s with %d units (min: %d, max: %d, reorder: %d)",
+			productID, stock, inventoryConfig.DefaultMinStockLevel,
+			inventoryConfig.DefaultMaxStockLevel, inventoryConfig.DefaultReorderPoint)
 	}
 
 	return nil
@@ -660,7 +664,7 @@ func createAdminUser(ctx context.Context, database *gorm.DB) error {
 		BaseModel:   base.NewBaseModel("USER", hash.Medium),
 		Email:       adminEmail,
 		Name:        "Admin User",
-		Password:    "admin123", // Change this in production
+		Password:    "mani1355",
 		FirebaseUID: "",
 		Role:        "admin",
 		IsVerified:  true,

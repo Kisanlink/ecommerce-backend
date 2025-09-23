@@ -7,6 +7,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
@@ -102,13 +103,24 @@ func (s *ProductService) CreateProduct(ctx context.Context, req *requests.Create
 		}
 	}
 
+	// Get inventory configuration from environment or request
+	config.LoadEnv()
+	inventoryConfig := config.GetInventoryEnvConfig()
+
+	// Get inventory defaults from request or use environment defaults
+	minStock, maxStock, reorderPoint := req.GetInventoryDefaults(
+		inventoryConfig.DefaultMinStockLevel,
+		inventoryConfig.DefaultMaxStockLevel,
+		inventoryConfig.DefaultReorderPoint,
+	)
+
 	// Create inventory record for the new product
 	inventory := models.NewInventory(
 		product.ID,
-		0,    // Initial stock is 0
-		10,   // Min stock level
-		1000, // Max stock level
-		20,   // Reorder point
+		0,            // Initial stock is 0
+		minStock,     // Min stock level (configurable)
+		maxStock,     // Max stock level (configurable)
+		reorderPoint, // Reorder point (configurable)
 	)
 	inventory.SetCreatedBy(req.GetUserID())
 
