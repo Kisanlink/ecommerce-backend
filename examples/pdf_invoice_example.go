@@ -9,7 +9,7 @@ import (
 )
 
 // Example of how to use the PDF invoice system
-func main() {
+func pdfInvoiceExample() {
 	// Example invoice data
 	invoiceData := &services.InvoiceData{
 		OrderID:         "ORDR0000000001",
@@ -100,4 +100,9 @@ func main() {
 	fmt.Println("- default_invoice.pdf")
 	fmt.Println("- custom_invoice.pdf")
 	fmt.Println("- usd_invoice.pdf")
+}
+
+func main() {
+	fmt.Println("=== PDF Invoice Example ===")
+	pdfInvoiceExample()
 }

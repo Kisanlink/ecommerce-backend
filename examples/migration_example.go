@@ -8,7 +8,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/database"
 )
 
-func main() {
+func migrationExample() {
 	// Example 1: Basic connection and migration
 	fmt.Println("=== Example 1: Basic Migration ===")
 
@@ -71,4 +71,9 @@ func main() {
 
 	fmt.Println("\n=== Migration Examples Completed ===")
 	fmt.Println("💡 Check the README.md for more detailed usage instructions")
+}
+
+func main() {
+	fmt.Println("=== Migration Example ===")
+	migrationExample()
 }

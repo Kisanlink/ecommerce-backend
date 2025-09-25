@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
 )
 
 // CreateOrderResponse represents the response when creating a new order
@@ -34,9 +35,63 @@ type PaginationInfo struct {
 	HasMore bool `json:"has_more"`
 }
 
+// MinimalProductInfo represents minimal product information for order items
+type MinimalProductInfo struct {
+	Name     string `json:"name"`
+	ImageURL string `json:"image_url"`
+}
+
+// OrderItemWithMinimalProduct represents an order item with minimal product information
+type OrderItemWithMinimalProduct struct {
+	*base.BaseModel `json:",inline"`
+	OrderID         string              `json:"order_id"`
+	ProductID       string              `json:"product_id"`
+	Quantity        int                 `json:"quantity"`
+	UnitPrice       float64             `json:"unit_price"`
+	TotalPrice      float64             `json:"total_price"`
+	Product         *MinimalProductInfo `json:"product,omitempty"`
+}
+
+// OrderWithMinimalProductInfo represents an order with minimal product information in items
+type OrderWithMinimalProductInfo struct {
+	*base.BaseModel     `json:",inline"`
+	UserID              string                        `json:"user_id"`
+	TotalAmount         float64                       `json:"total_amount"`
+	Status              string                        `json:"status"`
+	CustomerID          string                        `json:"customer_id"`
+	ShippingAddressID   string                        `json:"shipping_address_id"`
+	ShippingAddr        string                        `json:"shipping_address"`
+	ShippingAddrID      string                        `json:"shipping_address_id_legacy"`
+	CustomerFirstName   string                        `json:"customer_first_name"`
+	CustomerLastName    string                        `json:"customer_last_name"`
+	CustomerPhone       string                        `json:"customer_phone"`
+	CustomerPhoneAlt    string                        `json:"customer_phone_alt"`
+	PaymentMethod       string                        `json:"payment_method"`
+	PaymentStatus       string                        `json:"payment_status"`
+	Notes               string                        `json:"notes"`
+	RazorpayOrderID     string                        `json:"razorpay_order_id"`
+	RazorpayReceipt     string                        `json:"razorpay_receipt"`
+	RazorpayAmountPaisa int                           `json:"razorpay_amount_paisa"`
+	RazorpayNotesJSON   string                        `json:"razorpay_notes_json"`
+	ShippingCarrier     string                        `json:"shipping_carrier"`
+	ShippingMode        string                        `json:"shipping_mode"`
+	ShippingCharge      float64                       `json:"shipping_charge"`
+	EtaMinDays          int                           `json:"eta_min_days"`
+	EtaMaxDays          int                           `json:"eta_max_days"`
+	DelhiveryWaybill    string                        `json:"delhivery_waybill"`
+	DelhiveryStatus     string                        `json:"delhivery_status"`
+	TrackingURL         string                        `json:"tracking_url"`
+	InvoiceURL          string                        `json:"invoice_url"`
+	CouponCode          string                        `json:"coupon_code"`
+	DiscountAmount      float64                       `json:"discount_amount"`
+	Customer            *models.OrderCustomer         `json:"customer,omitempty"`
+	ShippingAddress     *models.OrderAddress          `json:"shipping_address_normalized,omitempty"`
+	OrderItems          []OrderItemWithMinimalProduct `json:"order_items,omitempty"`
+}
+
 // GetOrderDetailsResponse represents the response when retrieving order details
 type GetOrderDetailsResponse struct {
-	Order models.Order `json:"order"`
+	Order OrderWithMinimalProductInfo `json:"order"`
 }
 
 // GetOrderStatusResponse represents the response when retrieving order status
@@ -119,10 +174,70 @@ func NewGetUserOrdersResponse(orders []models.Order, page, limit int) *GetUserOr
 	}
 }
 
-// NewGetOrderDetailsResponse creates a new GetOrderDetailsResponse
+// NewGetOrderDetailsResponse creates a new GetOrderDetailsResponse with minimal product information
 func NewGetOrderDetailsResponse(order *models.Order) *GetOrderDetailsResponse {
+	// Convert order items to minimal product format
+	var minimalOrderItems []OrderItemWithMinimalProduct
+	for _, item := range order.OrderItems {
+		minimalItem := OrderItemWithMinimalProduct{
+			BaseModel:  item.BaseModel,
+			OrderID:    item.OrderID,
+			ProductID:  item.ProductID,
+			Quantity:   item.Quantity,
+			UnitPrice:  item.UnitPrice,
+			TotalPrice: item.TotalPrice,
+		}
+
+		// Add minimal product information if available
+		if item.Product != nil {
+			minimalItem.Product = &MinimalProductInfo{
+				Name:     item.Product.Name,
+				ImageURL: item.Product.ImageURL,
+			}
+		}
+
+		minimalOrderItems = append(minimalOrderItems, minimalItem)
+	}
+
+	// Create order with minimal product information
+	minimalOrder := OrderWithMinimalProductInfo{
+		BaseModel:           order.BaseModel,
+		UserID:              order.UserID,
+		TotalAmount:         order.TotalAmount,
+		Status:              string(order.Status),
+		CustomerID:          order.CustomerID,
+		ShippingAddressID:   order.ShippingAddressID,
+		ShippingAddr:        order.ShippingAddr,
+		ShippingAddrID:      order.ShippingAddrID,
+		CustomerFirstName:   order.CustomerFirstName,
+		CustomerLastName:    order.CustomerLastName,
+		CustomerPhone:       order.CustomerPhone,
+		CustomerPhoneAlt:    order.CustomerPhoneAlt,
+		PaymentMethod:       order.PaymentMethod,
+		PaymentStatus:       order.PaymentStatus,
+		Notes:               order.Notes,
+		RazorpayOrderID:     order.RazorpayOrderID,
+		RazorpayReceipt:     order.RazorpayReceipt,
+		RazorpayAmountPaisa: order.RazorpayAmountPaisa,
+		RazorpayNotesJSON:   order.RazorpayNotesJSON,
+		ShippingCarrier:     order.ShippingCarrier,
+		ShippingMode:        order.ShippingMode,
+		ShippingCharge:      order.ShippingCharge,
+		EtaMinDays:          order.EtaMinDays,
+		EtaMaxDays:          order.EtaMaxDays,
+		DelhiveryWaybill:    order.DelhiveryWaybill,
+		DelhiveryStatus:     order.DelhiveryStatus,
+		TrackingURL:         order.TrackingURL,
+		InvoiceURL:          order.InvoiceURL,
+		CouponCode:          order.CouponCode,
+		DiscountAmount:      order.DiscountAmount,
+		Customer:            order.Customer,
+		ShippingAddress:     order.ShippingAddress,
+		OrderItems:          minimalOrderItems,
+	}
+
 	return &GetOrderDetailsResponse{
-		Order: *order,
+		Order: minimalOrder,
 	}
 }
 

@@ -196,6 +196,14 @@ func (h *CouponHandler) GetActiveCoupons(c *gin.Context) {
 // @Router /api/v1/coupons [put]
 // @Security BearerAuth
 func (h *CouponHandler) UpdateCoupon(c *gin.Context) {
+	couponId := c.Param("id")
+	if couponId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Coupon ID is required",
+		})
+		return
+	}
+
 	var req requests.UpdateCouponRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Error("Invalid update coupon request",
@@ -206,6 +214,9 @@ func (h *CouponHandler) UpdateCoupon(c *gin.Context) {
 		})
 		return
 	}
+
+	// Set the coupon ID from URL parameter
+	req.ID = couponId
 
 	response, err := h.couponService.UpdateCoupon(c.Request.Context(), &req)
 	if err != nil {
@@ -374,6 +385,159 @@ func (h *CouponHandler) GetCouponUsageStats(c *gin.Context) {
 			zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to retrieve usage statistics",
+		})
+		return
+	}
+
+	statusCode := http.StatusOK
+	if !response.Success {
+		statusCode = http.StatusNotFound
+	}
+
+	c.JSON(statusCode, response)
+}
+
+// CreateCouponRule creates a new coupon rule
+// @Summary Create a new coupon rule
+// @Description Create a new rule for an existing coupon
+// @Tags coupons
+// @Accept json
+// @Produce json
+// @Param request body requests.CreateCouponRuleRequest true "Coupon rule creation request"
+// @Success 201 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/coupons/rules [post]
+// @Security BearerAuth
+func (h *CouponHandler) CreateCouponRule(c *gin.Context) {
+	couponId := c.Param("couponId")
+	if couponId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Coupon ID is required",
+		})
+		return
+	}
+
+	var req requests.CreateCouponRuleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid create coupon rule request",
+			zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Set the coupon ID from URL parameter
+	req.CouponID = couponId
+
+	response, err := h.couponService.CreateCouponRule(c.Request.Context(), &req)
+	if err != nil {
+		h.logger.Error("Failed to create coupon rule",
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to create coupon rule",
+		})
+		return
+	}
+
+	statusCode := http.StatusOK
+	if response.Success {
+		statusCode = http.StatusCreated
+	}
+
+	c.JSON(statusCode, response)
+}
+
+// UpdateCouponRule updates an existing coupon rule
+// @Summary Update coupon rule
+// @Description Update an existing coupon rule
+// @Tags coupons
+// @Accept json
+// @Produce json
+// @Param request body requests.UpdateCouponRuleRequest true "Coupon rule update request"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/coupons/rules [put]
+// @Security BearerAuth
+func (h *CouponHandler) UpdateCouponRule(c *gin.Context) {
+	couponId := c.Param("couponId")
+	ruleId := c.Param("ruleId")
+
+	if couponId == "" || ruleId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Coupon ID and Rule ID are required",
+		})
+		return
+	}
+
+	var req requests.UpdateCouponRuleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid update coupon rule request",
+			zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Set the rule ID from URL parameter
+	req.ID = ruleId
+
+	response, err := h.couponService.UpdateCouponRule(c.Request.Context(), &req)
+	if err != nil {
+		h.logger.Error("Failed to update coupon rule",
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to update coupon rule",
+		})
+		return
+	}
+
+	statusCode := http.StatusOK
+	if !response.Success {
+		statusCode = http.StatusNotFound
+	}
+
+	c.JSON(statusCode, response)
+}
+
+// DeleteCouponRule deletes a coupon rule
+// @Summary Delete coupon rule
+// @Description Delete an existing coupon rule
+// @Tags coupons
+// @Accept json
+// @Produce json
+// @Param id path string true "Coupon rule ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /api/v1/coupons/rules/{id} [delete]
+// @Security BearerAuth
+func (h *CouponHandler) DeleteCouponRule(c *gin.Context) {
+	couponId := c.Param("couponId")
+	ruleId := c.Param("ruleId")
+
+	if couponId == "" || ruleId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Coupon ID and Rule ID are required",
+		})
+		return
+	}
+
+	response, err := h.couponService.DeleteCouponRule(c.Request.Context(), ruleId)
+	if err != nil {
+		h.logger.Error("Failed to delete coupon rule",
+			zap.String("couponId", couponId),
+			zap.String("ruleId", ruleId),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to delete coupon rule",
 		})
 		return
 	}

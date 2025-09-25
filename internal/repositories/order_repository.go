@@ -312,7 +312,16 @@ func (r *OrderRepository) GetOrderWithItemsAndProducts(ctx context.Context, orde
 		// Get product details from the map
 		if product, exists := productMap[item.ProductID]; exists {
 			enrichedItem.ProductName = product.Name
-			enrichedItem.ProductImageURL = product.ImageURL
+
+			// Get primary image for the product
+			// Note: This is a simplified approach. In a production system, you might want to
+			// batch fetch all images at once for better performance
+			primaryImage, err := r.getPrimaryImageForProduct(ctx, item.ProductID)
+			if err == nil && primaryImage != nil {
+				enrichedItem.ProductImageURL = primaryImage.ImageURL
+			} else {
+				enrichedItem.ProductImageURL = ""
+			}
 		} else {
 			// If product not found, set default values
 			enrichedItem.ProductName = "Product Not Found"
@@ -323,6 +332,34 @@ func (r *OrderRepository) GetOrderWithItemsAndProducts(ctx context.Context, orde
 	}
 
 	return &order, enrichedItems, nil
+}
+
+// getPrimaryImageForProduct is a helper method to get the primary image for a product
+func (r *OrderRepository) getPrimaryImageForProduct(ctx context.Context, productID string) (*models.Image, error) {
+	// This is a simplified implementation. In a production system, you might want to
+	// use the image repository directly or batch fetch images for better performance
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "product_id", Operator: base.OpEqual, Value: productID},
+				{Field: "is_primary", Operator: base.OpEqual, Value: true},
+				{Field: "is_active", Operator: base.OpEqual, Value: true},
+			},
+			Logic: base.LogicAnd,
+		},
+		Limit: 1,
+	}
+
+	var images []models.Image
+	if err := r.dbManager.List(ctx, filter, &images); err != nil {
+		return nil, err
+	}
+
+	if len(images) == 0 {
+		return nil, fmt.Errorf("no primary image found for product %s", productID)
+	}
+
+	return &images[0], nil
 }
 
 // GetOrdersByUserID retrieves all orders for a specific user

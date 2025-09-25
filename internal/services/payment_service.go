@@ -12,9 +12,8 @@ import (
 	"net/http"
 	"time"
 
-	"math"
-
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"go.uber.org/zap"
 )
 
@@ -119,7 +118,7 @@ func (s *PaymentService) CreateOrder(ctx context.Context, userID string, amount 
 		currency = "INR"
 	}
 	// Convert amount to paisa (Razorpay uses smallest currency unit)
-	amountPaisa := int(math.Round(amount * 100))
+	amountPaisa := utils.RupeesToPaisa(amount)
 
 	// Generate compact receipt (<= 40 chars) per Razorpay limits
 	receipt := s.makeCompactReceipt(cartID)
@@ -383,12 +382,12 @@ func (s *PaymentService) generateSignature(message, secret string) string {
 
 // Helper function to convert paisa to rupees
 func PaisaToRupees(paisa int) float64 {
-	return float64(paisa) / 100.0
+	return utils.PaisaToRupees(paisa)
 }
 
 // Helper function to convert rupees to paisa
 func RupeesToPaisa(rupees float64) int {
-	return int(rupees * 100)
+	return utils.RupeesToPaisa(rupees)
 }
 
 // makeCompactReceipt generates a short, URL-safe receipt string within Razorpay's 40-char limit

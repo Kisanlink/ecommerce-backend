@@ -6,6 +6,8 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
@@ -57,40 +59,80 @@ func (s *ProductService) initializeIDGenerator() {
 
 // CreateProduct creates a new product
 func (s *ProductService) CreateProduct(ctx context.Context, req *requests.CreateProductRequest) (*base.BaseResponse, error) {
-	// Get effective images from request
-	imageUrls := req.GetEffectiveImages()
-	primaryImage := ""
-	if len(imageUrls) > 0 {
-		primaryImage = imageUrls[0]
-	}
-
-	// Create product model
+	// Create product model (without images and stock)
 	product := models.NewProduct(
 		req.Name,
 		req.Description,
 		req.Category,
-		primaryImage, // Use first image as primary
 		req.Price,
 		req.ActualPrice,
-		req.Stock,
 		req.ReviewCount,
 		req.DiscountPercent,
 		req.Rating,
 	)
 
-	// Set all images using the new method
-	product.SetImages(imageUrls)
-
 	// Set created by from request context
 	product.SetCreatedBy(req.GetUserID())
 
-	// Save to database using repository
+	// Save product to database
 	if err := s.repoManager.ProductRepository.Create(ctx, product); err != nil {
 		return base.NewErrorResponse("Failed to create product",
 			base.NewInternalServerError("Database error", err.Error())), nil
 	}
 
-	return base.NewSuccessResponse("Product created successfully", product), nil
+	// Create images if provided
+	var images []*models.Image
+	imageUrls := req.GetEffectiveImages()
+	for i, imageURL := range imageUrls {
+		image := models.NewImage(product.ID, imageURL, models.ImageTypeProduct)
+		image.SetCreatedBy(req.GetUserID())
+
+		// Set first image as primary
+		if i == 0 {
+			image.SetAsPrimary()
+		}
+
+		// Set sort order
+		image.SetSortOrder(i)
+
+		if err := s.repoManager.ImageRepository.Create(ctx, image); err != nil {
+			// Log error but don't fail the product creation
+			fmt.Printf("Warning: Failed to create image %d for product %s: %v\n", i, product.ID, err)
+		} else {
+			images = append(images, image)
+		}
+	}
+
+	// Get inventory configuration from environment or request
+	config.LoadEnv()
+	inventoryConfig := config.GetInventoryEnvConfig()
+
+	// Get inventory defaults from request or use environment defaults
+	minStock, maxStock, reorderPoint := req.GetInventoryDefaults(
+		inventoryConfig.DefaultMinStockLevel,
+		inventoryConfig.DefaultMaxStockLevel,
+		inventoryConfig.DefaultReorderPoint,
+	)
+
+	// Create inventory record for the new product
+	inventory := models.NewInventory(
+		product.ID,
+		0,            // Initial stock is 0
+		minStock,     // Min stock level (configurable)
+		maxStock,     // Max stock level (configurable)
+		reorderPoint, // Reorder point (configurable)
+	)
+	inventory.SetCreatedBy(req.GetUserID())
+
+	if err := s.repoManager.InventoryRepository.Create(ctx, inventory); err != nil {
+		// Log error but don't fail the product creation
+		fmt.Printf("Warning: Failed to create inventory for product %s: %v\n", product.ID, err)
+		inventory = nil
+	}
+
+	// Create response with product, images, and inventory
+	productResp := responses.NewProductCreateResponse(product, images, inventory)
+	return base.NewSuccessResponse("Product created successfully", productResp), nil
 }
 
 // GetProductByID retrieves a product by ID
@@ -107,22 +149,26 @@ func (s *ProductService) GetProductByID(ctx context.Context, req *requests.GetPr
 			base.NewNotFoundError("Product", req.ID)), nil
 	}
 
-	// Get additional images from the images table
+	// Get images from the images table
 	images, err := s.repoManager.ImageRepository.GetActiveImagesByProductID(ctx, req.ID)
 	if err != nil {
-		// Log error but don't fail the request - product can still be returned without additional images
-		// You might want to add logging here
+		// Log error but don't fail the request - product can still be returned without images
+		fmt.Printf("Warning: Failed to get images for product %s: %v\n", req.ID, err)
 		images = []*models.Image{}
 	}
 
-	// Create enhanced product response with images
-	productWithImages := map[string]interface{}{
-		"product":     product,
-		"images":      images,
-		"image_count": len(images),
+	// Get inventory data from inventory table
+	var inventory *models.Inventory
+	inventory, err = s.repoManager.InventoryRepository.GetByProductID(ctx, req.ID)
+	if err != nil {
+		// Log warning but don't fail - product can still be returned without inventory
+		fmt.Printf("Warning: Failed to get inventory for product %s: %v\n", req.ID, err)
+		inventory = nil
 	}
 
-	return base.NewSuccessResponse("Product retrieved successfully", productWithImages), nil
+	// Create product response with images and inventory
+	productResp := responses.NewProductResponse(product, images, inventory)
+	return base.NewSuccessResponse("Product retrieved successfully", productResp), nil
 }
 
 // GetProducts retrieves products with filtering and pagination
@@ -168,10 +214,6 @@ func (s *ProductService) GetProducts(ctx context.Context, req *requests.ListProd
 		filterBuilder.Or(nameCondition, descCondition, categoryCondition)
 	}
 
-	if req.InStock != nil && *req.InStock {
-		filterBuilder.Where("stock", base.OpGreaterThan, 0)
-	}
-
 	filter := filterBuilder.Build()
 
 	// Execute query
@@ -186,8 +228,33 @@ func (s *ProductService) GetProducts(ctx context.Context, req *requests.ListProd
 		return nil, fmt.Errorf("failed to count products: %w", err)
 	}
 
+	// Convert products to list responses with images and inventory
+	var productListResponses []responses.ProductListResponse
+	for _, product := range products {
+		// Get primary image
+		var primaryImage *models.Image
+		primaryImage, err = s.repoManager.ImageRepository.GetPrimaryImageByProductID(ctx, product.ID)
+		if err != nil {
+			// No primary image found, that's okay
+			primaryImage = nil
+		}
+
+		// Get inventory data from inventory table
+		var inventory *models.Inventory
+		inventory, err = s.repoManager.InventoryRepository.GetByProductID(ctx, product.ID)
+		if err != nil {
+			// Log warning but don't fail - product can still be returned without inventory
+			fmt.Printf("Warning: Failed to get inventory for product %s: %v\n", product.ID, err)
+			inventory = nil
+		}
+
+		productListResp := responses.NewProductListResponse(product, primaryImage, inventory)
+		productListResponses = append(productListResponses, productListResp)
+	}
+
 	pagination := base.NewPaginationInfo(req.Page, req.PerPage, int(count))
-	return base.NewPaginatedResponse("Products retrieved successfully", products, pagination), nil
+	productListPaginatedResp := responses.NewProductListPaginatedResponse(productListResponses, pagination)
+	return base.NewPaginatedResponse("Products retrieved successfully", productListPaginatedResp, pagination), nil
 }
 
 // UpdateProduct updates an existing product
@@ -206,36 +273,47 @@ func (s *ProductService) UpdateProduct(ctx context.Context, req *requests.Update
 	existing.Price = req.Price
 	existing.ActualPrice = req.ActualPrice
 	existing.DiscountPercent = req.DiscountPercent
-	existing.Stock = req.Stock
 	existing.ReviewCount = req.ReviewCount
 	existing.Rating = req.Rating
-
-	// Handle image updates
-	imageUrls := req.GetEffectiveImages()
-	existing.SetImages(imageUrls)
-
-	// Update primary ImageURL for backward compatibility
-	if len(imageUrls) > 0 {
-		existing.ImageURL = imageUrls[0]
-	} else {
-		existing.ImageURL = ""
-	}
-
-	// Update stock status based on stock
-	if existing.Stock <= 0 {
-		existing.StockStatus = "Out of Stock"
-	} else {
-		existing.StockStatus = "In Stock"
-	}
-
 	existing.SetUpdatedBy(req.GetUserID())
 
-	// Save changes
+	// Save product changes
 	if err := s.repoManager.ProductRepository.Update(ctx, existing); err != nil {
 		return nil, fmt.Errorf("failed to update product: %w", err)
 	}
 
-	return base.NewSuccessResponse("Product updated successfully", existing), nil
+	// Handle image updates
+	imageUrls := req.GetEffectiveImages()
+
+	// Delete existing images
+	if err := s.repoManager.ImageRepository.DeleteImagesByProductID(ctx, req.ID); err != nil {
+		fmt.Printf("Warning: Failed to delete existing images for product %s: %v\n", req.ID, err)
+	}
+
+	// Create new images
+	var images []*models.Image
+	for i, imageURL := range imageUrls {
+		image := models.NewImage(req.ID, imageURL, models.ImageTypeProduct)
+		image.SetCreatedBy(req.GetUserID())
+
+		// Set first image as primary
+		if i == 0 {
+			image.SetAsPrimary()
+		}
+
+		// Set sort order
+		image.SetSortOrder(i)
+
+		if err := s.repoManager.ImageRepository.Create(ctx, image); err != nil {
+			fmt.Printf("Warning: Failed to create image %d for product %s: %v\n", i, req.ID, err)
+		} else {
+			images = append(images, image)
+		}
+	}
+
+	// Create response with updated product and images (inventory handled separately)
+	productResp := responses.NewProductUpdateResponse(existing, images, nil)
+	return base.NewSuccessResponse("Product updated successfully", productResp), nil
 }
 
 // DeleteProduct soft deletes a product
@@ -251,10 +329,22 @@ func (s *ProductService) DeleteProduct(ctx context.Context, req *requests.Delete
 			base.NewNotFoundError("Product", req.ID)), nil
 	}
 
-	// Soft delete
+	// Soft delete product
 	if err := s.repoManager.ProductRepository.SoftDelete(ctx, req.ID, req.GetUserID()); err != nil {
 		return nil, fmt.Errorf("failed to delete product: %w", err)
 	}
 
-	return base.NewSuccessResponse("Product deleted successfully", nil), nil
+	// Also soft delete related images
+	if err := s.repoManager.ImageRepository.DeleteImagesByProductID(ctx, req.ID); err != nil {
+		fmt.Printf("Warning: Failed to delete images for product %s: %v\n", req.ID, err)
+	}
+
+	// Also delete related inventory record
+	if err := s.repoManager.InventoryRepository.DeleteByProductID(ctx, req.ID); err != nil {
+		fmt.Printf("Warning: Failed to delete inventory for product %s: %v\n", req.ID, err)
+	}
+
+	// Create response
+	productResp := responses.NewProductDeleteResponse()
+	return base.NewSuccessResponse("Product deleted successfully", productResp), nil
 }

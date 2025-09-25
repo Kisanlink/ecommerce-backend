@@ -126,23 +126,32 @@ func main() {
 			continue
 		}
 
-		// Create coupon rules
-		rules := models.CouponRule{
-			Type:          models.CouponRuleTypePercentage,
-			DiscountValue: couponData.discount,
-			MinAmount:     100.0,  // Minimum order amount
-			MaxDiscount:   1000.0, // Maximum discount amount
-			UserLimit:     couponData.usageLimit,
-			FirstTimeOnly: false, // Can be used multiple times
-		}
-
 		// Create new coupon
 		coupon := models.NewCoupon(
 			couponData.code,
 			couponData.description,
 			"system", // created by
-			rules,
 		)
+
+		// Create coupon rule
+		rule := models.NewCouponRule(
+			coupon.ID,
+			models.CouponRuleTypePercentage,
+			couponData.discount,
+		)
+		rule.SetMinAmount(100.0) // Minimum order amount
+
+		// Set max discount as pointer
+		maxDiscount := 1000.0
+		rule.MaxDiscount = &maxDiscount
+
+		// Set user limit as pointer
+		rule.UserLimit = &couponData.usageLimit
+
+		rule.SetFirstTimeOnly(false) // Can be used multiple times
+
+		// Add rule to coupon
+		coupon.AddRule(rule)
 
 		// Set usage count
 		coupon.Count = couponData.usageLimit

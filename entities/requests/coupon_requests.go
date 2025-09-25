@@ -26,7 +26,7 @@ type CreateCouponRequest struct {
 
 // UpdateCouponRequest represents the request to update an existing coupon
 type UpdateCouponRequest struct {
-	ID            string                `json:"id" binding:"required"`
+	ID            string                `json:"id,omitempty"`
 	Description   string                `json:"description,omitempty"`
 	RuleType      models.CouponRuleType `json:"rule_type,omitempty"`
 	Value         float64               `json:"value,omitempty"`
@@ -60,4 +60,34 @@ type GetCouponsRequest struct {
 	Limit  int  `json:"limit,omitempty" form:"limit"`
 	Offset int  `json:"offset,omitempty" form:"offset"`
 	Active bool `json:"active,omitempty" form:"active"`
+}
+
+// CreateCouponRuleRequest represents the request to create a new coupon rule
+type CreateCouponRuleRequest struct {
+	CouponID      string                `json:"coupon_id" binding:"required"`
+	RuleType      models.CouponRuleType `json:"rule_type" binding:"required"`
+	DiscountValue float64               `json:"discount_value" binding:"required,gt=0"`
+	MinAmount     float64               `json:"min_amount,omitempty"`
+	MaxDiscount   float64               `json:"max_discount,omitempty"`
+	Categories    []string              `json:"categories,omitempty"`
+	Products      []string              `json:"products,omitempty"`
+	ValidFrom     *time.Time            `json:"valid_from,omitempty"`
+	ValidUntil    *time.Time            `json:"valid_until,omitempty"`
+	UserLimit     int                   `json:"user_limit,omitempty"`
+	FirstTimeOnly bool                  `json:"first_time_only,omitempty"`
+}
+
+// UpdateCouponRuleRequest represents the request to update an existing coupon rule
+type UpdateCouponRuleRequest struct {
+	ID            string                `json:"id,omitempty"`
+	RuleType      models.CouponRuleType `json:"rule_type,omitempty"`
+	DiscountValue float64               `json:"discount_value,omitempty"`
+	MinAmount     float64               `json:"min_amount,omitempty"`
+	MaxDiscount   float64               `json:"max_discount,omitempty"`
+	Categories    []string              `json:"categories,omitempty"`
+	Products      []string              `json:"products,omitempty"`
+	ValidFrom     *time.Time            `json:"valid_from,omitempty"`
+	ValidUntil    *time.Time            `json:"valid_until,omitempty"`
+	UserLimit     int                   `json:"user_limit,omitempty"`
+	FirstTimeOnly *bool                 `json:"first_time_only,omitempty"`
 }

@@ -1,4 +1,4 @@
-package routes
+package coupons
 
 import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
@@ -13,7 +13,8 @@ import (
 func RegisterCouponRoutes(router *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
 	// Initialize coupon service and handler using the repository manager's database connection
 	couponRepo := repositories.NewCouponRepository(repoManager.GetDBManager(), logger)
-	couponService := services.NewCouponService(couponRepo, logger)
+	couponRuleRepo := repositories.NewCouponRuleRepository(repoManager.GetDBManager(), logger)
+	couponService := services.NewCouponService(couponRepo, couponRuleRepo, logger)
 	couponHandler := handlers.NewCouponHandler(couponService, logger)
 	// Public routes (no authentication required)
 	coupons := router.Group("/coupons")
@@ -51,9 +52,24 @@ func RegisterCouponRoutes(router *gin.RouterGroup, repoManager *repositories.Rep
 		admin.GET("", couponHandler.GetAllCoupons)
 
 		// Update coupon (admin only)
-		admin.PUT("", couponHandler.UpdateCoupon)
+		admin.PUT("/:id", couponHandler.UpdateCoupon)
 
 		// Delete coupon (admin only)
 		admin.DELETE("/:id", couponHandler.DeleteCoupon)
+	}
+
+	// Admin coupon rule routes (separate group to avoid conflicts)
+	adminRules := router.Group("/coupon-rules")
+	adminRules.Use(middleware.FirebaseAuthMiddleware())
+	adminRules.Use(middleware.AdminGuard(repoManager))
+	{
+		// Create coupon rule (admin only)
+		adminRules.POST("/:couponId", couponHandler.CreateCouponRule)
+
+		// Update coupon rule (admin only)
+		adminRules.PUT("/:couponId/:ruleId", couponHandler.UpdateCouponRule)
+
+		// Delete coupon rule (admin only)
+		adminRules.DELETE("/:couponId/:ruleId", couponHandler.DeleteCouponRule)
 	}
 }

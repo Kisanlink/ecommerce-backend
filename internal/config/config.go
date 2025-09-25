@@ -136,6 +136,35 @@ func GetCartEnvConfig() CartEnvConfig {
 	}
 }
 
+// InventoryEnvConfig holds inventory-specific configuration from env
+type InventoryEnvConfig struct {
+	DefaultMinStockLevel int
+	DefaultMaxStockLevel int
+	DefaultReorderPoint  int
+}
+
+// GetInventoryEnvConfig returns inventory config from environment variables
+func GetInventoryEnvConfig() InventoryEnvConfig {
+	minStockLevel, _ := strconv.Atoi(os.Getenv("INVENTORY_DEFAULT_MIN_STOCK_LEVEL"))
+	if minStockLevel == 0 {
+		minStockLevel = 10 // default min stock level
+	}
+	maxStockLevel, _ := strconv.Atoi(os.Getenv("INVENTORY_DEFAULT_MAX_STOCK_LEVEL"))
+	if maxStockLevel == 0 {
+		maxStockLevel = 1000 // default max stock level
+	}
+	reorderPoint, _ := strconv.Atoi(os.Getenv("INVENTORY_DEFAULT_REORDER_POINT"))
+	if reorderPoint == 0 {
+		reorderPoint = 20 // default reorder point
+	}
+
+	return InventoryEnvConfig{
+		DefaultMinStockLevel: minStockLevel,
+		DefaultMaxStockLevel: maxStockLevel,
+		DefaultReorderPoint:  reorderPoint,
+	}
+}
+
 // getEnvOrDefault returns environment variable value or default if empty
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

@@ -12,17 +12,18 @@ import (
 
 // RepositoryManager manages all repositories
 type RepositoryManager struct {
-	UserRepository     *UserRepository
-	ProductRepository  ProductRepositoryInterface
-	OrderRepository    *OrderRepository
-	CartRepository     CartRepositoryInterface // Changed to interface
-	AddressRepository  *AddressRepository
-	RecipesRepository  *RecipesRepository
-	ProfileRepository  *ProfileRepository
-	FavoriteRepository *FavoriteRepository
-	ImageRepository    ImageRepositoryInterface  // Image repository
-	CouponRepository   CouponRepositoryInterface // Coupon repository
-	RedisManager       *database.RedisManager    // Redis manager for cart operations
+	UserRepository      *UserRepository
+	ProductRepository   ProductRepositoryInterface
+	OrderRepository     *OrderRepository
+	CartRepository      CartRepositoryInterface // Changed to interface
+	AddressRepository   *AddressRepository
+	RecipesRepository   *RecipesRepository
+	ProfileRepository   *ProfileRepository
+	FavoriteRepository  *FavoriteRepository
+	ImageRepository     ImageRepositoryInterface     // Image repository
+	InventoryRepository InventoryRepositoryInterface // Inventory repository
+	CouponRepository    CouponRepositoryInterface    // Coupon repository
+	RedisManager        *database.RedisManager       // Redis manager for cart operations
 
 	// Database manager for accessing GORM DB instance
 	dbManager db.DBManager
@@ -50,18 +51,19 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 	}
 
 	return &RepositoryManager{
-		UserRepository:     NewUserRepository(dbManager),
-		ProductRepository:  NewProductRepository(dbManager),
-		OrderRepository:    NewOrderRepository(dbManager),
-		CartRepository:     NewCartRepository(dbManager, redisManager, logger), // Use new cart repository
-		AddressRepository:  NewAddressRepository(dbManager),
-		RecipesRepository:  recipesRepo,
-		ProfileRepository:  NewProfileRepository(dbManager),
-		FavoriteRepository: NewFavoriteRepository(dbManager),
-		ImageRepository:    NewImageRepository(dbManager),          // Image repository
-		CouponRepository:   NewCouponRepository(dbManager, logger), // Coupon repository
-		RedisManager:       redisManager,
-		dbManager:          dbManager, // Store dbManager for access
+		UserRepository:      NewUserRepository(dbManager),
+		ProductRepository:   NewProductRepository(dbManager),
+		OrderRepository:     NewOrderRepository(dbManager),
+		CartRepository:      NewCartRepository(dbManager, redisManager, logger), // Use new cart repository
+		AddressRepository:   NewAddressRepository(dbManager),
+		RecipesRepository:   recipesRepo,
+		ProfileRepository:   NewProfileRepository(dbManager),
+		FavoriteRepository:  NewFavoriteRepository(dbManager),
+		ImageRepository:     NewImageRepository(dbManager),          // Image repository
+		InventoryRepository: NewInventoryRepository(dbManager),      // Inventory repository
+		CouponRepository:    NewCouponRepository(dbManager, logger), // Coupon repository
+		RedisManager:        redisManager,
+		dbManager:           dbManager, // Store dbManager for access
 	}
 }
 

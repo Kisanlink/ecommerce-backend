@@ -7,9 +7,11 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/admin"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/cart"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/coupons"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/delivery"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/favorites"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/image"
+	"github.com/Kisanlink/ecommerce-backend/internal/routes/inventory"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/orders"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/payment"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/products"
@@ -55,12 +57,16 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
-		reviews.RegisterReviewRoutes(v1, serviceManager, logger)      // Add review routes
-		RegisterCouponRoutes(v1, repoManager, serviceManager, logger) // Add coupon routes
+		reviews.RegisterReviewRoutes(v1, serviceManager, logger)              // Add review routes
+		coupons.RegisterCouponRoutes(v1, repoManager, serviceManager, logger) // Add coupon routes
 
 		// Register image routes
 		imageHandler := handlers.NewImageHandler(serviceManager.ImageService, nil, logger) // AuthContext will be set in the handler
 		image.SetupImageRoutes(v1, imageHandler, middleware.FirebaseAuthMiddleware())
+
+		// Register inventory routes
+		inventoryHandler := handlers.NewInventoryHandler(serviceManager.InventoryService)
+		inventory.SetupInventoryRoutes(v1, inventoryHandler, repoManager)
 	}
 
 	// Legacy routes (without versioning) for backward compatibility

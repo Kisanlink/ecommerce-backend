@@ -30,7 +30,7 @@ func NewProductHandler(productService *services.ProductService) *ProductHandler 
 // @Produce json
 // @Security FirebaseAuth
 // @Param request body requests.CreateProductRequest true "Product information"
-// @Success 201 {object} map[string]interface{} "Product created successfully"
+// @Success 201 {object} responses.ProductCreateResponse "Product created successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid request format"
 // @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -68,7 +68,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param id path string true "Product ID"
-// @Success 200 {object} map[string]interface{} "Product retrieved successfully"
+// @Success 200 {object} responses.ProductResponse "Product retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid product ID"
 // @Failure 404 {object} map[string]interface{} "Product not found"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -110,7 +110,7 @@ func (h *ProductHandler) GetProduct(c *gin.Context) {
 // @Param search query string false "Search term"
 // @Param min_price query number false "Minimum price filter"
 // @Param max_price query number false "Maximum price filter"
-// @Success 200 {object} map[string]interface{} "Products retrieved successfully"
+// @Success 200 {object} responses.ProductListPaginatedResponse "Products retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid query parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /products [get]
@@ -242,7 +242,7 @@ func (h *ProductHandler) GetProductsByCategory(c *gin.Context) {
 // @Param q query string true "Search query"
 // @Param page query int false "Page number" default(1)
 // @Param per_page query int false "Items per page" default(20)
-// @Success 200 {object} map[string]interface{} "Search results retrieved successfully"
+// @Success 200 {object} responses.ProductListPaginatedResponse "Search results retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid query parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /products/search [get]

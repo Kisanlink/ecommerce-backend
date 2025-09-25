@@ -21,6 +21,10 @@ type CouponRepositoryInterface interface {
 	Delete(ctx context.Context, id string) error
 	IncrementUsage(ctx context.Context, code string) error
 	GetUsageStats(ctx context.Context, code string) (int, int, error)
+	GetWithRules(ctx context.Context, id string) (*models.Coupon, error)
+	GetByCodeWithRules(ctx context.Context, code string) (*models.Coupon, error)
+	GetAllWithRules(ctx context.Context, limit, offset int) ([]*models.Coupon, error)
+	GetActiveWithRules(ctx context.Context, limit, offset int) ([]*models.Coupon, error)
 }
 
 // CouponRepository handles database operations for coupons
@@ -136,4 +140,117 @@ func (r *CouponRepository) GetUsageStats(ctx context.Context, code string) (int,
 	}
 
 	return coupon.Count, coupon.UsedCount, nil
+}
+
+// GetWithRules retrieves a coupon by ID with its rules
+func (r *CouponRepository) GetWithRules(ctx context.Context, id string) (*models.Coupon, error) {
+	var coupon models.Coupon
+	if err := r.dbManager.GetByID(ctx, id, &coupon); err != nil {
+		return nil, err
+	}
+
+	// Load rules for the coupon
+	ruleRepo := NewCouponRuleRepository(r.dbManager, r.logger)
+	rules, err := ruleRepo.GetByCouponID(ctx, id)
+	if err != nil {
+		r.logger.Error("Failed to get rules for coupon",
+			zap.String("coupon_id", id),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get rules: %w", err)
+	}
+
+	// Convert to slice of CouponRule (not pointers)
+	coupon.Rules = make([]models.CouponRule, len(rules))
+	for i, rule := range rules {
+		coupon.Rules[i] = *rule
+	}
+
+	return &coupon, nil
+}
+
+// GetByCodeWithRules retrieves a coupon by code with its rules
+func (r *CouponRepository) GetByCodeWithRules(ctx context.Context, code string) (*models.Coupon, error) {
+	// First get the coupon by code
+	var coupon models.Coupon
+	_, err := r.GetByCode(ctx, code, &coupon)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load rules for the coupon
+	ruleRepo := NewCouponRuleRepository(r.dbManager, r.logger)
+	rules, err := ruleRepo.GetByCouponID(ctx, coupon.ID)
+	if err != nil {
+		r.logger.Error("Failed to get rules for coupon",
+			zap.String("coupon_id", coupon.ID),
+			zap.String("code", code),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get rules: %w", err)
+	}
+
+	// Convert to slice of CouponRule (not pointers)
+	coupon.Rules = make([]models.CouponRule, len(rules))
+	for i, rule := range rules {
+		coupon.Rules[i] = *rule
+	}
+
+	return &coupon, nil
+}
+
+// GetAllWithRules retrieves all coupons with their rules
+func (r *CouponRepository) GetAllWithRules(ctx context.Context, limit, offset int) ([]*models.Coupon, error) {
+	// Get all coupons first
+	coupons, err := r.GetAll(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load rules for each coupon
+	ruleRepo := NewCouponRuleRepository(r.dbManager, r.logger)
+	for _, coupon := range coupons {
+		rules, err := ruleRepo.GetByCouponID(ctx, coupon.ID)
+		if err != nil {
+			r.logger.Error("Failed to get rules for coupon",
+				zap.String("coupon_id", coupon.ID),
+				zap.Error(err))
+			continue
+		}
+
+		// Convert to slice of CouponRule (not pointers)
+		coupon.Rules = make([]models.CouponRule, len(rules))
+		for i, rule := range rules {
+			coupon.Rules[i] = *rule
+		}
+	}
+
+	return coupons, nil
+}
+
+// GetActiveWithRules retrieves all active coupons with their rules
+func (r *CouponRepository) GetActiveWithRules(ctx context.Context, limit, offset int) ([]*models.Coupon, error) {
+	// Get active coupons first
+	coupons, err := r.GetActive(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load rules for each coupon
+	ruleRepo := NewCouponRuleRepository(r.dbManager, r.logger)
+	for _, coupon := range coupons {
+		rules, err := ruleRepo.GetByCouponID(ctx, coupon.ID)
+		if err != nil {
+			r.logger.Error("Failed to get rules for coupon",
+				zap.String("coupon_id", coupon.ID),
+				zap.Error(err))
+			continue
+		}
+
+		// Convert to slice of CouponRule (not pointers)
+		coupon.Rules = make([]models.CouponRule, len(rules))
+		for i, rule := range rules {
+			coupon.Rules[i] = *rule
+		}
+	}
+
+	return coupons, nil
 }
