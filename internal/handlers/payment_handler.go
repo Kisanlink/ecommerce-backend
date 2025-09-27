@@ -425,7 +425,6 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		"shipping_addr_id": shippingAddressID, // Use resolved address ID
 		"cart_total":       cartTotal,
 		"discount":         cart.DiscountAmount,
-		"coupon":           cart.CouponCode,
 		"shipping":         shippingCharges,
 		"final_amount":     finalAmount, // Total including shipping
 		"items_count":      len(cart.Items),

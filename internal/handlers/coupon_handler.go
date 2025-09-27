@@ -26,16 +26,17 @@ func NewCouponHandler(couponService services.CouponServiceInterface, logger *zap
 
 // CreateCoupon creates a new coupon
 // @Summary Create a new coupon
-// @Description Create a new discount coupon with rules
-// @Tags coupons
+// @Description Create a new discount coupon with rules (Admin only)
+// @Tags Admin - Coupons
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
 // @Param request body requests.CreateCouponRequest true "Coupon creation request"
-// @Success 201 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons [post]
-// @Security BearerAuth
+// @Success 201 {object} map[string]interface{} "Coupon created successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons [post]
 func (h *CouponHandler) CreateCoupon(c *gin.Context) {
 	var req requests.CreateCouponRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -68,15 +69,16 @@ func (h *CouponHandler) CreateCoupon(c *gin.Context) {
 
 // GetCouponByCode retrieves a coupon by code
 // @Summary Get coupon by code
-// @Description Retrieve a coupon by its code
-// @Tags coupons
+// @Description Retrieve a coupon by its code (Public endpoint)
+// @Tags Coupons
 // @Accept json
 // @Produce json
 // @Param code path string true "Coupon code"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Router /api/v1/coupons/{code} [get]
+// @Success 200 {object} map[string]interface{} "Coupon retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid coupon code"
+// @Failure 404 {object} map[string]interface{} "Coupon not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/{code} [get]
 func (h *CouponHandler) GetCouponByCode(c *gin.Context) {
 	code := c.Param("code")
 	if code == "" {
@@ -107,16 +109,17 @@ func (h *CouponHandler) GetCouponByCode(c *gin.Context) {
 
 // GetAllCoupons retrieves all coupons with pagination
 // @Summary Get all coupons
-// @Description Retrieve all coupons with pagination
-// @Tags coupons
+// @Description Retrieve all coupons with pagination (Admin only)
+// @Tags Admin - Coupons
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
 // @Param limit query int false "Limit" default(10)
 // @Param offset query int false "Offset" default(0)
-// @Success 200 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons [get]
-// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "Coupons retrieved successfully"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons [get]
 func (h *CouponHandler) GetAllCoupons(c *gin.Context) {
 	limitStr := c.DefaultQuery("limit", "10")
 	offsetStr := c.DefaultQuery("offset", "0")
@@ -146,15 +149,15 @@ func (h *CouponHandler) GetAllCoupons(c *gin.Context) {
 
 // GetActiveCoupons retrieves all active coupons with pagination
 // @Summary Get active coupons
-// @Description Retrieve all active coupons with pagination
-// @Tags coupons
+// @Description Retrieve all active coupons with pagination (Public endpoint)
+// @Tags Coupons
 // @Accept json
 // @Produce json
 // @Param limit query int false "Limit" default(10)
 // @Param offset query int false "Offset" default(0)
-// @Success 200 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons/active [get]
+// @Success 200 {object} map[string]interface{} "Active coupons retrieved successfully"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/active [get]
 func (h *CouponHandler) GetActiveCoupons(c *gin.Context) {
 	limitStr := c.DefaultQuery("limit", "10")
 	offsetStr := c.DefaultQuery("offset", "0")
@@ -184,17 +187,19 @@ func (h *CouponHandler) GetActiveCoupons(c *gin.Context) {
 
 // UpdateCoupon updates an existing coupon
 // @Summary Update coupon
-// @Description Update an existing coupon
-// @Tags coupons
+// @Description Update an existing coupon (Admin only)
+// @Tags Admin - Coupons
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Coupon ID"
 // @Param request body requests.UpdateCouponRequest true "Coupon update request"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons [put]
-// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "Coupon updated successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Coupon not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/{id} [put]
 func (h *CouponHandler) UpdateCoupon(c *gin.Context) {
 	couponId := c.Param("id")
 	if couponId == "" {
@@ -238,16 +243,18 @@ func (h *CouponHandler) UpdateCoupon(c *gin.Context) {
 
 // DeleteCoupon deletes a coupon
 // @Summary Delete coupon
-// @Description Delete a coupon by ID
-// @Tags coupons
+// @Description Delete a coupon by ID (Admin only)
+// @Tags Admin - Coupons
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
 // @Param id path string true "Coupon ID"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons/{id} [delete]
-// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "Coupon deleted successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid coupon ID"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Coupon not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/{id} [delete]
 func (h *CouponHandler) DeleteCoupon(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -273,15 +280,16 @@ func (h *CouponHandler) DeleteCoupon(c *gin.Context) {
 
 // ValidateCoupon validates a coupon for a specific cart and user
 // @Summary Validate coupon
-// @Description Validate a coupon for a specific cart total and user
-// @Tags coupons
+// @Description Validate a coupon for a specific cart total and user (Public endpoint)
+// @Tags Coupons
 // @Accept json
 // @Produce json
 // @Param request body requests.ValidateCouponRequest true "Coupon validation request"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Router /api/v1/coupons/validate [post]
+// @Success 200 {object} map[string]interface{} "Coupon validation result"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 404 {object} map[string]interface{} "Coupon not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/validate [post]
 func (h *CouponHandler) ValidateCoupon(c *gin.Context) {
 	var req requests.ValidateCouponRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -315,16 +323,18 @@ func (h *CouponHandler) ValidateCoupon(c *gin.Context) {
 
 // ApplyCouponToUser applies a coupon and increments usage count
 // @Summary Apply coupon to user
-// @Description Apply a coupon to a user and increment its usage count
-// @Tags coupons
+// @Description Apply a coupon to a user and increment its usage count (Authenticated users)
+// @Tags Coupons
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
 // @Param request body requests.ApplyCouponToUserRequest true "Coupon application request"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Router /api/v1/coupons/apply [post]
-// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "Coupon applied successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request or coupon cannot be applied"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "Coupon not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/apply [post]
 func (h *CouponHandler) ApplyCouponToUser(c *gin.Context) {
 	var req requests.ApplyCouponToUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -359,16 +369,18 @@ func (h *CouponHandler) ApplyCouponToUser(c *gin.Context) {
 
 // GetCouponUsageStats returns usage statistics for a coupon
 // @Summary Get coupon usage statistics
-// @Description Get usage statistics for a specific coupon
-// @Tags coupons
+// @Description Get usage statistics for a specific coupon (Authenticated users)
+// @Tags Coupons
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
 // @Param code path string true "Coupon code"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Router /api/v1/coupons/{code}/stats [get]
-// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "Usage statistics retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid coupon code"
+// @Failure 401 {object} map[string]interface{} "User not authenticated"
+// @Failure 404 {object} map[string]interface{} "Coupon not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupons/{code}/stats [get]
 func (h *CouponHandler) GetCouponUsageStats(c *gin.Context) {
 	code := c.Param("code")
 	if code == "" {
@@ -399,16 +411,18 @@ func (h *CouponHandler) GetCouponUsageStats(c *gin.Context) {
 
 // CreateCouponRule creates a new coupon rule
 // @Summary Create a new coupon rule
-// @Description Create a new rule for an existing coupon
-// @Tags coupons
+// @Description Create a new rule for an existing coupon (Admin only)
+// @Tags Admin - Coupon Rules
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
+// @Param couponId path string true "Coupon ID"
 // @Param request body requests.CreateCouponRuleRequest true "Coupon rule creation request"
-// @Success 201 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons/rules [post]
-// @Security BearerAuth
+// @Success 201 {object} map[string]interface{} "Coupon rule created successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupon-rules/{couponId} [post]
 func (h *CouponHandler) CreateCouponRule(c *gin.Context) {
 	couponId := c.Param("couponId")
 	if couponId == "" {
@@ -452,17 +466,20 @@ func (h *CouponHandler) CreateCouponRule(c *gin.Context) {
 
 // UpdateCouponRule updates an existing coupon rule
 // @Summary Update coupon rule
-// @Description Update an existing coupon rule
-// @Tags coupons
+// @Description Update an existing coupon rule (Admin only)
+// @Tags Admin - Coupon Rules
 // @Accept json
 // @Produce json
+// @Security FirebaseAuth
+// @Param couponId path string true "Coupon ID"
+// @Param ruleId path string true "Rule ID"
 // @Param request body requests.UpdateCouponRuleRequest true "Coupon rule update request"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons/rules [put]
-// @Security BearerAuth
+// @Success 200 {object} map[string]interface{} "Coupon rule updated successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Coupon rule not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupon-rules/{couponId}/{ruleId} [put]
 func (h *CouponHandler) UpdateCouponRule(c *gin.Context) {
 	couponId := c.Param("couponId")
 	ruleId := c.Param("ruleId")
@@ -508,17 +525,19 @@ func (h *CouponHandler) UpdateCouponRule(c *gin.Context) {
 
 // DeleteCouponRule deletes a coupon rule
 // @Summary Delete coupon rule
-// @Description Delete an existing coupon rule
-// @Tags coupons
+// @Description Delete an existing coupon rule (Admin only)
+// @Tags Admin - Coupon Rules
 // @Accept json
 // @Produce json
-// @Param id path string true "Coupon rule ID"
-// @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{}
-// @Failure 404 {object} map[string]interface{}
-// @Failure 500 {object} map[string]interface{}
-// @Router /api/v1/coupons/rules/{id} [delete]
-// @Security BearerAuth
+// @Security FirebaseAuth
+// @Param couponId path string true "Coupon ID"
+// @Param ruleId path string true "Rule ID"
+// @Success 200 {object} map[string]interface{} "Coupon rule deleted successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid coupon ID or rule ID"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Coupon rule not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /coupon-rules/{couponId}/{ruleId} [delete]
 func (h *CouponHandler) DeleteCouponRule(c *gin.Context) {
 	couponId := c.Param("couponId")
 	ruleId := c.Param("ruleId")

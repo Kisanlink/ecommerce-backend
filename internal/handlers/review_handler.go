@@ -37,9 +37,9 @@ func NewReviewHandler(reviewService *services.ReviewService, logger *zap.Logger)
 // @Param productId path string true "Product ID"
 // @Param request body requests.CreateReviewRequest true "Review creation request"
 // @Success 201 {object} responses.ReviewResponse
-// @Failure 400 {object} gin.H
-// @Failure 401 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /products/{productId}/reviews [post]
 func (h *ReviewHandler) CreateReview(c *gin.Context) {
 	// Get user ID from authentication context
@@ -48,7 +48,7 @@ func (h *ReviewHandler) CreateReview(c *gin.Context) {
 		userID, exists = c.Get("user_id")
 		if !exists {
 			h.logger.Error("User ID not found in context")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Authentication required"})
 			return
 		}
 	}
@@ -56,14 +56,14 @@ func (h *ReviewHandler) CreateReview(c *gin.Context) {
 	userIDStr, ok := userID.(string)
 	if !ok {
 		h.logger.Error("Invalid user ID type in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication"})
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid authentication"})
 		return
 	}
 
 	// Get product ID from URL parameter
 	productID := c.Param("id")
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID is required"})
 		return
 	}
 
@@ -71,7 +71,7 @@ func (h *ReviewHandler) CreateReview(c *gin.Context) {
 	var req requests.CreateReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Error("Failed to parse create review request", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request format"})
 		return
 	}
 
@@ -82,11 +82,11 @@ func (h *ReviewHandler) CreateReview(c *gin.Context) {
 	review, err := h.reviewService.CreateReview(c.Request.Context(), &req, userIDStr)
 	if err != nil {
 		h.logger.Error("Failed to create review", zap.Error(err), zap.String("user_id", userIDStr), zap.String("product_id", productID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	c.JSON(http.StatusCreated, map[string]interface{}{
 		"message": "Review created successfully",
 		"data":    review,
 	})
@@ -106,14 +106,14 @@ func (h *ReviewHandler) CreateReview(c *gin.Context) {
 // @Param min_rating query int false "Minimum rating filter" minimum(1) maximum(5)
 // @Param max_rating query int false "Maximum rating filter" minimum(1) maximum(5)
 // @Success 200 {object} responses.PaginatedReviewsResponse
-// @Failure 400 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /products/{productId}/reviews [get]
 func (h *ReviewHandler) GetProductReviews(c *gin.Context) {
 	// Get product ID from URL parameter
 	productID := c.Param("id")
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID is required"})
 		return
 	}
 
@@ -159,11 +159,11 @@ func (h *ReviewHandler) GetProductReviews(c *gin.Context) {
 	reviews, err := h.reviewService.GetProductReviews(c.Request.Context(), &req, requestingUserID)
 	if err != nil {
 		h.logger.Error("Failed to get product reviews", zap.Error(err), zap.String("product_id", productID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Reviews retrieved successfully",
 		"data":    reviews,
 	})
@@ -181,14 +181,14 @@ func (h *ReviewHandler) GetProductReviews(c *gin.Context) {
 // @Param sort_by query string false "Sort by: date, rating, likes" default("date")
 // @Param order query string false "Sort order: asc, desc" default("desc")
 // @Success 200 {object} responses.PaginatedReviewsResponse
-// @Failure 400 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /users/{userId}/reviews [get]
 func (h *ReviewHandler) GetUserReviews(c *gin.Context) {
 	// Get user ID from URL parameter
 	targetUserID := c.Param("id")
 	if targetUserID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID is required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "User ID is required"})
 		return
 	}
 
@@ -226,11 +226,11 @@ func (h *ReviewHandler) GetUserReviews(c *gin.Context) {
 	reviews, err := h.reviewService.GetUserReviews(c.Request.Context(), &req, requestingUserID)
 	if err != nil {
 		h.logger.Error("Failed to get user reviews", zap.Error(err), zap.String("user_id", targetUserID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "User reviews retrieved successfully",
 		"data":    reviews,
 	})
@@ -246,11 +246,11 @@ func (h *ReviewHandler) GetUserReviews(c *gin.Context) {
 // @Param reviewId path string true "Review ID"
 // @Param request body requests.UpdateReviewRequest true "Review update request"
 // @Success 200 {object} responses.ReviewResponse
-// @Failure 400 {object} gin.H
-// @Failure 401 {object} gin.H
-// @Failure 403 {object} gin.H
-// @Failure 404 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 403 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /products/{id}/reviews/{reviewId} [put]
 func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	// Get user ID from authentication context
@@ -259,7 +259,7 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 		userID, exists = c.Get("user_id")
 		if !exists {
 			h.logger.Error("User ID not found in context")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Authentication required"})
 			return
 		}
 	}
@@ -267,7 +267,7 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	userIDStr, ok := userID.(string)
 	if !ok {
 		h.logger.Error("Invalid user ID type in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication"})
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid authentication"})
 		return
 	}
 
@@ -275,7 +275,7 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	productID := c.Param("id")      // Product ID comes from /products/:id/
 	reviewID := c.Param("reviewId") // Review ID comes from /:reviewId
 	if productID == "" || reviewID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID and Review ID are required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID and Review ID are required"})
 		return
 	}
 
@@ -283,7 +283,7 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	var req requests.UpdateReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Error("Failed to parse update review request", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request format"})
 		return
 	}
 
@@ -291,11 +291,11 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 	review, err := h.reviewService.UpdateReview(c.Request.Context(), reviewID, &req, userIDStr)
 	if err != nil {
 		h.logger.Error("Failed to update review", zap.Error(err), zap.String("review_id", reviewID), zap.String("user_id", userIDStr))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Review updated successfully",
 		"data":    review,
 	})
@@ -309,12 +309,12 @@ func (h *ReviewHandler) UpdateReview(c *gin.Context) {
 // @Produce json
 // @Param id path string true "Product ID"
 // @Param reviewId path string true "Review ID"
-// @Success 200 {object} gin.H
-// @Failure 400 {object} gin.H
-// @Failure 401 {object} gin.H
-// @Failure 403 {object} gin.H
-// @Failure 404 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 403 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /products/{id}/reviews/{reviewId} [delete]
 func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	// Get user ID from authentication context
@@ -323,7 +323,7 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 		userID, exists = c.Get("user_id")
 		if !exists {
 			h.logger.Error("User ID not found in context")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Authentication required"})
 			return
 		}
 	}
@@ -331,7 +331,7 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	userIDStr, ok := userID.(string)
 	if !ok {
 		h.logger.Error("Invalid user ID type in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication"})
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid authentication"})
 		return
 	}
 
@@ -345,7 +345,7 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	productID := c.Param("id")      // Product ID comes from /products/:id/
 	reviewID := c.Param("reviewId") // Review ID comes from /:reviewId
 	if productID == "" || reviewID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID and Review ID are required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID and Review ID are required"})
 		return
 	}
 
@@ -359,11 +359,11 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 	err := h.reviewService.DeleteReview(c.Request.Context(), &req, userIDStr, isAdmin)
 	if err != nil {
 		h.logger.Error("Failed to delete review", zap.Error(err), zap.String("review_id", reviewID), zap.String("user_id", userIDStr))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Review deleted successfully",
 	})
 }
@@ -378,9 +378,9 @@ func (h *ReviewHandler) DeleteReview(c *gin.Context) {
 // @Param reviewId path string true "Review ID"
 // @Param action body map[string]string true "Action: like or unlike"
 // @Success 200 {object} responses.ReviewActionResponse
-// @Failure 400 {object} gin.H
-// @Failure 401 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /products/{id}/reviews/{reviewId}/like [post]
 func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	// Get user ID from authentication context
@@ -389,7 +389,7 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 		userID, exists = c.Get("user_id")
 		if !exists {
 			h.logger.Error("User ID not found in context")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Authentication required"})
 			return
 		}
 	}
@@ -397,7 +397,7 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	userIDStr, ok := userID.(string)
 	if !ok {
 		h.logger.Error("Invalid user ID type in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication"})
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid authentication"})
 		return
 	}
 
@@ -405,7 +405,7 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	productID := c.Param("id")      // Product ID comes from /products/:id/
 	reviewID := c.Param("reviewId") // Review ID comes from /:reviewId
 	if productID == "" || reviewID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID and Review ID are required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID and Review ID are required"})
 		return
 	}
 
@@ -413,13 +413,13 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	var actionBody map[string]string
 	if err := c.ShouldBindJSON(&actionBody); err != nil {
 		h.logger.Error("Failed to parse like action request", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request format"})
 		return
 	}
 
 	action, exists := actionBody["action"]
 	if !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Action is required (like or unlike)"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Action is required (like or unlike)"})
 		return
 	}
 
@@ -434,7 +434,7 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 	response, err := h.reviewService.LikeReview(c.Request.Context(), &req, userIDStr)
 	if err != nil {
 		h.logger.Error("Failed to process review like", zap.Error(err), zap.String("review_id", reviewID), zap.String("user_id", userIDStr))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
@@ -449,14 +449,14 @@ func (h *ReviewHandler) LikeReview(c *gin.Context) {
 // @Produce json
 // @Param id path string true "Product ID"
 // @Success 200 {object} responses.ReviewStatsResponse
-// @Failure 400 {object} gin.H
-// @Failure 500 {object} gin.H
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Router /products/{id}/reviews/stats [get]
 func (h *ReviewHandler) GetReviewStats(c *gin.Context) {
 	// Get product ID from URL parameter
 	productID := c.Param("id") // Product ID comes from /products/:id/
 	if productID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Product ID is required"})
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID is required"})
 		return
 	}
 
@@ -477,11 +477,11 @@ func (h *ReviewHandler) GetReviewStats(c *gin.Context) {
 	stats, err := h.reviewService.GetReviewStats(c.Request.Context(), &req, requestingUserID)
 	if err != nil {
 		h.logger.Error("Failed to get review stats", zap.Error(err), zap.String("product_id", productID))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Review statistics retrieved successfully",
 		"data":    stats,
 	})

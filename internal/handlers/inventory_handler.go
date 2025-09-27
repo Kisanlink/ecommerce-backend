@@ -24,12 +24,12 @@ func NewInventoryHandler(inventoryService *services.InventoryService) *Inventory
 // CreateInventory handles POST /api/v1/inventory
 // @Summary Create a new inventory record
 // @Description Create a new inventory record for a product (Admin only)
-// @Tags Inventory
+// @Tags Admin - Inventory
 // @Accept json
 // @Produce json
 // @Security FirebaseAuth
 // @Param request body requests.CreateInventoryRequest true "Inventory information"
-// @Success 201 {object} responses.InventoryCreateResponse "Inventory created successfully"
+// @Success 201 {object} map[string]interface{} "Inventory created successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid request format"
 // @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -67,7 +67,7 @@ func (h *InventoryHandler) CreateInventory(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param product_id path string true "Product ID"
-// @Success 200 {object} responses.InventoryResponse "Inventory retrieved successfully"
+// @Success 200 {object} map[string]interface{} "Inventory retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid product ID"
 // @Failure 404 {object} map[string]interface{} "Inventory not found"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
@@ -100,13 +100,13 @@ func (h *InventoryHandler) GetInventoryByProductID(c *gin.Context) {
 // UpdateInventory handles PUT /api/v1/inventory/product/:product_id
 // @Summary Update inventory
 // @Description Update inventory information for a product (Admin only)
-// @Tags Inventory
+// @Tags Admin - Inventory
 // @Accept json
 // @Produce json
 // @Security FirebaseAuth
 // @Param product_id path string true "Product ID"
 // @Param request body requests.UpdateInventoryRequest true "Inventory information"
-// @Success 200 {object} responses.InventoryUpdateResponse "Inventory updated successfully"
+// @Success 200 {object} map[string]interface{} "Inventory updated successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid request format"
 // @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
 // @Failure 404 {object} map[string]interface{} "Inventory not found"
@@ -150,12 +150,12 @@ func (h *InventoryHandler) UpdateInventory(c *gin.Context) {
 // DeleteInventory handles DELETE /api/v1/inventory/product/:product_id
 // @Summary Delete inventory
 // @Description Delete inventory record for a product (Admin only)
-// @Tags Inventory
+// @Tags Admin - Inventory
 // @Accept json
 // @Produce json
 // @Security FirebaseAuth
 // @Param product_id path string true "Product ID"
-// @Success 200 {object} responses.InventoryDeleteResponse "Inventory deleted successfully"
+// @Success 200 {object} map[string]interface{} "Inventory deleted successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid product ID"
 // @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
 // @Failure 404 {object} map[string]interface{} "Inventory not found"
@@ -196,7 +196,7 @@ func (h *InventoryHandler) DeleteInventory(c *gin.Context) {
 // @Param low_stock query bool false "Filter low stock items"
 // @Param out_of_stock query bool false "Filter out of stock items"
 // @Param needs_reorder query bool false "Filter items needing reorder"
-// @Success 200 {object} responses.InventoryListPaginatedResponse "Inventory retrieved successfully"
+// @Success 200 {object} map[string]interface{} "Inventory retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid query parameters"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /inventory [get]
@@ -232,7 +232,7 @@ func (h *InventoryHandler) ListInventory(c *gin.Context) {
 // UpdateStock handles PUT /api/v1/inventory/stock/:product_id
 // @Summary Update stock
 // @Description Update stock quantity for a product (Admin only)
-// @Tags Inventory
+// @Tags Admin - Inventory
 // @Accept json
 // @Produce json
 // @Security FirebaseAuth

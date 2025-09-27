@@ -25,7 +25,6 @@ type CartResponse struct {
 	UserID         string             `json:"user_id"`
 	TotalItems     int                `json:"total_items"`
 	TotalPrice     float64            `json:"total_price"`
-	CouponCode     string             `json:"coupon_code,omitempty"`
 	DiscountAmount float64            `json:"discount_amount"`
 	FinalPrice     float64            `json:"final_price"`
 	Items          []CartItemResponse `json:"items"`
@@ -164,7 +163,6 @@ func NewCartResponse(cart *models.Cart) CartResponse {
 		UserID:         cart.UserID,
 		TotalItems:     cart.TotalItems,
 		TotalPrice:     cart.TotalPrice,
-		CouponCode:     cart.CouponCode,
 		DiscountAmount: cart.DiscountAmount,
 		FinalPrice:     finalPrice,
 		Items:          items,
@@ -201,7 +199,6 @@ func NewCartResponseWithProducts(cart *models.Cart, productDetails map[string]*m
 		UserID:         cart.UserID,
 		TotalItems:     cart.TotalItems,
 		TotalPrice:     cart.TotalPrice,
-		CouponCode:     cart.CouponCode,
 		DiscountAmount: cart.DiscountAmount,
 		FinalPrice:     finalPrice,
 		Items:          items,

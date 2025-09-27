@@ -9,6 +9,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
@@ -132,6 +133,9 @@ func (h *CartHandler) GetCart(c *gin.Context) {
 		return
 	}
 
+	// Convert cart model to response structure (excludes coupon_code for security)
+	cartResponse := responses.NewCartResponse(cart)
+
 	discounted := round2(cart.TotalPrice - cart.DiscountAmount)
 	if discounted < 0 {
 		discounted = 0
@@ -139,7 +143,7 @@ func (h *CartHandler) GetCart(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"cart":             cart,
+			"cart":             cartResponse,
 			"discount_amount":  round2(cart.DiscountAmount),
 			"discounted_total": discounted,
 		},
@@ -193,9 +197,11 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 		return
 	}
 
+	// Convert cart model to response structure (excludes coupon_code for security)
+	cartResponse := responses.NewCartResponse(cart)
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
-		"data":    cart,
+		"data":    cartResponse,
 		"message": "Item added to cart successfully",
 	})
 }
@@ -255,9 +261,11 @@ func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 		return
 	}
 
+	// Convert cart model to response structure (excludes coupon_code for security)
+	cartResponse := responses.NewCartResponse(cart)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    cart,
+		"data":    cartResponse,
 		"message": "Cart item updated successfully",
 	})
 }
@@ -304,9 +312,11 @@ func (h *CartHandler) IncrementCartItem(c *gin.Context) {
 		return
 	}
 
+	// Convert cart model to response structure (excludes coupon_code for security)
+	cartResponse := responses.NewCartResponse(cart)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    cart,
+		"data":    cartResponse,
 		"message": "Cart item incremented successfully",
 	})
 }
@@ -353,9 +363,11 @@ func (h *CartHandler) DecrementCartItem(c *gin.Context) {
 		return
 	}
 
+	// Convert cart model to response structure (excludes coupon_code for security)
+	cartResponse := responses.NewCartResponse(cart)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    cart,
+		"data":    cartResponse,
 		"message": "Cart item decremented successfully",
 	})
 }
@@ -393,9 +405,11 @@ func (h *CartHandler) RemoveFromCart(c *gin.Context) {
 		return
 	}
 
+	// Convert cart model to response structure (excludes coupon_code for security)
+	cartResponse := responses.NewCartResponse(cart)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    cart,
+		"data":    cartResponse,
 		"message": "Item removed from cart successfully",
 	})
 }
@@ -530,7 +544,7 @@ func (h *CartHandler) HealthCheck(c *gin.Context) {
 
 // CleanupDuplicateCarts is an admin endpoint to clean up duplicate carts
 // @Summary Admin: cleanup duplicate carts
-// @Tags Cart
+// @Tags Admin - Cart
 // @Produce json
 // @Security FirebaseAuth
 // @Router /cart/admin/cleanup-duplicates [post]
@@ -727,7 +741,6 @@ func (h *CartHandler) ApplyCoupon(c *gin.Context) {
 			"cart_total":       total,
 			"discount_amount":  discount,
 			"discounted_total": round2(total - discount),
-			"coupon":           cart.CouponCode,
 		},
 		"message": "Coupon applied",
 	})

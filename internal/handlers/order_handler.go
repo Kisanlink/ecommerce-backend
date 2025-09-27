@@ -38,7 +38,7 @@ func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Lo
 // @Produce json
 // @Security FirebaseAuth
 // @Param request body object{cart_id=string,customer_first_name=string,customer_last_name=string,customer_phone=string,customer_phone_alt=string,customer_email=string,address_line_1=string,address_line_2=string,city=string,state=string,postal_code=string,country=string,payment_method=string,notes=string} true "Order creation payload"
-// @Success 201 {object} responses.CreateOrderResponse "Order created successfully"
+// @Success 201 {object} map[string]interface{} "Order created successfully"
 // @Failure 400 {object} map[string]interface{} "Invalid request data"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 500 {object} map[string]interface{} "Failed to create order"
@@ -175,7 +175,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 // @Security FirebaseAuth
 // @Param page query int false "Page number" default(1)
 // @Param limit query int false "Items per page" default(10)
-// @Success 200 {object} responses.GetUserOrdersResponse "Orders retrieved successfully"
+// @Success 200 {object} map[string]interface{} "Orders retrieved successfully"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /orders [get]
@@ -263,7 +263,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 // @Produce json
 // @Security FirebaseAuth
 // @Param id path string true "Order ID"
-// @Success 200 {object} responses.GetOrderDetailsResponse "Order details retrieved successfully"
+// @Success 200 {object} map[string]interface{} "Order details retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Order ID is required"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 403 {object} map[string]interface{} "Access denied"
@@ -363,7 +363,7 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 // @Produce json
 // @Security FirebaseAuth
 // @Param id path string true "Order ID"
-// @Success 200 {object} responses.GetOrderStatusResponse "Order status retrieved successfully"
+// @Success 200 {object} map[string]interface{} "Order status retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Order ID is required"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 403 {object} map[string]interface{} "Access denied"
@@ -407,7 +407,7 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 // @Produce json
 // @Security FirebaseAuth
 // @Param id path string true "Order ID"
-// @Success 200 {object} responses.GetOrderTrackingResponse "Order tracking retrieved successfully"
+// @Success 200 {object} map[string]interface{} "Order tracking retrieved successfully"
 // @Failure 400 {object} map[string]interface{} "Order ID is required"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 403 {object} map[string]interface{} "Access denied"

@@ -37,7 +37,7 @@ func NewShipmentHandler(baseURL, token string) *ShipmentHandler {
 // @Tags Shipment
 // @Accept json
 // @Produce json
-// @Param shipment body requests.Shipment true "Shipment Request"
+// @Param shipment body requests.DelhiveryShipmentRequest true "Shipment Request"
 // @Success 200 {object} map[string]interface{}
 // @Failure 400 {object} map[string]string
 // @Failure 500 {object} map[string]string

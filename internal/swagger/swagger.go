@@ -2,20 +2,12 @@ package swagger
 
 import (
 	"net/http"
-	"os"
 
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	scalar "github.com/MarceloPetrucio/go-scalar-api-reference"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
-
-// getEnv returns environment variable value or default if empty
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
 
 // RegisterSwaggerRoutes registers Scalar API documentation routes
 func RegisterSwaggerRoutes(r *gin.Engine) {
@@ -23,8 +15,11 @@ func RegisterSwaggerRoutes(r *gin.Engine) {
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
 
+	// Get Swagger configuration from environment
+	swaggerConfig := config.GetSwaggerEnvConfig()
+
 	// Serve OpenAPI and Scalar-powered docs UI (gated by env)
-	if getEnv("ENABLE_DOCS", "true") == "true" {
+	if swaggerConfig.Enabled {
 		r.StaticFile("/docs/swagger.json", "docs/swagger.json")
 		r.StaticFile("/docs/swagger.yaml", "docs/swagger.yaml")
 		r.GET("/docs", func(c *gin.Context) {
@@ -38,7 +33,7 @@ func RegisterSwaggerRoutes(r *gin.Engine) {
 				SpecURL:  specURL,
 				DarkMode: true,
 				CustomOptions: scalar.CustomOptions{
-					PageTitle: "AAA Service API Reference",
+					PageTitle: swaggerConfig.Title + " API Reference",
 				},
 			})
 			if err != nil {
@@ -57,8 +52,8 @@ func RegisterSwaggerRoutes(r *gin.Engine) {
 		})
 	} else {
 		r.GET("/", func(c *gin.Context) {
-			c.String(http.StatusOK, "aaa-service running")
+			c.String(http.StatusOK, swaggerConfig.Title+" running")
 		})
-		logger.Info("Documentation endpoints disabled (AAA_ENABLE_DOCS=false)")
+		logger.Info("Documentation endpoints disabled (ENABLE_DOCS=false)")
 	}
 }
