@@ -5,6 +5,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
 )
@@ -44,7 +45,7 @@ func (h *InventoryHandler) CreateInventory(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.inventoryService.CreateInventory(c.Request.Context(), &req)
 	if err != nil {
@@ -131,7 +132,7 @@ func (h *InventoryHandler) UpdateInventory(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.inventoryService.UpdateInventory(c.Request.Context(), &req)
 	if err != nil {
@@ -164,7 +165,7 @@ func (h *InventoryHandler) UpdateInventory(c *gin.Context) {
 func (h *InventoryHandler) DeleteInventory(c *gin.Context) {
 	var req requests.DeleteInventoryRequest
 	req.ProductID = c.Param("product_id")
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	if req.ProductID == "" {
 		response := base.NewErrorResponse("Missing product ID",
@@ -263,7 +264,7 @@ func (h *InventoryHandler) UpdateStock(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.inventoryService.UpdateStock(c.Request.Context(), &req)
 	if err != nil {
@@ -401,7 +402,7 @@ func (h *InventoryHandler) SellStock(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.inventoryService.SellStock(c.Request.Context(), &req)
 	if err != nil {
@@ -449,7 +450,7 @@ func (h *InventoryHandler) Restock(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.inventoryService.Restock(c.Request.Context(), &req)
 	if err != nil {

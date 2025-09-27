@@ -5,6 +5,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
 )
@@ -45,7 +46,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.productService.CreateProduct(c.Request.Context(), &req)
 	if err != nil {
@@ -163,7 +164,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 	}
 
 	// Set user ID from context
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	response, err := h.productService.UpdateProduct(c.Request.Context(), &req)
 	if err != nil {
@@ -183,7 +184,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 func (h *ProductHandler) DeleteProduct(c *gin.Context) {
 	var req requests.DeleteProductRequest
 	req.ID = c.Param("id")
-	req.SetUserID(getUserFromContext(c))
+	req.SetUserID(utils.GetUserFromContext(c))
 
 	if req.ID == "" {
 		response := base.NewErrorResponse("Missing product ID",
@@ -274,12 +275,4 @@ func (h *ProductHandler) SearchProducts(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
-}
-
-// Helper function to extract user ID from context
-func getUserFromContext(c *gin.Context) string {
-	if userID, exists := c.Get("user_id"); exists {
-		return userID.(string)
-	}
-	return "system"
 }
