@@ -13,12 +13,14 @@ import (
 // ProductHandler handles product-related HTTP requests
 type ProductHandler struct {
 	productService *services.ProductService
+	s3Service      *services.S3Service
 }
 
 // NewProductHandler creates a new product handler
-func NewProductHandler(productService *services.ProductService) *ProductHandler {
+func NewProductHandler(productService *services.ProductService, s3Service *services.S3Service) *ProductHandler {
 	return &ProductHandler{
 		productService: productService,
+		s3Service:      s3Service,
 	}
 }
 
@@ -268,6 +270,204 @@ func (h *ProductHandler) SearchProducts(c *gin.Context) {
 	}
 
 	response, err := h.productService.GetProducts(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
+			base.NewInternalServerError("Service error", err.Error())))
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// UploadProductImage handles POST /api/v1/products/:id/images
+// @Summary Upload product image
+// @Description Upload an image for a product (Admin only)
+// @Tags Admin - Products
+// @Accept multipart/form-data
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Product ID"
+// @Param image formData file true "Image file"
+// @Param alt_text formData string false "Alt text for the image"
+// @Param caption formData string false "Caption for the image"
+// @Success 201 {object} map[string]interface{} "Image uploaded successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products/{id}/images [post]
+func (h *ProductHandler) UploadProductImage(c *gin.Context) {
+	productID := c.Param("id")
+	if productID == "" {
+		response := base.NewErrorResponse("Missing product ID",
+			base.NewValidationError("Invalid request", "Product ID is required"))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+
+	// Get the uploaded file
+	file, header, err := c.Request.FormFile("image")
+	if err != nil {
+		response := base.NewErrorResponse("No image file provided",
+			base.NewValidationError("File upload failed", err.Error()))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+	defer file.Close()
+
+	// Validate file type
+	contentType := header.Header.Get("Content-Type")
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		response := base.NewErrorResponse("Invalid file type",
+			base.NewValidationError("File type", "Only JPEG, PNG, and WebP images are allowed"))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+
+	// Validate file size (max 10MB)
+	if header.Size > 10*1024*1024 {
+		response := base.NewErrorResponse("File too large",
+			base.NewValidationError("File size", "Maximum file size is 10MB"))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+
+	// Create request
+	req := &requests.UploadProductImageRequest{
+		ProductID: productID,
+		AltText:   c.PostForm("alt_text"),
+		Caption:   c.PostForm("caption"),
+	}
+	req.SetUserID(utils.GetUserFromContext(c))
+
+	// Use the S3 service from the handler
+	response, err := h.productService.UploadProductImage(c.Request.Context(), req, file, header, h.s3Service)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
+			base.NewInternalServerError("Service error", err.Error())))
+		return
+	}
+
+	if response.Success {
+		c.JSON(http.StatusCreated, response)
+	} else {
+		c.JSON(http.StatusBadRequest, response)
+	}
+}
+
+// DeleteProductImage handles DELETE /api/v1/products/:id/images/:imageId
+// @Summary Delete product image
+// @Description Delete a product image (Admin only)
+// @Tags Admin - Products
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Product ID"
+// @Param imageId path string true "Image ID"
+// @Success 200 {object} map[string]interface{} "Image deleted successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Image not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products/{id}/images/{imageId} [delete]
+func (h *ProductHandler) DeleteProductImage(c *gin.Context) {
+	productID := c.Param("id")
+	imageID := c.Param("imageId")
+
+	if productID == "" || imageID == "" {
+		response := base.NewErrorResponse("Missing product ID or image ID",
+			base.NewValidationError("Invalid request", "Product ID and Image ID are required"))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+
+	req := &requests.DeleteProductImageRequest{
+		ProductID: productID,
+		ImageID:   imageID,
+	}
+	req.SetUserID(utils.GetUserFromContext(c))
+
+	response, err := h.productService.DeleteProductImage(c.Request.Context(), req, h.s3Service)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
+			base.NewInternalServerError("Service error", err.Error())))
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// SetPrimaryImage handles PUT /api/v1/products/:id/images/:imageId/primary
+// @Summary Set primary image
+// @Description Set an image as the primary image for a product (Admin only)
+// @Tags Admin - Products
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Product ID"
+// @Param imageId path string true "Image ID"
+// @Success 200 {object} map[string]interface{} "Primary image set successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Image not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products/{id}/images/{imageId}/primary [put]
+func (h *ProductHandler) SetPrimaryImage(c *gin.Context) {
+	productID := c.Param("id")
+	imageID := c.Param("imageId")
+
+	if productID == "" || imageID == "" {
+		response := base.NewErrorResponse("Missing product ID or image ID",
+			base.NewValidationError("Invalid request", "Product ID and Image ID are required"))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+
+	req := &requests.SetPrimaryImageRequest{
+		ProductID: productID,
+		ImageID:   imageID,
+	}
+	req.SetUserID(utils.GetUserFromContext(c))
+
+	response, err := h.productService.SetPrimaryImage(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
+			base.NewInternalServerError("Service error", err.Error())))
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetProductImages handles GET /api/v1/products/:id/images
+// @Summary Get product images
+// @Description Get all images for a product (Admin only)
+// @Tags Admin - Products
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Product ID"
+// @Success 200 {object} map[string]interface{} "Images retrieved successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Unauthorized - Admin access required"
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /products/{id}/images [get]
+func (h *ProductHandler) GetProductImages(c *gin.Context) {
+	productID := c.Param("id")
+
+	if productID == "" {
+		response := base.NewErrorResponse("Missing product ID",
+			base.NewValidationError("Invalid request", "Product ID is required"))
+		c.JSON(http.StatusBadRequest, response)
+		return
+	}
+
+	req := &requests.GetProductImagesRequest{
+		ProductID: productID,
+	}
+
+	response, err := h.productService.GetProductImages(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
 			base.NewInternalServerError("Service error", err.Error())))

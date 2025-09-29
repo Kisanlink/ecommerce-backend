@@ -53,7 +53,8 @@ func (s *ImageService) CreateImage(ctx context.Context, productID, imageURL stri
 	}
 
 	// Create the image
-	image := models.NewImage(productID, imageURL, imageType)
+	// For legacy image URLs, we'll use the URL as the S3 key
+	image := models.NewImage(productID, imageURL, imageURL, imageType)
 	image.AltText = altText
 	image.Caption = caption
 
