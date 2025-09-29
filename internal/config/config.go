@@ -199,6 +199,30 @@ func GetSwaggerEnvConfig() SwaggerEnvConfig {
 	}
 }
 
+// WhatsAppEnvConfig holds WhatsApp Business API configuration from env
+type WhatsAppEnvConfig struct {
+	Enabled        bool
+	AccessToken    string
+	PhoneNumberID  string
+	BusinessAcctID string
+	WebhookToken   string
+	APIBaseURL     string
+}
+
+// GetWhatsAppEnvConfig returns WhatsApp config from environment variables
+func GetWhatsAppEnvConfig() WhatsAppEnvConfig {
+	enabled := getEnvOrDefault("WHATSAPP_ENABLED", "false") == "true"
+
+	return WhatsAppEnvConfig{
+		Enabled:        enabled,
+		AccessToken:    os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		PhoneNumberID:  os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		BusinessAcctID: os.Getenv("WHATSAPP_BUSINESS_ACCOUNT_ID"),
+		WebhookToken:   os.Getenv("WHATSAPP_WEBHOOK_TOKEN"),
+		APIBaseURL:     getEnvOrDefault("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v18.0"),
+	}
+}
+
 // getEnvOrDefault returns environment variable value or default if empty
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

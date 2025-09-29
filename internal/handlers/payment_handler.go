@@ -28,16 +28,18 @@ type PaymentHandler struct {
 	paymentService  services.PaymentServiceInterface
 	orderService    services.OrderServiceInterface
 	deliveryService services.DeliveryServiceInterface
+	whatsappService *services.WhatsAppService
 	logger          *zap.Logger
 	authContext     *auth.AuthContext
 }
 
 // NewPaymentHandler creates a new payment handler
-func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderService services.OrderServiceInterface, deliveryService services.DeliveryServiceInterface, logger *zap.Logger) *PaymentHandler {
+func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderService services.OrderServiceInterface, deliveryService services.DeliveryServiceInterface, whatsappService *services.WhatsAppService, logger *zap.Logger) *PaymentHandler {
 	return &PaymentHandler{
 		paymentService:  paymentService,
 		orderService:    orderService,
 		deliveryService: deliveryService,
+		whatsappService: whatsappService,
 		logger:          logger,
 		authContext:     auth.NewAuthContext(),
 	}
@@ -1211,6 +1213,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 							zap.String("tracking_url", trackingURL),
 							zap.String("status", shipmentResult.Status),
 							zap.String("flow_step", "order_update_success"))
+
+						// Send WhatsApp tracking notification
+						if h.whatsappService != nil && h.whatsappService.IsEnabled() {
+							customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
+							if customerPhone != "" {
+								// Create background context for WhatsApp messages (not tied to HTTP request)
+								backgroundCtx := context.Background()
+								go func() {
+									if err := h.whatsappService.SendTrackingMessage(backgroundCtx, order, customerPhone); err != nil {
+										h.logger.Error("Failed to send WhatsApp tracking message",
+											zap.String("request_id", requestID),
+											zap.String("order_id", order.ID),
+											zap.String("customer_phone", customerPhone),
+											zap.String("waybill", shipmentResult.Waybill),
+											zap.Error(err))
+									} else {
+										h.logger.Info("WhatsApp tracking message sent",
+											zap.String("request_id", requestID),
+											zap.String("order_id", order.ID),
+											zap.String("customer_phone", customerPhone),
+											zap.String("waybill", shipmentResult.Waybill))
+									}
+								}()
+							}
+						}
 					}
 				}
 			}
@@ -1274,6 +1301,53 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			OrderID:     order.ID,
 			AWBNumber:   awbNumber,
 			TrackingURL: trackingURL,
+		}
+
+		// Send WhatsApp notifications for successful payment and order
+		if h.whatsappService != nil && h.whatsappService.IsEnabled() {
+			// Get customer phone number from order
+			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
+
+			if customerPhone != "" {
+				// Create background context for WhatsApp messages (not tied to HTTP request)
+				backgroundCtx := context.Background()
+
+				// Send payment success notification
+				go func() {
+					if err := h.whatsappService.SendPaymentSuccessMessage(backgroundCtx, order, customerPhone); err != nil {
+						h.logger.Error("Failed to send WhatsApp payment success message",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone),
+							zap.Error(err))
+					} else {
+						h.logger.Info("WhatsApp payment success message sent",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone))
+					}
+				}()
+
+				// Send order confirmation notification
+				go func() {
+					if err := h.whatsappService.SendOrderConfirmationMessage(backgroundCtx, order, customerPhone); err != nil {
+						h.logger.Error("Failed to send WhatsApp order confirmation message",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone),
+							zap.Error(err))
+					} else {
+						h.logger.Info("WhatsApp order confirmation message sent",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone))
+					}
+				}()
+			} else {
+				h.logger.Warn("No customer phone number found for WhatsApp notifications",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID))
+			}
 		}
 
 		// Comprehensive success logging
