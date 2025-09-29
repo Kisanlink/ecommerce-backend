@@ -611,35 +611,32 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("user_id", userID),
 			zap.String("razorpay_order_id", req.OrderID))
 
-		existingOrders, getOrdersErr := h.orderService.GetUserOrders(c.Request.Context(), userID)
-		if getOrdersErr == nil {
-			for _, existingOrder := range existingOrders {
-				if existingOrder.RazorpayOrderID == req.OrderID {
-					h.logger.Warn("Duplicate order creation attempt - order already exists",
-						zap.String("request_id", requestID),
-						zap.String("user_id", userID),
-						zap.String("existing_order_id", existingOrder.ID),
-						zap.String("razorpay_order_id", req.OrderID),
-						zap.String("event_type", "duplicate_order_prevention"))
-
-					// Return the existing order details instead of creating new one
-					response = VerifyPaymentResponse{
-						Success:     true,
-						Message:     "Payment already processed - returning existing order",
-						PaymentID:   req.PaymentID,
-						OrderID:     existingOrder.ID,
-						AWBNumber:   existingOrder.DelhiveryWaybill,
-						TrackingURL: existingOrder.TrackingURL,
-					}
-					c.JSON(http.StatusOK, response)
-					return
-				}
-			}
-		} else {
-			h.logger.Warn("Failed to check for existing orders",
+		existingOrder, getOrderErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID)
+		if getOrderErr == nil && existingOrder != nil {
+			h.logger.Warn("Duplicate order creation attempt - order already exists",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
-				zap.Error(getOrdersErr))
+				zap.String("existing_order_id", existingOrder.ID),
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.String("event_type", "duplicate_order_prevention"))
+
+			// Return the existing order details instead of creating new one
+			response = VerifyPaymentResponse{
+				Success:     true,
+				Message:     "Payment already processed - returning existing order",
+				PaymentID:   req.PaymentID,
+				OrderID:     existingOrder.ID,
+				AWBNumber:   existingOrder.DelhiveryWaybill,
+				TrackingURL: existingOrder.TrackingURL,
+			}
+			c.JSON(http.StatusOK, response)
+			return
+		} else if getOrderErr != nil {
+			h.logger.Info("No existing order found with this Razorpay order ID - proceeding with new order creation",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.Error(getOrderErr))
 		}
 
 		// Fetch Razorpay order to get notes (subtotal, cart_total, shipping_charges, shipping_address)
@@ -890,15 +887,44 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				strings.Contains(err.Error(), "duplicate key") ||
 				strings.Contains(err.Error(), "UNIQUE constraint") ||
 				strings.Contains(err.Error(), "Duplicate entry") {
-				h.logger.Error("Duplicate order creation detected",
+				h.logger.Warn("Duplicate order creation detected - fetching existing order",
 					zap.String("request_id", requestID),
 					zap.String("user_id", userID),
 					zap.String("payment_id", req.PaymentID),
 					zap.String("razorpay_order_id", req.OrderID),
-					zap.String("error_type", "duplicate_order_error"))
-				c.JSON(http.StatusConflict, gin.H{
-					"error": "This payment has already been processed. Please check your order history.",
-					"code":  "PAYMENT_ALREADY_PROCESSED"})
+					zap.String("error_type", "duplicate_order_handled"))
+
+				// Try to fetch the existing order instead of returning an error
+				existingOrder, fetchErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID)
+				if fetchErr == nil && existingOrder != nil {
+					h.logger.Info("Successfully retrieved existing order for duplicate payment",
+						zap.String("request_id", requestID),
+						zap.String("user_id", userID),
+						zap.String("existing_order_id", existingOrder.ID),
+						zap.String("razorpay_order_id", req.OrderID))
+
+					// Return the existing order details
+					response = VerifyPaymentResponse{
+						Success:     true,
+						Message:     "Payment already processed - returning existing order",
+						PaymentID:   req.PaymentID,
+						OrderID:     existingOrder.ID,
+						AWBNumber:   existingOrder.DelhiveryWaybill,
+						TrackingURL: existingOrder.TrackingURL,
+					}
+					c.JSON(http.StatusOK, response)
+					return
+				} else {
+					h.logger.Error("Failed to fetch existing order after duplicate detection",
+						zap.String("request_id", requestID),
+						zap.String("user_id", userID),
+						zap.String("razorpay_order_id", req.OrderID),
+						zap.Error(fetchErr))
+					c.JSON(http.StatusConflict, gin.H{
+						"error": "This payment has already been processed. Please check your order history.",
+						"code":  "PAYMENT_ALREADY_PROCESSED"})
+					return
+				}
 			} else {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verified but failed to create order"})
 			}
@@ -1031,336 +1057,306 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			_ = h.orderService.UpdateOrderNotes(c.Request.Context(), order.ID, notesStr)
 		}
 
-		// Generate invoice and attach URL
-		if url, invErr := h.orderService.GenerateAndAttachInvoice(c.Request.Context(), order.ID); invErr != nil {
-			h.logger.Warn("Failed to generate invoice",
-				zap.String("request_id", requestID),
-				zap.Error(invErr),
-				zap.String("order_id", order.ID))
-		} else if url != "" {
-			h.logger.Info("Invoice generated successfully",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("invoice_url", url))
-		}
+		// 🚀 OPTIMIZATION: Move heavy operations to background processing
+		// This dramatically reduces API response time and prevents 409 conflicts
 
-		// Create Delhivery shipment after successful order creation with enhanced error handling
-		h.logger.Info("=== STARTING DELHIVERY SHIPMENT CREATION FLOW ===",
+		h.logger.Info("=== STARTING BACKGROUND PROCESSING FOR HEAVY OPERATIONS ===",
 			zap.String("request_id", requestID),
 			zap.String("order_id", order.ID),
 			zap.String("user_id", userID),
-			zap.String("flow_step", "shipment_creation_start"))
+			zap.String("flow_step", "background_processing_start"))
 
-		var awbNumber, trackingURL string
-		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
+		// Create background context for heavy operations (not tied to HTTP request)
+		backgroundCtx := context.Background()
 
-		h.logger.Info("Order items retrieval result",
-			zap.String("request_id", requestID),
-			zap.String("order_id", order.ID),
-			zap.Error(getOrderErr),
-			zap.Bool("has_error", getOrderErr != nil),
-			zap.Bool("order_is_nil", orderWithItems == nil),
-			zap.Int("items_count", len(orderItems)),
-			zap.String("flow_step", "order_items_retrieval"))
-
-		if getOrderErr != nil {
-			h.logger.Error("Failed to get order items for shipment creation",
+		// 1. Background Invoice Generation
+		go func() {
+			h.logger.Info("Starting background invoice generation",
 				zap.String("request_id", requestID),
-				zap.Error(getOrderErr),
+				zap.String("order_id", order.ID),
+				zap.String("flow_step", "background_invoice_start"))
+
+			if url, invErr := h.orderService.GenerateAndAttachInvoice(backgroundCtx, order.ID); invErr != nil {
+				h.logger.Warn("Background invoice generation failed",
+					zap.String("request_id", requestID),
+					zap.Error(invErr),
+					zap.String("order_id", order.ID),
+					zap.String("flow_step", "background_invoice_failed"))
+			} else if url != "" {
+				h.logger.Info("Background invoice generated successfully",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("invoice_url", url),
+					zap.String("flow_step", "background_invoice_success"))
+			}
+		}()
+
+		// 2. Background Shipment Creation with Database Storage
+		go func() {
+			h.logger.Info("=== STARTING BACKGROUND DELHIVERY SHIPMENT CREATION ===",
+				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID),
-				zap.String("error_type", "order_items_retrieval_error"),
-				zap.String("flow_step", "order_items_retrieval_failed"))
-			// Continue without shipment creation - order is still valid
-		} else if len(orderItems) == 0 {
-			h.logger.Error("No order items found for shipment creation",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("user_id", userID),
-				zap.String("error_type", "empty_order_items_error"),
-				zap.String("flow_step", "empty_order_items"))
-			// Continue without shipment creation - order is still valid
-		} else {
-			h.logger.Info("=== PROCEEDING WITH SHIPMENT CREATION ===",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("flow_step", "shipment_creation_proceed"))
+				zap.String("flow_step", "background_shipment_start"))
 
-			// Enhanced shipment creation with detailed logging
-			h.logger.Info("Creating Delhivery shipment - detailed context",
+			orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(backgroundCtx, order.ID)
+
+			if getOrderErr != nil {
+				h.logger.Error("Background shipment: Failed to get order items",
+					zap.String("request_id", requestID),
+					zap.Error(getOrderErr),
+					zap.String("order_id", order.ID),
+					zap.String("user_id", userID),
+					zap.String("error_type", "background_order_items_retrieval_error"),
+					zap.String("flow_step", "background_order_items_failed"))
+				return
+			}
+
+			if len(orderItems) == 0 {
+				h.logger.Error("Background shipment: No order items found",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("user_id", userID),
+					zap.String("error_type", "background_empty_order_items"),
+					zap.String("flow_step", "background_empty_items"))
+				return
+			}
+
+			h.logger.Info("Background shipment: Creating Delhivery shipment",
 				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID),
 				zap.Int("item_count", len(orderItems)),
 				zap.String("shipping_address", orderWithItems.ShippingAddr),
-				zap.String("shipping_addr_id", orderWithItems.ShippingAddrID),
 				zap.String("customer_name", orderWithItems.CustomerFirstName+" "+orderWithItems.CustomerLastName),
 				zap.String("customer_phone", orderWithItems.CustomerPhone),
 				zap.Float64("total_amount", orderWithItems.TotalAmount),
-				zap.Float64("shipping_charge", orderWithItems.ShippingCharge),
-				zap.String("flow_step", "calling_delivery_service"))
+				zap.String("flow_step", "background_calling_delivery_service"))
 
-			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
+			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(backgroundCtx, orderWithItems, orderItems)
 
-			h.logger.Info("=== SHIPMENT CREATION SERVICE RESPONSE ===",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.Bool("has_error", shipmentErr != nil),
-				zap.Bool("result_is_nil", shipmentResult == nil),
-				zap.String("flow_step", "shipment_service_response"))
-
-			// Enhanced shipment result logging
 			if shipmentErr != nil {
-				h.logger.Error("=== DELHIVERY SHIPMENT CREATION FAILED WITH ERROR ===",
+				h.logger.Error("Background shipment creation failed",
 					zap.String("request_id", requestID),
 					zap.Error(shipmentErr),
 					zap.String("order_id", order.ID),
 					zap.String("user_id", userID),
-					zap.String("error_type", "shipment_creation_error"),
-					zap.String("error_details", shipmentErr.Error()),
-					zap.String("error_message", shipmentErr.Error()),
-					zap.String("flow_step", "shipment_creation_error"))
+					zap.String("error_type", "background_shipment_creation_error"),
+					zap.String("flow_step", "background_shipment_error"))
+				return
+			}
 
-				// Even if shipment fails, payment is successful - notify user
-				h.logger.Warn("Order created successfully but shipment creation failed - manual intervention required",
+			if shipmentResult == nil {
+				h.logger.Error("Background shipment: Result is nil",
 					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
-					zap.String("flow_step", "shipment_failed_but_order_success"))
-			} else if shipmentResult == nil {
-				h.logger.Error("=== DELHIVERY SHIPMENT RESULT IS NIL ===",
+					zap.String("error_type", "background_nil_shipment_result"),
+					zap.String("flow_step", "background_nil_result"))
+				return
+			}
+
+			if !shipmentResult.Success {
+				h.logger.Error("Background shipment: API returned failure status",
 					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
-					zap.String("error_type", "nil_shipment_result"),
-					zap.String("flow_step", "nil_shipment_result"))
+					zap.String("message", shipmentResult.Message),
+					zap.String("error_type", "background_shipment_api_failure"),
+					zap.String("flow_step", "background_api_failure"))
+				return
+			}
+
+			if shipmentResult.Waybill == "" {
+				h.logger.Error("Background shipment: Empty waybill received",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("message", shipmentResult.Message),
+					zap.String("status", shipmentResult.Status),
+					zap.String("error_type", "background_empty_waybill"),
+					zap.String("flow_step", "background_empty_waybill"))
+				return
+			}
+
+			// Shipment created successfully - store in database
+			awbNumber := shipmentResult.Waybill
+			trackingURL := shipmentResult.TrackingURL
+
+			// Ensure tracking URL is not empty - generate if needed
+			if trackingURL == "" && awbNumber != "" {
+				trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
+				h.logger.Info("Background shipment: Generated tracking URL",
+					zap.String("request_id", requestID),
+					zap.String("awb", awbNumber),
+					zap.String("tracking_url", trackingURL),
+					zap.String("flow_step", "background_tracking_url_generated"))
+			}
+
+			h.logger.Info("Background shipment: Updating order with shipment details",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("waybill", awbNumber),
+				zap.String("tracking_url", trackingURL),
+				zap.String("status", shipmentResult.Status),
+				zap.String("flow_step", "background_updating_order"))
+
+			// Update order with shipment details atomically
+			if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
+				backgroundCtx,
+				order.ID,
+				awbNumber,
+				trackingURL,
+				shipmentResult.Status,
+			); updateErr != nil {
+				h.logger.Error("Background shipment: Failed to update order with shipment details",
+					zap.String("request_id", requestID),
+					zap.Error(updateErr),
+					zap.String("order_id", order.ID),
+					zap.String("waybill", awbNumber),
+					zap.String("error_type", "background_shipment_update_error"),
+					zap.String("flow_step", "background_order_update_failed"))
 			} else {
-				h.logger.Info("=== ANALYZING SHIPMENT RESULT ===",
+				h.logger.Info("Background shipment: Order updated with shipment details successfully",
 					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
-					zap.Bool("result_success", shipmentResult.Success),
-					zap.String("result_message", shipmentResult.Message),
-					zap.String("result_waybill", shipmentResult.Waybill),
-					zap.String("result_tracking_url", shipmentResult.TrackingURL),
-					zap.String("result_status", shipmentResult.Status),
-					zap.String("flow_step", "shipment_result_analysis"))
+					zap.String("waybill", awbNumber),
+					zap.String("tracking_url", trackingURL),
+					zap.String("status", shipmentResult.Status),
+					zap.String("flow_step", "background_order_update_success"))
 
-				if !shipmentResult.Success {
-					h.logger.Error("=== DELHIVERY API RETURNED FAILURE STATUS ===",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("message", shipmentResult.Message),
-						zap.String("error_type", "shipment_api_failure"),
-						zap.String("flow_step", "api_failure_status"))
-				} else if shipmentResult.Waybill == "" {
-					h.logger.Error("=== EMPTY WAYBILL RECEIVED FROM DELHIVERY ===",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("message", shipmentResult.Message),
-						zap.String("status", shipmentResult.Status),
-						zap.String("tracking_url", shipmentResult.TrackingURL),
-						zap.String("error_type", "empty_waybill_error"),
-						zap.String("flow_step", "empty_waybill_error"))
-				} else {
-					h.logger.Info("=== DELHIVERY SHIPMENT CREATED SUCCESSFULLY ===",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("awb_number", shipmentResult.Waybill),
-						zap.String("tracking_url", shipmentResult.TrackingURL),
-						zap.String("status", shipmentResult.Status),
-						zap.String("flow_step", "shipment_success"))
-
-					// Shipment created successfully
-					awbNumber = shipmentResult.Waybill
-					trackingURL = shipmentResult.TrackingURL
-
-					// Ensure tracking URL is not empty - generate if needed
-					if trackingURL == "" && awbNumber != "" {
-						trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
-						h.logger.Info("Generated tracking URL for AWB",
-							zap.String("request_id", requestID),
-							zap.String("awb", awbNumber),
-							zap.String("tracking_url", trackingURL),
-							zap.String("flow_step", "tracking_url_generated"))
-					}
-
-					h.logger.Info("=== UPDATING ORDER WITH SHIPMENT DETAILS ===",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("waybill", shipmentResult.Waybill),
-						zap.String("tracking_url", trackingURL),
-						zap.String("status", shipmentResult.Status),
-						zap.String("flow_step", "updating_order_with_shipment"))
-
-					// Update order with shipment details atomically
-					if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
-						c.Request.Context(),
-						order.ID,
-						shipmentResult.Waybill,
-						trackingURL,
-						shipmentResult.Status,
-					); updateErr != nil {
-						h.logger.Error("=== FAILED TO UPDATE ORDER WITH SHIPMENT DETAILS ===",
-							zap.String("request_id", requestID),
-							zap.Error(updateErr),
-							zap.String("order_id", order.ID),
-							zap.String("waybill", shipmentResult.Waybill),
-							zap.String("error_type", "shipment_update_error"),
-							zap.String("flow_step", "order_update_failed"))
-					} else {
-						h.logger.Info("=== ORDER UPDATED WITH SHIPMENT DETAILS SUCCESSFULLY ===",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("waybill", shipmentResult.Waybill),
-							zap.String("tracking_url", trackingURL),
-							zap.String("status", shipmentResult.Status),
-							zap.String("flow_step", "order_update_success"))
-
-						// Send WhatsApp tracking notification
-						if h.whatsappService != nil && h.whatsappService.IsEnabled() {
-							customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
-							if customerPhone != "" {
-								// Create background context for WhatsApp messages (not tied to HTTP request)
-								backgroundCtx := context.Background()
-								go func() {
-									if err := h.whatsappService.SendTrackingMessage(backgroundCtx, order, customerPhone); err != nil {
-										h.logger.Error("Failed to send WhatsApp tracking message",
-											zap.String("request_id", requestID),
-											zap.String("order_id", order.ID),
-											zap.String("customer_phone", customerPhone),
-											zap.String("waybill", shipmentResult.Waybill),
-											zap.Error(err))
-									} else {
-										h.logger.Info("WhatsApp tracking message sent",
-											zap.String("request_id", requestID),
-											zap.String("order_id", order.ID),
-											zap.String("customer_phone", customerPhone),
-											zap.String("waybill", shipmentResult.Waybill))
-									}
-								}()
+				// Send WhatsApp tracking notification
+				if h.whatsappService != nil && h.whatsappService.IsEnabled() {
+					customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
+					if customerPhone != "" {
+						go func() {
+							if err := h.whatsappService.SendTrackingMessage(backgroundCtx, order, customerPhone); err != nil {
+								h.logger.Error("Background WhatsApp: Failed to send tracking message",
+									zap.String("request_id", requestID),
+									zap.String("order_id", order.ID),
+									zap.String("customer_phone", customerPhone),
+									zap.String("waybill", awbNumber),
+									zap.Error(err),
+									zap.String("flow_step", "background_whatsapp_tracking_failed"))
+							} else {
+								h.logger.Info("Background WhatsApp: Tracking message sent",
+									zap.String("request_id", requestID),
+									zap.String("order_id", order.ID),
+									zap.String("customer_phone", customerPhone),
+									zap.String("waybill", awbNumber),
+									zap.String("flow_step", "background_whatsapp_tracking_success"))
 							}
-						}
+						}()
 					}
 				}
 			}
-		}
+		}()
 
-		// Clear user's cart after successful order creation
-		h.logger.Info("Clearing user cart after successful order creation",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.String("order_id", order.ID))
-
-		if err := h.orderService.ClearUserCart(c.Request.Context(), userID); err != nil {
-			h.logger.Warn("Failed to clear cart after payment",
+		// 3. Background Cart Clearing
+		go func() {
+			h.logger.Info("Starting background cart clearing",
 				zap.String("request_id", requestID),
-				zap.Error(err),
-				zap.String("user_id", userID))
-		} else {
-			h.logger.Info("User cart cleared successfully",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID))
-		}
-
-		// Final verification: Fetch the order one more time to ensure payment status is correct
-		finalOrder, err := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
-		if err != nil {
-			h.logger.Error("Failed to fetch final order for verification",
-				zap.String("request_id", requestID),
-				zap.Error(err),
+				zap.String("user_id", userID),
 				zap.String("order_id", order.ID),
-				zap.String("error_type", "final_order_fetch_error"))
-		} else {
-			order = finalOrder // Use the final verified order
-			h.logger.Info("Final order verification completed",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("payment_status", order.PaymentStatus),
-				zap.String("order_status", string(order.Status)))
+				zap.String("flow_step", "background_cart_clear_start"))
+
+			if err := h.orderService.ClearUserCart(backgroundCtx, userID); err != nil {
+				h.logger.Warn("Background cart clearing failed",
+					zap.String("request_id", requestID),
+					zap.Error(err),
+					zap.String("user_id", userID),
+					zap.String("flow_step", "background_cart_clear_failed"))
+			} else {
+				h.logger.Info("Background cart cleared successfully",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.String("flow_step", "background_cart_clear_success"))
+			}
+		}()
+
+		// 4. Background WhatsApp Notifications
+		if h.whatsappService != nil && h.whatsappService.IsEnabled() {
+			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
+			if customerPhone != "" {
+				// Send payment success notification
+				go func() {
+					h.logger.Info("Starting background WhatsApp payment success notification",
+						zap.String("request_id", requestID),
+						zap.String("order_id", order.ID),
+						zap.String("customer_phone", customerPhone),
+						zap.String("flow_step", "background_whatsapp_payment_start"))
+
+					if err := h.whatsappService.SendPaymentSuccessMessage(backgroundCtx, order, customerPhone); err != nil {
+						h.logger.Error("Background WhatsApp: Failed to send payment success message",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone),
+							zap.Error(err),
+							zap.String("flow_step", "background_whatsapp_payment_failed"))
+					} else {
+						h.logger.Info("Background WhatsApp: Payment success message sent",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone),
+							zap.String("flow_step", "background_whatsapp_payment_success"))
+					}
+				}()
+
+				// Send order confirmation notification
+				go func() {
+					h.logger.Info("Starting background WhatsApp order confirmation notification",
+						zap.String("request_id", requestID),
+						zap.String("order_id", order.ID),
+						zap.String("customer_phone", customerPhone),
+						zap.String("flow_step", "background_whatsapp_confirmation_start"))
+
+					if err := h.whatsappService.SendOrderConfirmationMessage(backgroundCtx, order, customerPhone); err != nil {
+						h.logger.Error("Background WhatsApp: Failed to send order confirmation message",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone),
+							zap.Error(err),
+							zap.String("flow_step", "background_whatsapp_confirmation_failed"))
+					} else {
+						h.logger.Info("Background WhatsApp: Order confirmation message sent",
+							zap.String("request_id", requestID),
+							zap.String("order_id", order.ID),
+							zap.String("customer_phone", customerPhone),
+							zap.String("flow_step", "background_whatsapp_confirmation_success"))
+					}
+				}()
+			} else {
+				h.logger.Warn("No customer phone number found for background WhatsApp notifications",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("flow_step", "background_whatsapp_no_phone"))
+			}
 		}
 
-		// Prepare comprehensive response
-		h.logger.Info("=== PREPARING PAYMENT VERIFICATION RESPONSE ===",
+		// 🚀 IMMEDIATE RESPONSE - No heavy operations blocking the API
+		h.logger.Info("=== PREPARING IMMEDIATE PAYMENT VERIFICATION RESPONSE ===",
 			zap.String("request_id", requestID),
 			zap.String("order_id", order.ID),
-			zap.String("awb_number", awbNumber),
-			zap.String("tracking_url", trackingURL),
-			zap.Bool("has_awb", awbNumber != ""),
-			zap.Bool("has_tracking_url", trackingURL != ""),
-			zap.String("flow_step", "preparing_response"))
+			zap.String("flow_step", "immediate_response_preparation"))
 
-		responseMessage := "Payment verified and order created successfully"
-		if awbNumber != "" {
-			responseMessage += fmt.Sprintf(". Shipment AWB: %s", awbNumber)
-		} else {
-			responseMessage += ". Shipment will be processed shortly"
-		}
+		responseMessage := "Payment verified and order created successfully. Shipment and notifications will be processed in the background."
 
 		response = VerifyPaymentResponse{
 			Success:     true,
 			Message:     responseMessage,
 			PaymentID:   req.PaymentID,
 			OrderID:     order.ID,
-			AWBNumber:   awbNumber,
-			TrackingURL: trackingURL,
-		}
-
-		// Send WhatsApp notifications for successful payment and order
-		if h.whatsappService != nil && h.whatsappService.IsEnabled() {
-			// Get customer phone number from order
-			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
-
-			if customerPhone != "" {
-				// Create background context for WhatsApp messages (not tied to HTTP request)
-				backgroundCtx := context.Background()
-
-				// Send payment success notification
-				go func() {
-					if err := h.whatsappService.SendPaymentSuccessMessage(backgroundCtx, order, customerPhone); err != nil {
-						h.logger.Error("Failed to send WhatsApp payment success message",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("customer_phone", customerPhone),
-							zap.Error(err))
-					} else {
-						h.logger.Info("WhatsApp payment success message sent",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("customer_phone", customerPhone))
-					}
-				}()
-
-				// Send order confirmation notification
-				go func() {
-					if err := h.whatsappService.SendOrderConfirmationMessage(backgroundCtx, order, customerPhone); err != nil {
-						h.logger.Error("Failed to send WhatsApp order confirmation message",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("customer_phone", customerPhone),
-							zap.Error(err))
-					} else {
-						h.logger.Info("WhatsApp order confirmation message sent",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("customer_phone", customerPhone))
-					}
-				}()
-			} else {
-				h.logger.Warn("No customer phone number found for WhatsApp notifications",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID))
-			}
+			AWBNumber:   "", // Will be updated in background
+			TrackingURL: "", // Will be updated in background
 		}
 
 		// Comprehensive success logging
-		h.logger.Info("Payment verification and order creation completed successfully",
+		h.logger.Info("Payment verification completed - heavy operations moved to background",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("order_id", order.ID),
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID),
-			zap.String("awb_number", awbNumber),
-			zap.String("tracking_url", trackingURL),
 			zap.Float64("total_amount", order.TotalAmount),
-			zap.Float64("shipping_charges", order.ShippingCharge))
+			zap.Float64("shipping_charges", order.ShippingCharge),
+			zap.String("flow_step", "optimized_response_ready"))
 	} else {
 		// Enhanced failure response with more details
 		response = VerifyPaymentResponse{

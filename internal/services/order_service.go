@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -710,13 +712,13 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 	// Add shipping charges to get final total (no tax)
 	totalAmount := utils.AddShippingCharges(discountedCartTotal, shippingCharges)
 
-	// Create order customer record
-	if err := s.orderRepo.CreateOrderCustomer(ctx, customerData); err != nil {
+	// Create order customer record with retry logic for duplicate key errors
+	if err := s.createOrderCustomerWithRetry(ctx, customerData); err != nil {
 		return nil, fmt.Errorf("failed to create order customer: %w", err)
 	}
 
-	// Create order address record
-	if err := s.orderRepo.CreateOrderAddress(ctx, addressData); err != nil {
+	// Create order address record with retry logic for duplicate key errors
+	if err := s.createOrderAddressWithRetry(ctx, addressData); err != nil {
 		return nil, fmt.Errorf("failed to create order address: %w", err)
 	}
 
@@ -826,4 +828,101 @@ func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*mo
 	order.OrderItems = orderItems
 
 	return order, nil
+}
+
+// createOrderCustomerWithRetry creates an order customer with retry logic for duplicate key errors
+func (s *OrderService) createOrderCustomerWithRetry(ctx context.Context, customerData *models.OrderCustomer) error {
+	maxRetries := 3
+	var createErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		createErr = s.orderRepo.CreateOrderCustomer(ctx, customerData)
+		if createErr == nil {
+			// Successfully created customer, break out of retry loop
+			return nil
+		}
+
+		// Check if it's a duplicate key error
+		errorStr := createErr.Error()
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "order_customers_pkey") {
+			// Generate a new ID and try again
+			s.logger.Warn("Duplicate key error detected for order customer, retrying with new ID",
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries),
+				zap.String("old_id", customerData.ID),
+				zap.Error(createErr))
+
+			// Create a new customer with a fresh ID
+			newCustomer := models.NewOrderCustomer(
+				customerData.FirstName,
+				customerData.LastName,
+				customerData.Phone,
+				customerData.PhoneAlt,
+				customerData.Email,
+			)
+			// Copy the new ID to the original customer data
+			customerData.ID = newCustomer.ID
+			customerData.BaseModel = newCustomer.BaseModel
+
+			// Add a small delay before retry to reduce contention
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			continue
+		}
+
+		// If it's not a duplicate key error, return the error immediately
+		return createErr
+	}
+
+	// If we still have an error after all retries, return it
+	return fmt.Errorf("failed to create order customer after %d attempts: %w", maxRetries, createErr)
+}
+
+// createOrderAddressWithRetry creates an order address with retry logic for duplicate key errors
+func (s *OrderService) createOrderAddressWithRetry(ctx context.Context, addressData *models.OrderAddress) error {
+	maxRetries := 3
+	var createErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		createErr = s.orderRepo.CreateOrderAddress(ctx, addressData)
+		if createErr == nil {
+			// Successfully created address, break out of retry loop
+			return nil
+		}
+
+		// Check if it's a duplicate key error
+		errorStr := createErr.Error()
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "order_addresses_pkey") {
+			// Generate a new ID and try again
+			s.logger.Warn("Duplicate key error detected for order address, retrying with new ID",
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries),
+				zap.String("old_id", addressData.ID),
+				zap.Error(createErr))
+
+			// Create a new address with a fresh ID
+			newAddress := models.NewOrderAddress(
+				addressData.AddressLine1,
+				addressData.AddressLine2,
+				addressData.City,
+				addressData.State,
+				addressData.PostalCode,
+				addressData.Country,
+			)
+			// Copy the new ID to the original address data
+			addressData.ID = newAddress.ID
+			addressData.BaseModel = newAddress.BaseModel
+
+			// Add a small delay before retry to reduce contention
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			continue
+		}
+
+		// If it's not a duplicate key error, return the error immediately
+		return createErr
+	}
+
+	// If we still have an error after all retries, return it
+	return fmt.Errorf("failed to create order address after %d attempts: %w", maxRetries, createErr)
 }
