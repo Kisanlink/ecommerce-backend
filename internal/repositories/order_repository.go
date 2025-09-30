@@ -39,6 +39,16 @@ func (r *OrderRepository) GetOrderAddress(ctx context.Context, addressID string)
 	return &address, nil
 }
 
+// GetOrderCustomers retrieves order customers with filter
+func (r *OrderRepository) GetOrderCustomers(ctx context.Context, filter *base.Filter, customers *[]*models.OrderCustomer) error {
+	return r.dbManager.List(ctx, filter, customers)
+}
+
+// GetOrderAddresses retrieves order addresses with filter
+func (r *OrderRepository) GetOrderAddresses(ctx context.Context, filter *base.Filter, addresses *[]*models.OrderAddress) error {
+	return r.dbManager.List(ctx, filter, addresses)
+}
+
 // Create creates a new order in the database
 func (r *OrderRepository) Create(ctx context.Context, order *models.Order) error {
 	return r.dbManager.Create(ctx, order)

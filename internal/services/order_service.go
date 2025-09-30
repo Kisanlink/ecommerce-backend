@@ -72,6 +72,12 @@ func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartSe
 	// Initialize order item ID counter from existing database records
 	service.initializeOrderItemIDGenerator()
 
+	// Initialize order customer ID counter from existing database records
+	service.initializeOrderCustomerIDCounter()
+
+	// Initialize order address ID counter from existing database records
+	service.initializeOrderAddressIDCounter()
+
 	return service
 }
 
@@ -144,6 +150,80 @@ func (s *OrderService) initializeOrderItemIDGenerator() {
 		hash.InitializeGlobalCountersFromDatabase("OITM", existingIDs, hash.Large)
 	}
 	s.logger.Info("Order item ID generator initialized")
+}
+
+// initializeOrderCustomerIDCounter initializes the order customer ID counter from existing database records
+func (s *OrderService) initializeOrderCustomerIDCounter() {
+	ctx := context.Background()
+	s.logger.Info("Initializing order customer ID counter")
+
+	// Query all existing order customer IDs to prevent conflicts (exclude soft-deleted)
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "deleted_at", Operator: base.OpIsNull, Value: nil},
+			},
+			Logic: base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	var orderCustomers []*models.OrderCustomer
+	if err := s.orderRepo.GetOrderCustomers(ctx, filter, &orderCustomers); err != nil {
+		s.logger.Error("Failed to get existing order customers for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("OCUS", []string{}, hash.Medium)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, 0, len(orderCustomers))
+		for _, customer := range orderCustomers {
+			if customer != nil && customer.GetID() != "" {
+				existingIDs = append(existingIDs, customer.GetID())
+			}
+		}
+		s.logger.Info("Found existing order customer IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("OCUS", existingIDs, hash.Medium)
+	}
+
+	s.logger.Info("Order customer ID counter initialized")
+}
+
+// initializeOrderAddressIDCounter initializes the order address ID counter from existing database records
+func (s *OrderService) initializeOrderAddressIDCounter() {
+	ctx := context.Background()
+	s.logger.Info("Initializing order address ID counter")
+
+	// Query all existing order address IDs to prevent conflicts (exclude soft-deleted)
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "deleted_at", Operator: base.OpIsNull, Value: nil},
+			},
+			Logic: base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	var orderAddresses []*models.OrderAddress
+	if err := s.orderRepo.GetOrderAddresses(ctx, filter, &orderAddresses); err != nil {
+		s.logger.Error("Failed to get existing order addresses for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("OADR", []string{}, hash.Medium)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, 0, len(orderAddresses))
+		for _, address := range orderAddresses {
+			if address != nil && address.GetID() != "" {
+				existingIDs = append(existingIDs, address.GetID())
+			}
+		}
+		s.logger.Info("Found existing order address IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("OADR", existingIDs, hash.Medium)
+	}
+
+	s.logger.Info("Order address ID counter initialized")
 }
 
 // GetUserCart retrieves the user's cart via cart service

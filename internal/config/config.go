@@ -219,7 +219,7 @@ func GetWhatsAppEnvConfig() WhatsAppEnvConfig {
 		PhoneNumberID:  os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 		BusinessAcctID: os.Getenv("WHATSAPP_BUSINESS_ACCOUNT_ID"),
 		WebhookToken:   os.Getenv("WHATSAPP_WEBHOOK_TOKEN"),
-		APIBaseURL:     getEnvOrDefault("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v18.0"),
+		APIBaseURL:     getEnvOrDefault("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v22.0"),
 	}
 }
 
