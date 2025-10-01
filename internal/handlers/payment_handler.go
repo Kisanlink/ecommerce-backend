@@ -1026,6 +1026,34 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 						zap.String("order_id", order.ID),
 						zap.String("waybill", awbNumber),
 						zap.String("tracking_url", trackingURL))
+
+					// Send tracking message immediately after shipment is created
+					if h.whatsappService != nil && h.whatsappService.IsEnabled() {
+						customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
+						if customerPhone != "" {
+							h.logger.Info("Sending WhatsApp tracking notification after shipment creation",
+								zap.String("request_id", requestID),
+								zap.String("order_id", order.ID),
+								zap.String("customer_phone", customerPhone),
+								zap.String("tracking_url", trackingURL),
+								zap.String("waybill", awbNumber))
+
+							if err := h.whatsappService.SendTrackingMessageWithURL(c.Request.Context(), order, customerPhone, trackingURL); err != nil {
+								h.logger.Error("Failed to send WhatsApp tracking message after shipment creation",
+									zap.String("request_id", requestID),
+									zap.String("order_id", order.ID),
+									zap.String("customer_phone", customerPhone),
+									zap.String("tracking_url", trackingURL),
+									zap.Error(err))
+							} else {
+								h.logger.Info("WhatsApp tracking message sent after shipment creation",
+									zap.String("request_id", requestID),
+									zap.String("order_id", order.ID),
+									zap.String("customer_phone", customerPhone),
+									zap.String("tracking_url", trackingURL))
+							}
+						}
+					}
 				}
 			}
 		}
@@ -1054,65 +1082,30 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		if h.whatsappService != nil && h.whatsappService.IsEnabled() {
 			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(order)
 			if customerPhone != "" {
-				// Send payment success notification
-				h.logger.Info("Sending WhatsApp payment success notification",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("customer_phone", customerPhone))
-
-				if err := h.whatsappService.SendPaymentSuccessMessage(c.Request.Context(), order, customerPhone); err != nil {
-					h.logger.Error("Failed to send WhatsApp payment success message",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("customer_phone", customerPhone),
-						zap.Error(err))
-				} else {
-					h.logger.Info("WhatsApp payment success message sent",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("customer_phone", customerPhone))
-				}
-
-				// Send order confirmation notification
-				h.logger.Info("Sending WhatsApp order confirmation notification",
+				// Send payment confirmation notification using payment_confirmation_1 template
+				h.logger.Info("Sending WhatsApp payment confirmation notification",
 					zap.String("request_id", requestID),
 					zap.String("order_id", order.ID),
 					zap.String("customer_phone", customerPhone))
 
 				if err := h.whatsappService.SendOrderConfirmationMessage(c.Request.Context(), order, customerPhone); err != nil {
-					h.logger.Error("Failed to send WhatsApp order confirmation message",
+					h.logger.Error("Failed to send WhatsApp payment confirmation message",
 						zap.String("request_id", requestID),
 						zap.String("order_id", order.ID),
 						zap.String("customer_phone", customerPhone),
 						zap.Error(err))
 				} else {
-					h.logger.Info("WhatsApp order confirmation message sent",
+					h.logger.Info("WhatsApp payment confirmation message sent",
 						zap.String("request_id", requestID),
 						zap.String("order_id", order.ID),
 						zap.String("customer_phone", customerPhone))
 				}
 
-				// Send tracking notification if tracking URL is available
-				if order.TrackingURL != "" {
-					h.logger.Info("Sending WhatsApp tracking notification",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("customer_phone", customerPhone),
-						zap.String("tracking_url", order.TrackingURL))
-
-					if err := h.whatsappService.SendTrackingMessage(c.Request.Context(), order, customerPhone); err != nil {
-						h.logger.Error("Failed to send WhatsApp tracking message",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("customer_phone", customerPhone),
-							zap.Error(err))
-					} else {
-						h.logger.Info("WhatsApp tracking message sent",
-							zap.String("request_id", requestID),
-							zap.String("order_id", order.ID),
-							zap.String("customer_phone", customerPhone))
-					}
-				}
+				// Note: Tracking message is now sent immediately after shipment creation
+				// (see shipment creation section above)
+				h.logger.Info("Tracking message will be sent after shipment creation if successful",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID))
 			} else {
 				h.logger.Warn("No customer phone number found for WhatsApp notifications",
 					zap.String("request_id", requestID),
