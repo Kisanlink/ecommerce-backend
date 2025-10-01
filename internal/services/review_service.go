@@ -262,6 +262,22 @@ func (s *ReviewService) GetProductReviews(ctx context.Context, req *requests.Get
 	}
 	input.ExpressionAttributeValues[":is_active"] = &types.AttributeValueMemberBOOL{Value: true}
 
+	// For non-admin users, filter out flagged reviews
+	// TODO: Implement proper admin check - for now, assume non-admin
+	isAdmin := false
+	if !isAdmin {
+		// Show reviews that are either:
+		// 1. Old reviews without is_flagged field (attribute_not_exists(is_flagged))
+		// 2. New reviews that are not flagged (is_flagged = false)
+		// This excludes only reviews that are explicitly flagged (is_flagged = true)
+		if input.FilterExpression == nil {
+			input.FilterExpression = aws.String("NOT (attribute_exists(is_flagged) AND is_flagged = :is_flagged)")
+		} else {
+			*input.FilterExpression += " AND NOT (attribute_exists(is_flagged) AND is_flagged = :is_flagged)"
+		}
+		input.ExpressionAttributeValues[":is_flagged"] = &types.AttributeValueMemberBOOL{Value: true}
+	}
+
 	result, err := s.dynamoClient.Query(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query reviews: %w", err)
@@ -298,7 +314,8 @@ func (s *ReviewService) GetProductReviews(ctx context.Context, req *requests.Get
 	}
 
 	// Check if requesting user is admin (simplified for now)
-	isAdmin := false // TODO: Implement proper admin check
+	// isAdmin is already declared above
+	// TODO: Implement proper admin check
 
 	return responses.NewPaginatedReviewsResponse(reviews, totalCount, req.Page, req.Limit, requestingUserID, isAdmin), nil
 }
@@ -317,13 +334,28 @@ func (s *ReviewService) GetUserReviews(ctx context.Context, req *requests.GetUse
 	var totalCount int
 
 	// Use scan with filter for user reviews (since user_id is sort key)
+	// For non-admin users, also filter out flagged reviews
+	// TODO: Implement proper admin check - for now, assume non-admin
+	isAdmin := false
+	filterExpression := "user_id = :user_id AND is_active = :is_active"
+	expressionValues := map[string]types.AttributeValue{
+		":user_id":   &types.AttributeValueMemberS{Value: req.UserID},
+		":is_active": &types.AttributeValueMemberBOOL{Value: true},
+	}
+
+	if !isAdmin {
+		// Show reviews that are either:
+		// 1. Old reviews without is_flagged field (attribute_not_exists(is_flagged))
+		// 2. New reviews that are not flagged (is_flagged = false)
+		// This excludes only reviews that are explicitly flagged (is_flagged = true)
+		filterExpression += " AND NOT (attribute_exists(is_flagged) AND is_flagged = :is_flagged)"
+		expressionValues[":is_flagged"] = &types.AttributeValueMemberBOOL{Value: true}
+	}
+
 	input := &dynamodb.ScanInput{
-		TableName:        aws.String(s.tableName),
-		FilterExpression: aws.String("user_id = :user_id AND is_active = :is_active"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":user_id":   &types.AttributeValueMemberS{Value: req.UserID},
-			":is_active": &types.AttributeValueMemberBOOL{Value: true},
-		},
+		TableName:                 aws.String(s.tableName),
+		FilterExpression:          aws.String(filterExpression),
+		ExpressionAttributeValues: expressionValues,
 	}
 
 	result, err := s.dynamoClient.Scan(ctx, input)
@@ -355,7 +387,8 @@ func (s *ReviewService) GetUserReviews(ctx context.Context, req *requests.GetUse
 		reviews = allReviews[startIndex:endIndex]
 	}
 
-	isAdmin := false // TODO: Implement proper admin check
+	// isAdmin is already declared above
+	// TODO: Implement proper admin check
 
 	return responses.NewPaginatedReviewsResponse(reviews, totalCount, req.Page, req.Limit, requestingUserID, isAdmin), nil
 }
@@ -598,6 +631,29 @@ func (s *ReviewService) saveReviewToDynamoDB(ctx context.Context, review *models
 	return err
 }
 
+// deleteReviewFromDynamoDB deletes a review from DynamoDB by its ID
+func (s *ReviewService) deleteReviewFromDynamoDB(ctx context.Context, reviewID string) error {
+	if s.dynamoClient == nil {
+		return errors.New("DynamoDB not available")
+	}
+
+	// First, get the review to get the primary key (product_id) and sort key (user_id)
+	review, err := s.getReviewByID(ctx, reviewID)
+	if err != nil {
+		return fmt.Errorf("failed to get review for deletion: %w", err)
+	}
+
+	// Delete the review using the primary key and sort key
+	_, err = s.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.tableName),
+		Key: map[string]types.AttributeValue{
+			"product_id": &types.AttributeValueMemberS{Value: review.ProductID},
+			"user_id":    &types.AttributeValueMemberS{Value: review.UserID},
+		},
+	})
+	return err
+}
+
 // getReviewByID retrieves a review by its ID
 func (s *ReviewService) getReviewByID(ctx context.Context, reviewID string) (*models.Review, error) {
 	if s.dynamoClient == nil {
@@ -792,4 +848,414 @@ func (s *ReviewService) refreshUserNamesFromPostgres(ctx context.Context, review
 		zap.Int("users_found", len(userMap)))
 
 	return nil
+}
+
+// AdminListReviews retrieves all reviews with admin-level filtering and access
+func (s *ReviewService) AdminListReviews(ctx context.Context, req *requests.AdminListReviewsRequest) (*responses.PaginatedReviewsResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	if s.dynamoClient == nil {
+		return nil, errors.New("DynamoDB not available")
+	}
+
+	// Build filter expression for admin queries
+	filterExpressions := []string{}
+	expressionValues := map[string]types.AttributeValue{}
+
+	// Always filter by is_active unless specifically requesting inactive reviews
+	if req.IsActive == nil || *req.IsActive {
+		filterExpressions = append(filterExpressions, "is_active = :is_active")
+		expressionValues[":is_active"] = &types.AttributeValueMemberBOOL{Value: true}
+	} else if req.IsActive != nil && !*req.IsActive {
+		filterExpressions = append(filterExpressions, "is_active = :is_active")
+		expressionValues[":is_active"] = &types.AttributeValueMemberBOOL{Value: false}
+	}
+
+	// Add product filter
+	if req.ProductID != "" {
+		filterExpressions = append(filterExpressions, "product_id = :product_id")
+		expressionValues[":product_id"] = &types.AttributeValueMemberS{Value: req.ProductID}
+	}
+
+	// Add user filter
+	if req.UserID != "" {
+		filterExpressions = append(filterExpressions, "user_id = :user_id")
+		expressionValues[":user_id"] = &types.AttributeValueMemberS{Value: req.UserID}
+	}
+
+	// Add rating filters
+	if req.MinRating > 1 {
+		filterExpressions = append(filterExpressions, "rating >= :min_rating")
+		expressionValues[":min_rating"] = &types.AttributeValueMemberN{Value: strconv.Itoa(req.MinRating)}
+	}
+	if req.MaxRating < 5 {
+		filterExpressions = append(filterExpressions, "rating <= :max_rating")
+		expressionValues[":max_rating"] = &types.AttributeValueMemberN{Value: strconv.Itoa(req.MaxRating)}
+	}
+
+	// Add flagged filter
+	if req.IsFlagged != nil {
+		if *req.IsFlagged {
+			// For flagged=true: show only reviews that are explicitly flagged
+			filterExpressions = append(filterExpressions, "is_flagged = :is_flagged")
+			expressionValues[":is_flagged"] = &types.AttributeValueMemberBOOL{Value: true}
+		} else {
+			// For flagged=false: show reviews that are either not flagged or don't have the field
+			// This includes: attribute_not_exists(is_flagged) OR is_flagged = false
+			filterExpressions = append(filterExpressions, "NOT (attribute_exists(is_flagged) AND is_flagged = :is_flagged)")
+			expressionValues[":is_flagged"] = &types.AttributeValueMemberBOOL{Value: true}
+		}
+	}
+
+	// Add date filters
+	if !req.StartDate.IsZero() {
+		filterExpressions = append(filterExpressions, "review_date >= :start_date")
+		expressionValues[":start_date"] = &types.AttributeValueMemberS{Value: req.StartDate.Format(time.RFC3339)}
+	}
+	if !req.EndDate.IsZero() {
+		filterExpressions = append(filterExpressions, "review_date <= :end_date")
+		expressionValues[":end_date"] = &types.AttributeValueMemberS{Value: req.EndDate.Format(time.RFC3339)}
+	}
+
+	// Build the scan input
+	input := &dynamodb.ScanInput{
+		TableName: aws.String(s.tableName),
+	}
+
+	if len(filterExpressions) > 0 {
+		input.FilterExpression = aws.String(strings.Join(filterExpressions, " AND "))
+		input.ExpressionAttributeValues = expressionValues
+	}
+
+	result, err := s.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan reviews: %w", err)
+	}
+
+	// Unmarshal all items
+	allReviews := make([]*models.Review, 0)
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &allReviews); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal reviews: %w", err)
+	}
+
+	totalCount := len(allReviews)
+
+	// Sort reviews
+	s.sortReviews(allReviews, req.SortBy, req.Order)
+
+	// Apply pagination
+	startIndex := (req.Page - 1) * req.Limit
+	endIndex := startIndex + req.Limit
+
+	var reviews []*models.Review
+	if startIndex >= len(allReviews) {
+		reviews = []*models.Review{}
+	} else {
+		if endIndex > len(allReviews) {
+			endIndex = len(allReviews)
+		}
+		reviews = allReviews[startIndex:endIndex]
+	}
+
+	// Refresh user names from PostgreSQL
+	if err := s.refreshUserNamesFromPostgres(ctx, reviews); err != nil {
+		s.logger.Warn("Failed to refresh user names from PostgreSQL", zap.Error(err))
+	}
+
+	// Admin has full access to all review data
+	return responses.NewPaginatedReviewsResponse(reviews, totalCount, req.Page, req.Limit, "", true), nil
+}
+
+// AdminManageReview handles admin actions on reviews (flag, unflag, approve, reject, force delete)
+func (s *ReviewService) AdminManageReview(ctx context.Context, req *requests.AdminReviewRequest, adminUserID string) (*responses.ReviewResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	s.logger.Info("Admin managing review",
+		zap.String("review_id", req.ReviewID),
+		zap.String("action", req.Action),
+		zap.String("admin_user_id", adminUserID),
+		zap.String("reason", req.Reason))
+
+	// Get the review
+	review, err := s.getReviewByID(ctx, req.ReviewID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get review: %w", err)
+	}
+
+	// Apply admin action
+	switch req.Action {
+	case "flag":
+		review.IsFlagged = true
+		review.FlagReason = req.Reason
+		review.FlaggedBy = adminUserID
+		review.FlaggedAt = time.Now()
+	case "unflag":
+		review.IsFlagged = false
+		review.FlagReason = ""
+		review.FlaggedBy = ""
+		review.FlaggedAt = time.Time{}
+	case "approve":
+		review.IsApproved = true
+		review.ApprovedBy = adminUserID
+		review.ApprovedAt = time.Now()
+	case "reject":
+		review.IsApproved = false
+		review.RejectedBy = adminUserID
+		review.RejectedAt = time.Now()
+		review.RejectionReason = req.Reason
+	case "force_delete":
+		review.IsActive = false
+		review.DeletedBy = adminUserID
+		review.DeletedAt = time.Now()
+		review.DeletionReason = req.Reason
+	case "hard_delete":
+		// For hard delete, we'll delete the review from DynamoDB entirely
+		// We'll handle this after the switch statement
+		// Just log the action for now
+		s.logger.Info("Hard delete requested for review",
+			zap.String("review_id", req.ReviewID),
+			zap.String("admin_user_id", adminUserID),
+			zap.String("reason", req.Reason))
+	default:
+		return nil, errors.New("invalid admin action")
+	}
+
+	// Handle hard delete differently - actually delete from DynamoDB
+	if req.Action == "hard_delete" {
+		// Delete the review from DynamoDB
+		if err := s.deleteReviewFromDynamoDB(ctx, req.ReviewID); err != nil {
+			return nil, fmt.Errorf("failed to hard delete review: %w", err)
+		}
+
+		// Update product statistics after hard deletion
+		if err := s.updateProductReviewStats(ctx, review.ProductID); err != nil {
+			s.logger.Warn("Failed to update product review stats after hard deletion", zap.Error(err))
+		}
+
+		s.logger.Info("Admin hard delete completed",
+			zap.String("review_id", req.ReviewID),
+			zap.String("action", req.Action),
+			zap.String("admin_user_id", adminUserID))
+
+		// Return the deleted review info (since it's no longer in DB)
+		return responses.NewReviewResponse(review, "", true), nil
+	}
+
+	// For all other actions, update the review
+	review.UpdatedDate = time.Now()
+
+	// Save updated review
+	if err := s.saveReviewToDynamoDB(ctx, review); err != nil {
+		return nil, fmt.Errorf("failed to update review: %w", err)
+	}
+
+	// Update product statistics if review was soft deleted
+	if req.Action == "force_delete" {
+		if err := s.updateProductReviewStats(ctx, review.ProductID); err != nil {
+			s.logger.Warn("Failed to update product review stats after admin deletion", zap.Error(err))
+		}
+	}
+
+	s.logger.Info("Admin review action completed",
+		zap.String("review_id", req.ReviewID),
+		zap.String("action", req.Action),
+		zap.String("admin_user_id", adminUserID))
+
+	// Return the updated review
+	return responses.NewReviewResponse(review, "", true), nil
+}
+
+// AdminGetFlaggedReviews retrieves all flagged reviews for admin review
+func (s *ReviewService) AdminGetFlaggedReviews(ctx context.Context, page, limit int) (*responses.PaginatedReviewsResponse, error) {
+	if s.dynamoClient == nil {
+		return nil, errors.New("DynamoDB not available")
+	}
+
+	// Set defaults
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	// Scan for flagged reviews
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(s.tableName),
+		FilterExpression: aws.String("is_flagged = :is_flagged"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":is_flagged": &types.AttributeValueMemberBOOL{Value: true},
+		},
+	}
+
+	result, err := s.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan flagged reviews: %w", err)
+	}
+
+	// Unmarshal all items
+	allReviews := make([]*models.Review, 0)
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &allReviews); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal reviews: %w", err)
+	}
+
+	totalCount := len(allReviews)
+
+	// Sort by flag date (most recent first)
+	sort.Slice(allReviews, func(i, j int) bool {
+		return allReviews[i].FlaggedAt.After(allReviews[j].FlaggedAt)
+	})
+
+	// Apply pagination
+	startIndex := (page - 1) * limit
+	endIndex := startIndex + limit
+
+	var reviews []*models.Review
+	if startIndex >= len(allReviews) {
+		reviews = []*models.Review{}
+	} else {
+		if endIndex > len(allReviews) {
+			endIndex = len(allReviews)
+		}
+		reviews = allReviews[startIndex:endIndex]
+	}
+
+	// Refresh user names from PostgreSQL
+	if err := s.refreshUserNamesFromPostgres(ctx, reviews); err != nil {
+		s.logger.Warn("Failed to refresh user names from PostgreSQL", zap.Error(err))
+	}
+
+	return responses.NewPaginatedReviewsResponse(reviews, totalCount, page, limit, "", true), nil
+}
+
+// AdminBulkDeleteFlaggedReviews deletes all flagged reviews at once
+func (s *ReviewService) AdminBulkDeleteFlaggedReviews(ctx context.Context, req *requests.AdminBulkDeleteFlaggedRequest, adminUserID string) (*responses.BulkDeleteResponse, error) {
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	if s.dynamoClient == nil {
+		return nil, errors.New("DynamoDB not available")
+	}
+
+	s.logger.Info("Admin bulk delete flagged reviews started",
+		zap.String("action", req.Action),
+		zap.String("admin_user_id", adminUserID),
+		zap.String("reason", req.Reason))
+
+	// First, get all flagged reviews
+	flaggedReviews, err := s.getAllFlaggedReviews(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get flagged reviews: %w", err)
+	}
+
+	totalFound := len(flaggedReviews)
+	if totalFound == 0 {
+		s.logger.Info("No flagged reviews found for bulk deletion")
+		return responses.NewBulkDeleteResponse(req.Action, 0, 0, 0, []string{}, []string{}, req.Reason), nil
+	}
+
+	s.logger.Info("Found flagged reviews for bulk deletion",
+		zap.Int("total_found", totalFound),
+		zap.String("action", req.Action))
+
+	var deletedIDs []string
+	var failedIDs []string
+	var productStatsUpdates = make(map[string]bool) // Track which products need stats updates
+
+	// Process each flagged review
+	for _, review := range flaggedReviews {
+		reviewID := review.GetID()
+
+		if req.Action == "hard_delete" {
+			// Hard delete - remove from database entirely
+			if err := s.deleteReviewFromDynamoDB(ctx, reviewID); err != nil {
+				s.logger.Error("Failed to hard delete review in bulk operation",
+					zap.String("review_id", reviewID),
+					zap.Error(err))
+				failedIDs = append(failedIDs, reviewID)
+			} else {
+				s.logger.Info("Successfully hard deleted review in bulk operation",
+					zap.String("review_id", reviewID))
+				deletedIDs = append(deletedIDs, reviewID)
+				productStatsUpdates[review.ProductID] = true
+			}
+		} else if req.Action == "force_delete" {
+			// Force delete - soft delete (mark as inactive)
+			review.IsActive = false
+			review.DeletedBy = adminUserID
+			review.DeletedAt = time.Now()
+			review.DeletionReason = req.Reason
+			review.UpdatedDate = time.Now()
+
+			if err := s.saveReviewToDynamoDB(ctx, review); err != nil {
+				s.logger.Error("Failed to force delete review in bulk operation",
+					zap.String("review_id", reviewID),
+					zap.Error(err))
+				failedIDs = append(failedIDs, reviewID)
+			} else {
+				s.logger.Info("Successfully force deleted review in bulk operation",
+					zap.String("review_id", reviewID))
+				deletedIDs = append(deletedIDs, reviewID)
+				productStatsUpdates[review.ProductID] = true
+			}
+		}
+	}
+
+	// Update product statistics for affected products
+	for productID := range productStatsUpdates {
+		if err := s.updateProductReviewStats(ctx, productID); err != nil {
+			s.logger.Warn("Failed to update product review stats after bulk deletion",
+				zap.String("product_id", productID),
+				zap.Error(err))
+		}
+	}
+
+	totalDeleted := len(deletedIDs)
+	failedDeletes := len(failedIDs)
+
+	s.logger.Info("Admin bulk delete flagged reviews completed",
+		zap.String("action", req.Action),
+		zap.String("admin_user_id", adminUserID),
+		zap.Int("total_found", totalFound),
+		zap.Int("total_deleted", totalDeleted),
+		zap.Int("failed_deletes", failedDeletes))
+
+	return responses.NewBulkDeleteResponse(req.Action, totalFound, totalDeleted, failedDeletes, deletedIDs, failedIDs, req.Reason), nil
+}
+
+// getAllFlaggedReviews retrieves all flagged reviews (helper method for bulk operations)
+func (s *ReviewService) getAllFlaggedReviews(ctx context.Context) ([]*models.Review, error) {
+	if s.dynamoClient == nil {
+		return nil, errors.New("DynamoDB not available")
+	}
+
+	// Scan for all flagged reviews
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(s.tableName),
+		FilterExpression: aws.String("is_flagged = :is_flagged"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":is_flagged": &types.AttributeValueMemberBOOL{Value: true},
+		},
+	}
+
+	result, err := s.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan flagged reviews: %w", err)
+	}
+
+	// Unmarshal all items
+	allReviews := make([]*models.Review, 0)
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &allReviews); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal reviews: %w", err)
+	}
+
+	return allReviews, nil
 }

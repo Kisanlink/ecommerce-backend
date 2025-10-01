@@ -57,7 +57,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		recipes.RegisterRecipeRoutes(v1, repoManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
-		reviews.RegisterReviewRoutes(v1, serviceManager, logger)              // Add review routes
+		reviews.RegisterReviewRoutes(v1, serviceManager, repoManager, logger) // Add review routes
 		coupons.RegisterCouponRoutes(v1, repoManager, serviceManager, logger) // Add coupon routes
 
 		// Register image routes

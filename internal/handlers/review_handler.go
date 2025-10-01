@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -485,4 +486,332 @@ func (h *ReviewHandler) GetReviewStats(c *gin.Context) {
 		"message": "Review statistics retrieved successfully",
 		"data":    stats,
 	})
+}
+
+// AdminListReviews handles GET /admin/reviews
+// @Summary List all reviews (Admin only)
+// @Description Get paginated list of all reviews with admin-level filtering
+// @Tags admin, reviews
+// @Accept json
+// @Produce json
+// @Param page query int false "Page number" default(1)
+// @Param limit query int false "Items per page" default(20)
+// @Param sort_by query string false "Sort by: review_date, updated_date, rating, likes_count, user_id, product_id" default("review_date")
+// @Param order query string false "Sort order: asc, desc" default("desc")
+// @Param product_id query string false "Filter by product ID"
+// @Param user_id query string false "Filter by user ID"
+// @Param min_rating query int false "Minimum rating filter" minimum(1) maximum(5)
+// @Param max_rating query int false "Maximum rating filter" minimum(1) maximum(5)
+// @Param is_flagged query bool false "Filter by flagged status"
+// @Param is_active query bool false "Filter by active status"
+// @Param start_date query string false "Start date filter (RFC3339)"
+// @Param end_date query string false "End date filter (RFC3339)"
+// @Success 200 {object} responses.PaginatedReviewsResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 403 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /admin/reviews [get]
+func (h *ReviewHandler) AdminListReviews(c *gin.Context) {
+	// Parse query parameters
+	req := requests.AdminListReviewsRequest{}
+
+	// Parse pagination parameters
+	if page, err := strconv.Atoi(c.DefaultQuery("page", "1")); err == nil {
+		req.Page = page
+	} else {
+		req.Page = 1
+	}
+
+	if limit, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil {
+		req.Limit = limit
+	} else {
+		req.Limit = 20
+	}
+
+	// Parse sorting parameters
+	req.SortBy = c.DefaultQuery("sort_by", "review_date")
+	req.Order = c.DefaultQuery("order", "desc")
+
+	// Parse filter parameters
+	req.ProductID = c.Query("product_id")
+	req.UserID = c.Query("user_id")
+
+	// Parse rating filters
+	if minRating, err := strconv.Atoi(c.Query("min_rating")); err == nil {
+		req.MinRating = minRating
+	}
+	if maxRating, err := strconv.Atoi(c.Query("max_rating")); err == nil {
+		req.MaxRating = maxRating
+	}
+
+	// Parse boolean filters
+	if isFlagged := c.Query("is_flagged"); isFlagged != "" {
+		if isFlagged == "true" {
+			req.IsFlagged = &[]bool{true}[0]
+		} else if isFlagged == "false" {
+			req.IsFlagged = &[]bool{false}[0]
+		}
+	}
+
+	if isActive := c.Query("is_active"); isActive != "" {
+		if isActive == "true" {
+			req.IsActive = &[]bool{true}[0]
+		} else if isActive == "false" {
+			req.IsActive = &[]bool{false}[0]
+		}
+	}
+
+	// Parse date filters
+	if startDate := c.Query("start_date"); startDate != "" {
+		if parsed, err := time.Parse(time.RFC3339, startDate); err == nil {
+			req.StartDate = parsed
+		}
+	}
+	if endDate := c.Query("end_date"); endDate != "" {
+		if parsed, err := time.Parse(time.RFC3339, endDate); err == nil {
+			req.EndDate = parsed
+		}
+	}
+
+	// Get the reviews
+	reviews, err := h.reviewService.AdminListReviews(c.Request.Context(), &req)
+	if err != nil {
+		h.logger.Error("Failed to get admin reviews", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Admin reviews retrieved successfully",
+		"data":    reviews,
+	})
+}
+
+// AdminManageReview handles PUT /admin/reviews/:reviewId
+// @Summary Manage a review (Admin only)
+// @Description Perform admin actions on a review (flag, unflag, approve, reject, force_delete)
+// @Tags admin, reviews
+// @Accept json
+// @Produce json
+// @Param reviewId path string true "Review ID"
+// @Param request body requests.AdminReviewRequest true "Admin review management request"
+// @Success 200 {object} responses.ReviewResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 403 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /admin/reviews/{reviewId} [put]
+func (h *ReviewHandler) AdminManageReview(c *gin.Context) {
+	// Get admin user ID from authentication context
+	adminUserID, exists := c.Get("firebase_uid")
+	if !exists {
+		adminUserID, exists = c.Get("user_id")
+		if !exists {
+			h.logger.Error("Admin user ID not found in context")
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Authentication required"})
+			return
+		}
+	}
+
+	adminUserIDStr, ok := adminUserID.(string)
+	if !ok {
+		h.logger.Error("Invalid admin user ID type in context")
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid authentication"})
+		return
+	}
+
+	// Get review ID from URL parameter
+	reviewID := c.Param("reviewId")
+	if reviewID == "" {
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Review ID is required"})
+		return
+	}
+
+	// Parse request body
+	var req requests.AdminReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Failed to parse admin review request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request format"})
+		return
+	}
+
+	// Set review ID from URL parameter
+	req.ReviewID = reviewID
+
+	// Manage the review
+	review, err := h.reviewService.AdminManageReview(c.Request.Context(), &req, adminUserIDStr)
+	if err != nil {
+		h.logger.Error("Failed to manage review", zap.Error(err), zap.String("review_id", reviewID), zap.String("admin_user_id", adminUserIDStr))
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Review managed successfully",
+		"data":    review,
+	})
+}
+
+// AdminGetFlaggedReviews handles GET /admin/reviews/flagged
+// @Summary Get flagged reviews (Admin only)
+// @Description Get paginated list of all flagged reviews for admin review
+// @Tags admin, reviews
+// @Accept json
+// @Produce json
+// @Param page query int false "Page number" default(1)
+// @Param limit query int false "Items per page" default(20)
+// @Success 200 {object} responses.PaginatedReviewsResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 403 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /admin/reviews/flagged [get]
+func (h *ReviewHandler) AdminGetFlaggedReviews(c *gin.Context) {
+	// Parse pagination parameters
+	page := 1
+	if p, err := strconv.Atoi(c.DefaultQuery("page", "1")); err == nil {
+		page = p
+	}
+
+	limit := 20
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil {
+		limit = l
+	}
+
+	// Get flagged reviews
+	reviews, err := h.reviewService.AdminGetFlaggedReviews(c.Request.Context(), page, limit)
+	if err != nil {
+		h.logger.Error("Failed to get flagged reviews", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Flagged reviews retrieved successfully",
+		"data":    reviews,
+	})
+}
+
+// DebugGetProductReviews handles GET /products/:id/reviews/debug (for debugging)
+// @Summary Debug product reviews (temporary endpoint)
+// @Description Get product reviews with debug information
+// @Tags reviews, debug
+// @Accept json
+// @Produce json
+// @Param id path string true "Product ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
+// @Router /products/{id}/reviews/debug [get]
+func (h *ReviewHandler) DebugGetProductReviews(c *gin.Context) {
+	// Get product ID from URL parameter
+	productID := c.Param("id")
+	if productID == "" {
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Product ID is required"})
+		return
+	}
+
+	// Parse query parameters
+	req := requests.GetProductReviewsRequest{
+		ProductID: productID,
+		Page:      1,
+		Limit:     100, // Get more reviews for debugging
+		SortBy:    "date",
+		Order:     "desc",
+	}
+
+	// Get requesting user ID (optional)
+	requestingUserID := ""
+	if userID, exists := c.Get("firebase_uid"); exists {
+		requestingUserID, _ = userID.(string)
+	} else if userID, exists := c.Get("user_id"); exists {
+		requestingUserID, _ = userID.(string)
+	}
+
+	// Get the reviews
+	reviews, err := h.reviewService.GetProductReviews(c.Request.Context(), &req, requestingUserID)
+	if err != nil {
+		h.logger.Error("Failed to get product reviews for debug", zap.Error(err), zap.String("product_id", productID))
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Debug information
+	debugInfo := map[string]interface{}{
+		"product_id":         productID,
+		"requesting_user_id": requestingUserID,
+		"total_reviews":      reviews.TotalCount,
+		"returned_reviews":   len(reviews.Reviews),
+		"page":               reviews.Page,
+		"limit":              reviews.Limit,
+		"reviews":            reviews.Reviews,
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Debug information for product reviews",
+		"data":    debugInfo,
+	})
+}
+
+// AdminBulkDeleteFlaggedReviews handles DELETE /admin/reviews/flagged
+// @Summary Bulk delete all flagged reviews (Admin only)
+// @Description Delete all flagged reviews at once with either hard_delete or force_delete
+// @Tags admin, reviews
+// @Accept json
+// @Produce json
+// @Param request body requests.AdminBulkDeleteFlaggedRequest true "Bulk delete request"
+// @Success 200 {object} responses.BulkDeleteResponse
+// @Failure 400 {object} map[string]interface{} "Bad request"
+// @Failure 401 {object} map[string]interface{} "Unauthorized"
+// @Failure 403 {object} map[string]interface{} "Forbidden"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /admin/reviews/flagged [delete]
+func (h *ReviewHandler) AdminBulkDeleteFlaggedReviews(c *gin.Context) {
+	// Get admin user ID from authentication context
+	adminUserID, exists := c.Get("firebase_uid")
+	if !exists {
+		adminUserID, exists = c.Get("user_id")
+		if !exists {
+			h.logger.Error("Admin user ID not found in context")
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Authentication required"})
+			return
+		}
+	}
+
+	adminUserIDStr, ok := adminUserID.(string)
+	if !ok {
+		h.logger.Error("Invalid admin user ID type in context")
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid authentication"})
+		return
+	}
+
+	// Parse request body
+	var req requests.AdminBulkDeleteFlaggedRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Failed to parse bulk delete request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request format"})
+		return
+	}
+
+	// Perform bulk delete operation
+	result, err := h.reviewService.AdminBulkDeleteFlaggedReviews(c.Request.Context(), &req, adminUserIDStr)
+	if err != nil {
+		h.logger.Error("Failed to bulk delete flagged reviews",
+			zap.Error(err),
+			zap.String("admin_user_id", adminUserIDStr),
+			zap.String("action", req.Action))
+		c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("Bulk delete flagged reviews completed",
+		zap.String("admin_user_id", adminUserIDStr),
+		zap.String("action", req.Action),
+		zap.Int("total_found", result.TotalFound),
+		zap.Int("total_deleted", result.TotalDeleted),
+		zap.Int("failed_deletes", result.FailedDeletes))
+
+	c.JSON(http.StatusOK, result)
 }
