@@ -41,6 +41,10 @@ type OrderServiceInterface interface {
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
+	// Admin listing/stats/export
+	ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error)
+	GetOrderStats(ctx context.Context) (map[string]interface{}, error)
+	ExportOrdersCSV(ctx context.Context) ([]byte, string, error)
 }
 
 // OrderService implements order business logic
@@ -663,6 +667,105 @@ func (s *OrderService) GetOrderByRazorpayOrderID(ctx context.Context, razorpayOr
 		return nil, fmt.Errorf("order repository unavailable")
 	}
 	return s.orderRepo.GetOrderByRazorpayOrderID(ctx, razorpayOrderID)
+}
+
+// ListOrders returns filtered, paginated orders for admin
+func (s *OrderService) ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error) {
+	if s.orderRepo == nil {
+		return nil, 0, fmt.Errorf("order repository unavailable")
+	}
+	conds := []base.FilterCondition{}
+	if status != "" {
+		conds = append(conds, base.FilterCondition{Field: "status", Operator: base.OpEqual, Value: status})
+	}
+	if paymentStatus != "" {
+		conds = append(conds, base.FilterCondition{Field: "payment_status", Operator: base.OpEqual, Value: paymentStatus})
+	}
+	if from != nil {
+		conds = append(conds, base.FilterCondition{Field: "created_at", Operator: base.OpGreaterEqual, Value: *from})
+	}
+	if to != nil {
+		conds = append(conds, base.FilterCondition{Field: "created_at", Operator: base.OpLessEqual, Value: *to})
+	}
+	filter := &base.Filter{Group: base.FilterGroup{Conditions: conds, Logic: base.LogicAnd}, Page: page, PageSize: limit}
+	// NOTE: q search omitted to avoid portability issues; can be added with builder if needed
+	found, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list orders: %w", err)
+	}
+	// Convert []*models.Order to []models.Order if needed
+	orders := make([]models.Order, 0, len(found))
+	for _, po := range found {
+		if po != nil {
+			orders = append(orders, *po)
+		}
+	}
+	count, err := s.orderRepo.CountWithFilter(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count orders: %w", err)
+	}
+	// load normalized relations for each order (best-effort)
+	for i := range orders {
+		if orders[i].CustomerID != "" {
+			if customer, err := s.orderRepo.GetOrderCustomer(ctx, orders[i].CustomerID); err == nil {
+				orders[i].Customer = customer
+			}
+		}
+		if orders[i].ShippingAddressID != "" {
+			if addr, err := s.orderRepo.GetOrderAddress(ctx, orders[i].ShippingAddressID); err == nil {
+				orders[i].ShippingAddress = addr
+			}
+		}
+	}
+	return orders, int(count), nil
+}
+
+// GetOrderStats computes simple aggregates
+func (s *OrderService) GetOrderStats(ctx context.Context) (map[string]interface{}, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	// Fetch recent orders and compute simple counts by status and totals
+	filter := &base.Filter{Page: 1, PageSize: 10000}
+	orders, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load orders: %w", err)
+	}
+	counts := map[string]int{}
+	var revenue float64
+	for _, o := range orders {
+		if o == nil {
+			continue
+		}
+		counts[string(o.Status)]++
+		revenue += o.TotalAmount
+	}
+	return map[string]interface{}{
+		"counts":        counts,
+		"revenue_total": revenue,
+		"order_count":   len(orders),
+	}, nil
+}
+
+// ExportOrdersCSV returns CSV bytes and filename
+func (s *OrderService) ExportOrdersCSV(ctx context.Context) ([]byte, string, error) {
+	if s.orderRepo == nil {
+		return nil, "", fmt.Errorf("order repository unavailable")
+	}
+	orders, err := s.orderRepo.Find(ctx, &base.Filter{Page: 1, PageSize: 100000})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to load orders: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString("order_id,user_id,status,payment_status,total_amount,created_at\n")
+	for _, o := range orders {
+		if o == nil {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.2f,%s\n", o.ID, o.UserID, string(o.Status), o.PaymentStatus, o.TotalAmount, o.CreatedAt.Format(time.RFC3339)))
+	}
+	filename := fmt.Sprintf("orders_export_%d.csv", time.Now().Unix())
+	return []byte(b.String()), filename, nil
 }
 
 // CreateOrderFromCartWithShippingAtomic creates an order from cart with shipping charges atomically

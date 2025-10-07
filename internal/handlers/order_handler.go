@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
@@ -485,4 +486,193 @@ func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, debugResponse)
+}
+
+// ==========================
+// Admin Order Management
+// ==========================
+
+// GetAllOrders lists orders for admin with optional filters and pagination
+// GET /api/v1/admin/orders
+func (h *OrderHandler) GetAllOrders(c *gin.Context) {
+	// Parse filters
+	status := c.Query("status")
+	paymentStatus := c.Query("payment_status")
+	q := c.Query("q")
+	fromStr := c.Query("from")
+	toStr := c.Query("to")
+	page := 1
+	limit := 20
+	if v := c.Query("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := c.Query("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 && l <= 200 {
+			limit = l
+		}
+	}
+	var from, to *time.Time
+	if fromStr != "" {
+		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
+			from = &t
+		}
+	}
+	if toStr != "" {
+		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
+			to = &t
+		}
+	}
+
+	orders, total, err := h.orderService.ListOrders(c.Request.Context(), status, paymentStatus, q, from, to, page, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list orders"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"orders": orders,
+		"pagination": gin.H{
+			"page":     page,
+			"limit":    limit,
+			"total":    total,
+			"has_more": page*limit < total,
+		},
+	})
+}
+
+// GetOrderDetailsAdmin returns order details for admin without ownership checks
+// GET /api/v1/admin/orders/:id
+func (h *OrderHandler) GetOrderDetailsAdmin(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+	order, err := h.orderService.GetOrderDetails(c.Request.Context(), orderID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
+		return
+	}
+	c.JSON(http.StatusOK, responses.NewGetOrderDetailsResponse(order))
+}
+
+// UpdateOrderStatus updates order status by admin
+// PUT /api/v1/admin/orders/:id/status
+func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Status == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status is required"})
+		return
+	}
+	if err := h.orderService.UpdateOrderStatus(c.Request.Context(), orderID, models.OrderStatus(req.Status)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Order status updated"})
+}
+
+// UpdatePayment updates payment status and optional payment_id
+// PUT /api/v1/admin/orders/:id/payment
+func (h *OrderHandler) UpdatePayment(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+	var req struct {
+		PaymentStatus string `json:"payment_status" binding:"required"`
+		PaymentID     string `json:"payment_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.PaymentStatus == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "payment_status is required"})
+		return
+	}
+	if err := h.orderService.UpdatePaymentStatus(c.Request.Context(), orderID, req.PaymentStatus, req.PaymentID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update payment status"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Payment status updated"})
+}
+
+// UpdateShipment sets shipment details
+// PUT /api/v1/admin/orders/:id/shipment
+func (h *OrderHandler) UpdateShipment(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+	var req struct {
+		ShippingCarrier string `json:"shipping_carrier"`
+		ShippingMode    string `json:"shipping_mode"`
+		Waybill         string `json:"delhivery_waybill"`
+		TrackingURL     string `json:"tracking_url"`
+		EtaMinDays      *int   `json:"eta_min_days"`
+		EtaMaxDays      *int   `json:"eta_max_days"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load order"})
+		return
+	}
+	if req.ShippingCarrier != "" {
+		order.ShippingCarrier = req.ShippingCarrier
+	}
+	if req.ShippingMode != "" {
+		order.ShippingMode = req.ShippingMode
+	}
+	if req.Waybill != "" {
+		order.DelhiveryWaybill = req.Waybill
+	}
+	if req.TrackingURL != "" {
+		order.TrackingURL = req.TrackingURL
+	}
+	if req.EtaMinDays != nil {
+		order.EtaMinDays = *req.EtaMinDays
+	}
+	if req.EtaMaxDays != nil {
+		order.EtaMaxDays = *req.EtaMaxDays
+	}
+	if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update shipment"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Shipment updated"})
+}
+
+// GetOrderStats returns aggregate stats for admin
+// GET /api/v1/admin/orders/stats
+func (h *OrderHandler) GetOrderStats(c *gin.Context) {
+	stats, err := h.orderService.GetOrderStats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get stats"})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+// ExportOrders exports orders as CSV
+// GET /api/v1/admin/orders/export
+func (h *OrderHandler) ExportOrders(c *gin.Context) {
+	data, filename, err := h.orderService.ExportOrdersCSV(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to export orders"})
+		return
+	}
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Data(http.StatusOK, "text/csv", data)
 }
