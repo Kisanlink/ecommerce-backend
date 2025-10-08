@@ -51,7 +51,8 @@ type CreateOrderRequest struct {
 	ShippingAddress   string  `json:"shipping_address,omitempty"`    // Optional: if providing new address
 	Currency          string  `json:"currency,omitempty"`            // Ignored (hardcoded to INR)
 	Subtotal          float64 `json:"subtotal,omitempty"`
-	FirstName         string  `json:"first_name"` // Required
+	ShippingCost      float64 `json:"shipping_cost,omitempty"` // Optional: estimated shipping cost from estimate-shipping endpoint
+	FirstName         string  `json:"first_name"`              // Required
 	LastName          string  `json:"last_name,omitempty"`
 	Mobile            string  `json:"mobile"` // Required (primary)
 	MobileSecondary   string  `json:"mobile_secondary,omitempty"`
@@ -355,6 +356,9 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	// Force INR currency always
 	req.Currency = useCurrency // Always "INR"
 
+	// Track shipping source for notes
+	var shippingSource string
+
 	// Calculate totals from cart
 	if finalAmount <= 0 || (req.Subtotal > 0) {
 		// Calculate from provided subtotal or get dynamic shipping charges
@@ -365,14 +369,27 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 				shippingCharges = 0
 			}
 			finalAmount = subtotal
+			shippingSource = "subtotal_calculation"
 			h.logger.Info("Using provided subtotal",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
 				zap.Float64("provided_subtotal", subtotal),
 				zap.Float64("discounted_cart_total", discountedCartTotal),
 				zap.Float64("calculated_shipping", shippingCharges))
+		} else if req.ShippingCost > 0 {
+			// Use provided shipping cost from estimate-shipping endpoint
+			shippingCharges = req.ShippingCost
+			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
+			shippingSource = "estimate_api"
+			h.logger.Info("Using provided shipping cost from estimate-shipping",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("provided_shipping_cost", req.ShippingCost),
+				zap.Float64("discounted_cart_total", discountedCartTotal),
+				zap.Float64("final_amount", finalAmount))
 		} else {
 			// Get shipping charges dynamically from delivery service API with robust fallback
+			shippingSource = "dynamic_calculation"
 			h.logger.Info("Calculating dynamic shipping charges",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
@@ -433,6 +450,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		"items_count":      len(cart.Items),
 		"currency":         "INR",                                                                             // Always INR
 		"customer_info":    req.FirstName + "," + req.LastName + "," + req.Mobile + "," + req.MobileSecondary, // Combine customer fields
+		"shipping_source":  shippingSource,                                                                    // Track shipping calculation method
 	}
 
 	// Add structured address data to notes for clean extraction during verification
