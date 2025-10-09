@@ -2,21 +2,25 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
 // UserRecipeHandler handles user recipe-related HTTP requests
 type UserRecipeHandler struct {
 	repoManager *repositories.RepositoryManager
+	s3Service   *services.S3Service
 }
 
 // NewUserRecipeHandler creates a new user recipe handler
-func NewUserRecipeHandler(repoManager *repositories.RepositoryManager) *UserRecipeHandler {
+func NewUserRecipeHandler(repoManager *repositories.RepositoryManager, s3Service *services.S3Service) *UserRecipeHandler {
 	return &UserRecipeHandler{
 		repoManager: repoManager,
+		s3Service:   s3Service,
 	}
 }
 
@@ -131,4 +135,151 @@ func (h *UserRecipeHandler) GetUserSubmittedRecipes(c *gin.Context) {
 		"submissions": userReviews,
 		"count":       len(userReviews),
 	})
+}
+
+// UploadRecipeImage handles POST /api/v1/recipes/images/upload
+// @Summary Upload recipe image
+// @Description Upload an image for a recipe and get the S3 URL
+// @Tags User Recipes
+// @Accept multipart/form-data
+// @Produce json
+// @Param image formData file true "Recipe image file"
+// @Success 201 {object} map[string]interface{} "Image uploaded successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "Unauthorized"
+// @Failure 500 {object} map[string]interface{} "Failed to upload image"
+// @Router /recipes/images/upload [post]
+func (h *UserRecipeHandler) UploadRecipeImage(c *gin.Context) {
+	// Get user ID from context (set by middleware)
+	userID, exists := c.Get("firebase_uid")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found"})
+		return
+	}
+
+	userIDStr := userID.(string)
+
+	// Get the uploaded file
+	file, header, err := c.Request.FormFile("image")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No image file provided"})
+		return
+	}
+	defer file.Close()
+
+	// Validate file type
+	contentType := header.Header.Get("Content-Type")
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file type. Only JPEG, PNG, and WebP images are allowed"})
+		return
+	}
+
+	// Validate file size (max 10MB)
+	if header.Size > 10*1024*1024 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File size too large. Maximum size is 10MB"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Upload to S3
+	s3Key, err := h.s3Service.UploadRecipeImage(ctx, userIDStr, file, header)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to upload image",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Generate presigned URL for the uploaded image
+	imageURL, err := h.s3Service.GetRecipeImageURL(ctx, s3Key, 24*time.Hour)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to generate image URL",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Generate a unique image ID for tracking
+	imageID := "img_" + time.Now().Format("20060102150405") + "_" + userIDStr[:8]
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":   "Image uploaded successfully",
+		"image_id":  imageID,
+		"image_url": imageURL,
+		"s3_key":    s3Key,
+		"filename":  header.Filename,
+		"size":      header.Size,
+		"type":      contentType,
+	})
+}
+
+// DeleteRecipeImage handles DELETE /api/v1/recipes/images/{s3_key}
+// @Summary Delete recipe image
+// @Description Delete an uploaded recipe image from S3
+// @Tags User Recipes
+// @Produce json
+// @Param s3_key path string true "S3 key of the image to delete"
+// @Success 200 {object} map[string]interface{} "Image deleted successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 401 {object} map[string]interface{} "Unauthorized"
+// @Failure 500 {object} map[string]interface{} "Failed to delete image"
+// @Router /recipes/images/{s3_key} [delete]
+func (h *UserRecipeHandler) DeleteRecipeImage(c *gin.Context) {
+	// Get user ID from context (set by middleware)
+	userID, exists := c.Get("firebase_uid")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found"})
+		return
+	}
+
+	s3Key := c.Param("s3_key")
+	if s3Key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "S3 key is required"})
+		return
+	}
+
+	// Basic security check - ensure the S3 key belongs to the user
+	userIDStr := userID.(string)
+	if !contains(s3Key, userIDStr) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only delete your own images"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Delete from S3
+	err := h.s3Service.DeleteRecipeImage(ctx, s3Key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to delete image",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Image deleted successfully",
+		"s3_key":  s3Key,
+	})
+}
+
+// Helper function to check if a string contains another string
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr ||
+		(len(s) > len(substr) && (s[:len(substr)] == substr ||
+			s[len(s)-len(substr):] == substr ||
+			containsSubstring(s, substr))))
+}
+
+// Helper function to check substring
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

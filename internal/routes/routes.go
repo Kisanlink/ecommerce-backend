@@ -55,7 +55,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		favorites.RegisterFavoriteRoutes(v1, repoManager, serviceManager)
 		orders.RegisterOrderRoutes(v1, repoManager, serviceManager, logger) // Updated with logger
 		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
-		recipes.RegisterRecipeRoutes(v1, repoManager)
+		recipes.RegisterRecipeRoutes(v1, repoManager, serviceManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
 		reviews.RegisterReviewRoutes(v1, serviceManager, repoManager, logger) // Add review routes
@@ -74,7 +74,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 	legacy := r.Group("/")
 	{
 		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager)
-		recipes.RegisterRecipeRoutes(legacy, repoManager)
+		recipes.RegisterRecipeRoutes(legacy, repoManager, serviceManager)
 		// Add other legacy routes as needed
 	}
 }
