@@ -49,6 +49,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		auth.RegisterAuthRoutes(v1, repoManager, serviceManager)
 		users.RegisterUserRoutes(v1, repoManager, serviceManager)
 		admin.RegisterAdminUserRoutes(v1, repoManager, serviceManager)
+		admin.RegisterAdminRecipeRoutes(v1, repoManager) // Add admin recipe routes
 		products.RegisterProductRoutes(v1, serviceManager, repoManager)
 		profiles.RegisterProfileRoutes(v1, repoManager, serviceManager)
 		favorites.RegisterFavoriteRoutes(v1, repoManager, serviceManager)

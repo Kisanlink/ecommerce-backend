@@ -10,6 +10,7 @@ import (
 // RegisterRecipeRoutes registers all recipe related routes
 func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
 	recipeHandler := handlers.NewRecipeHandler(repoManager)
+	userRecipeHandler := handlers.NewUserRecipeHandler(repoManager)
 
 	// Public recipe routes
 	recipes := r.Group("/recipes")
@@ -17,6 +18,14 @@ func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.Reposito
 		recipes.GET("", recipeHandler.GetRecipes)                    // Get all recipes with filters
 		recipes.GET("/:id", recipeHandler.GetRecipeByID)             // Get recipe by ID            // Search recipes
 		recipes.GET("/category/:category", recipeHandler.GetRecipes) // Get recipes by category           // Get popular recipes
+	}
+
+	// User recipe submission routes (requires authentication)
+	userRecipes := r.Group("/recipes")
+	userRecipes.Use(middleware.FirebaseAuthMiddleware())
+	{
+		userRecipes.POST("/submit", userRecipeHandler.SubmitRecipeForReview)          // Submit recipe for review
+		userRecipes.GET("/my-submissions", userRecipeHandler.GetUserSubmittedRecipes) // Get user's submitted recipes
 	}
 
 	// Admin-only recipe routes (requires authentication + admin role)
