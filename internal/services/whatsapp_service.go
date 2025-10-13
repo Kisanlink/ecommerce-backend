@@ -125,6 +125,45 @@ func (w *WhatsAppService) SendOrderConfirmationMessage(ctx context.Context, orde
 	return w.sendPaymentConfirmationTemplate(ctx, formattedPhone, customerName)
 }
 
+// SendPaymentOrderConfirmMessage sends a WhatsApp message using payment_order_confirm_1 template with dynamic tracking
+func (w *WhatsAppService) SendPaymentOrderConfirmMessage(ctx context.Context, order *models.Order, customerPhone string) error {
+	if !w.config.Enabled {
+		w.logger.Info("WhatsApp service is disabled, skipping payment order confirmation message")
+		return nil
+	}
+
+	if customerPhone == "" {
+		return fmt.Errorf("customer phone number is required for WhatsApp messaging")
+	}
+
+	// Format phone number
+	formattedPhone := w.formatPhoneNumber(customerPhone)
+
+	// Extract customer name from order
+	customerName := w.extractCustomerName(order)
+
+	// Get AWB number from order
+	awbNumber := order.DelhiveryWaybill
+	if awbNumber == "" {
+		w.logger.Warn("No AWB number found for order, using fallback",
+			zap.String("order_id", order.ID),
+			zap.String("order_status", string(order.Status)),
+			zap.String("delhivery_status", order.DelhiveryStatus))
+
+		// If AWB is still empty, use a more descriptive fallback
+		awbNumber = "tracking-pending" // More descriptive fallback for pending shipments
+	}
+
+	w.logger.Info("Sending payment order confirmation message with dynamic tracking",
+		zap.String("phone_number", formattedPhone),
+		zap.String("customer_name", customerName),
+		zap.String("order_id", order.ID),
+		zap.String("awb_number", awbNumber))
+
+	// Send payment_order_confirm_1 template with customer name and AWB number
+	return w.sendPaymentOrderConfirmTemplate(ctx, formattedPhone, customerName, awbNumber)
+}
+
 // SendPaymentSuccessMessage sends a WhatsApp message when payment is successful
 func (w *WhatsAppService) SendPaymentSuccessMessage(ctx context.Context, order *models.Order, customerPhone string) error {
 	if !w.config.Enabled {
@@ -448,6 +487,169 @@ func (w *WhatsAppService) extractCustomerName(order *models.Order) string {
 	w.logger.Warn("No customer name found in order, using fallback",
 		zap.String("order_id", order.ID))
 	return "Customer"
+}
+
+// sendPaymentOrderConfirmTemplate sends the payment_order_confirm_2 template message with customer name and dynamic tracking URL
+func (w *WhatsAppService) sendPaymentOrderConfirmTemplate(ctx context.Context, phoneNumber, customerName, awbNumber string) error {
+	if !w.config.Enabled {
+		w.logger.Info("WhatsApp service is disabled, skipping payment order confirmation message")
+		return nil
+	}
+
+	if phoneNumber == "" {
+		return fmt.Errorf("phone number is required for WhatsApp messaging")
+	}
+
+	// Format phone number
+	formattedPhone := w.formatPhoneNumber(phoneNumber)
+
+	// Construct dynamic tracking URL with AWB number
+	trackingURL := fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
+
+	w.logger.Info("Sending payment order confirmation message with dynamic tracking",
+		zap.String("phone_number", formattedPhone),
+		zap.String("customer_name", customerName),
+		zap.String("awb_number", awbNumber),
+		zap.String("tracking_url", trackingURL))
+
+	url := fmt.Sprintf("%s/%s/messages", w.config.APIBaseURL, w.config.PhoneNumberID)
+
+	// Template structure for payment_order_confirm_2:
+	// - Body: 2 text parameters (customer name {{1}} and tracking URL {{2}})
+	// Template message: "Hey *{{1}}* , your* payment* was *successful* and your *order* is *confirmed!* 🎉 You can *track it* here: *{{2}}* Thanks for choosing us — we appreciate you!"
+	requestBody := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                formattedPhone,
+		"type":              "template",
+		"template": map[string]interface{}{
+			"name": "payment_order_confirm_2",
+			"language": map[string]string{
+				"code": "en_US",
+			},
+			"components": []map[string]interface{}{
+				{
+					"type": "body",
+					"parameters": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": customerName,
+						},
+						{
+							"type": "text",
+							"text": trackingURL,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		w.logger.Error("Failed to marshal WhatsApp payment order confirmation request",
+			zap.String("phone_number", formattedPhone),
+			zap.String("customer_name", customerName),
+			zap.String("awb_number", awbNumber),
+			zap.Error(err))
+		return fmt.Errorf("failed to marshal WhatsApp request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		w.logger.Error("Failed to create WhatsApp payment order confirmation request",
+			zap.String("phone_number", formattedPhone),
+			zap.String("customer_name", customerName),
+			zap.String("awb_number", awbNumber),
+			zap.Error(err))
+		return fmt.Errorf("failed to create WhatsApp request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.config.AccessToken)
+
+	w.logger.Info("Sending WhatsApp payment_order_confirm_2 template with dynamic tracking",
+		zap.String("phone_number", formattedPhone),
+		zap.String("customer_name", customerName),
+		zap.String("awb_number", awbNumber),
+		zap.String("tracking_url", trackingURL),
+		zap.String("url", url),
+		zap.String("api_base_url", w.config.APIBaseURL),
+		zap.String("phone_number_id", w.config.PhoneNumberID),
+		zap.String("request_body", string(jsonData)))
+
+	resp, err := w.client.Do(req)
+	if err != nil {
+		w.logger.Error("WhatsApp payment order confirmation API request failed",
+			zap.String("phone_number", formattedPhone),
+			zap.String("customer_name", customerName),
+			zap.String("awb_number", awbNumber),
+			zap.String("url", url),
+			zap.Error(err))
+		return fmt.Errorf("failed to send WhatsApp message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body for debugging
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	w.logger.Info("WhatsApp payment order confirmation API response",
+		zap.String("phone_number", formattedPhone),
+		zap.String("customer_name", customerName),
+		zap.String("awb_number", awbNumber),
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("response_body", string(bodyBytes)))
+
+	if resp.StatusCode != http.StatusOK {
+		var errorResp WhatsAppError
+		if err := json.Unmarshal(bodyBytes, &errorResp); err != nil {
+			w.logger.Error("Failed to decode WhatsApp error response",
+				zap.String("phone_number", formattedPhone),
+				zap.String("customer_name", customerName),
+				zap.String("awb_number", awbNumber),
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("response_body", string(bodyBytes)),
+				zap.Error(err))
+			return fmt.Errorf("WhatsApp API error (status %d): failed to decode error response", resp.StatusCode)
+		}
+
+		w.logger.Error("WhatsApp payment order confirmation API error",
+			zap.String("phone_number", formattedPhone),
+			zap.String("customer_name", customerName),
+			zap.String("awb_number", awbNumber),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("error_message", errorResp.Error.Message),
+			zap.String("error_type", errorResp.Error.Type),
+			zap.Int("error_code", errorResp.Error.Code))
+		return fmt.Errorf("WhatsApp API error (status %d): %s", resp.StatusCode, errorResp.Error.Message)
+	}
+
+	var response WhatsAppResponse
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		w.logger.Error("Failed to decode WhatsApp payment order confirmation response",
+			zap.String("phone_number", formattedPhone),
+			zap.String("customer_name", customerName),
+			zap.String("awb_number", awbNumber),
+			zap.String("response_body", string(bodyBytes)),
+			zap.Error(err))
+		return fmt.Errorf("failed to decode WhatsApp response: %w", err)
+	}
+
+	if len(response.Messages) == 0 {
+		w.logger.Error("No message ID returned from WhatsApp payment order confirmation API",
+			zap.String("phone_number", formattedPhone),
+			zap.String("customer_name", customerName),
+			zap.String("awb_number", awbNumber),
+			zap.String("response_body", string(bodyBytes)))
+		return fmt.Errorf("no message ID returned from WhatsApp API")
+	}
+
+	w.logger.Info("WhatsApp payment_order_confirm_2 template sent successfully with dynamic tracking",
+		zap.String("phone_number", formattedPhone),
+		zap.String("customer_name", customerName),
+		zap.String("awb_number", awbNumber),
+		zap.String("tracking_url", trackingURL),
+		zap.String("message_id", response.Messages[0].ID))
+
+	return nil
 }
 
 // sendPaymentConfirmationTemplate sends the payment_confirmation_1 template message with customer name
