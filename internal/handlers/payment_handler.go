@@ -361,6 +361,15 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 
 	// Calculate totals from cart
 	if finalAmount <= 0 || (req.Subtotal > 0) {
+		// Log the shipping cost provided in the request
+		h.logger.Info("Shipping cost analysis",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Float64("provided_shipping_cost", req.ShippingCost),
+			zap.Float64("provided_subtotal", req.Subtotal),
+			zap.Bool("has_shipping_cost", req.ShippingCost > 0),
+			zap.Bool("has_subtotal", req.Subtotal > 0))
+
 		// Calculate from provided subtotal or get dynamic shipping charges
 		subtotal := req.Subtotal
 		if subtotal > 0 {
@@ -390,11 +399,12 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		} else {
 			// Get shipping charges dynamically from delivery service API with robust fallback
 			shippingSource = "dynamic_calculation"
-			h.logger.Info("Calculating dynamic shipping charges",
+			h.logger.Warn("No shipping cost provided from estimate-shipping endpoint, using dynamic calculation",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
 				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Int("item_count", len(cart.Items)))
+				zap.Int("item_count", len(cart.Items)),
+				zap.String("recommendation", "Frontend should pass shipping_cost from estimate-shipping response"))
 
 			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
 			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
