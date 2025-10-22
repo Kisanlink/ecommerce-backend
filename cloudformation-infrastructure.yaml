@@ -61,39 +61,39 @@ Parameters:
 
   DesiredCount:
     Type: Number
-    Default: 1
-    MinValue: 1
-    MaxValue: 10
+    Default: '1'
+    MinValue: '1'
+    MaxValue: '10'
     Description: Number of ECS tasks to run
 
   ContainerCpu:
-    Type: Number
-    Default: 512
+    Type: String
+    Default: '512'
     AllowedValues:
-      - 256
-      - 512
-      - 1024
-      - 2048
-      - 4096
+      - '256'
+      - '512'
+      - '1024'
+      - '2048'
+      - '4096'
     Description: CPU units for the container (256 = 0.25 vCPU)
 
   ContainerMemory:
-    Type: Number
-    Default: 1024
+    Type: String
+    Default: '1024'
     AllowedValues:
-      - 512
-      - 1024
-      - 2048
-      - 4096
-      - 8192
-      - 16384
+      - '512'
+      - '1024'
+      - '2048'
+      - '4096'
+      - '8192'
+      - '16384'
     Description: Memory in MB for the container
 
   # Secret Parameters
   JWTSecret:
     Type: String
     NoEcho: true
-    MinLength: 32
+    MinLength: '32'
     Description: JWT secret key (minimum 32 characters)
 
   FirebaseWebAPIKey:
@@ -381,7 +381,7 @@ Resources:
           ToPort: 8080
           SourceSecurityGroupId: !Ref ALBSecurityGroup
       SecurityGroupEgress:
-        - IpProtocol: -1
+        - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
           Description: Allow all outbound traffic
       Tags:
@@ -440,7 +440,7 @@ Resources:
       EngineVersion: '15.4'
       MasterUsername: !Ref DatabaseUsername
       MasterUserPassword: !Ref DatabasePassword
-      AllocatedStorage: 20
+      AllocatedStorage: '20'
       StorageType: gp2
       VPCSecurityGroups:
         - !Ref DatabaseSecurityGroup
@@ -466,8 +466,8 @@ Resources:
     Type: AWS::ElastiCache::ReplicationGroup
     Properties:
       ReplicationGroupId: !Sub '${Environment}-ecommerce-redis'
-      Description: Redis cluster for ecommerce backend
-      NodeType: cache.t3.micro
+      ReplicationGroupDescription: Redis cluster for ecommerce backend
+      CacheNodeType: cache.t3.micro
       Port: 6379
       NumCacheClusters: 1
       Engine: redis
@@ -831,7 +831,7 @@ Resources:
 
             # Redis Configuration
             - Name: REDIS_HOST
-              Value: !GetAtt RedisCluster.RedisEndpoint.Address
+              Value: !GetAtt RedisCluster.PrimaryEndPoint.Address
             - Name: REDIS_PORT
               Value: '6379'
             - Name: REDIS_PASSWORD
@@ -1256,7 +1256,7 @@ Outputs:
 
   RedisEndpoint:
     Description: Redis Cluster Endpoint
-    Value: !GetAtt RedisCluster.RedisEndpoint.Address
+    Value: !GetAtt RedisCluster.PrimaryEndPoint.Address
     Export:
       Name: !Sub '${Environment}-Redis-Endpoint'
 
