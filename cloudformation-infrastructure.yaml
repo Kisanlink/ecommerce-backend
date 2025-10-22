@@ -7,41 +7,186 @@ Parameters:
     Default: production
     AllowedValues: [development, staging, production]
     Description: Environment name
-  
+
   VpcCIDR:
     Type: String
     Default: 10.0.0.0/16
     Description: CIDR block for VPC
-  
+
   PublicSubnet1CIDR:
     Type: String
     Default: 10.0.1.0/24
     Description: CIDR block for public subnet 1
-  
+
   PublicSubnet2CIDR:
     Type: String
     Default: 10.0.2.0/24
     Description: CIDR block for public subnet 2
-  
+
   PrivateSubnet1CIDR:
     Type: String
     Default: 10.0.3.0/24
     Description: CIDR block for private subnet 1
-  
+
   PrivateSubnet2CIDR:
     Type: String
     Default: 10.0.4.0/24
     Description: CIDR block for private subnet 2
-  
+
+  DatabaseName:
+    Type: String
+    Default: ecommerce_db
+    Description: PostgreSQL database name
+
+  DatabaseUsername:
+    Type: String
+    Default: dbadmin
+    Description: PostgreSQL master username
+
   DatabasePassword:
     Type: String
     NoEcho: true
     Description: Password for RDS database
-  
+
   RedisPassword:
     Type: String
+    Default: ''
     NoEcho: true
-    Description: Password for ElastiCache Redis
+    Description: Password for ElastiCache Redis (leave empty to disable auth)
+
+  # Application Configuration Parameters
+  ContainerImage:
+    Type: String
+    Description: ECR Docker image URI (e.g., 123456789012.dkr.ecr.ap-south-1.amazonaws.com/ecommerce-backend:latest)
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of ECS tasks to run
+
+  ContainerCpu:
+    Type: Number
+    Default: 512
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+    Description: CPU units for the container (256 = 0.25 vCPU)
+
+  ContainerMemory:
+    Type: Number
+    Default: 1024
+    AllowedValues:
+      - 512
+      - 1024
+      - 2048
+      - 4096
+      - 8192
+      - 16384
+    Description: Memory in MB for the container
+
+  # Secret Parameters
+  JWTSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: JWT secret key (minimum 32 characters)
+
+  FirebaseWebAPIKey:
+    Type: String
+    NoEcho: true
+    Description: Firebase Web API Key for REST API operations
+
+  FirebaseServiceAccountJSON:
+    Type: String
+    NoEcho: true
+    Description: Firebase Service Account JSON (entire contents of firebase_service_account.json file)
+
+  AWSAccessKeyID:
+    Type: String
+    NoEcho: true
+    Description: AWS Access Key ID for application (for S3, DynamoDB)
+
+  AWSSecretAccessKey:
+    Type: String
+    NoEcho: true
+    Description: AWS Secret Access Key for application
+
+  RazorpayKeyID:
+    Type: String
+    NoEcho: true
+    Description: Razorpay Key ID
+
+  RazorpayKeySecret:
+    Type: String
+    NoEcho: true
+    Description: Razorpay Key Secret
+
+  RazorpayWebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: Razorpay Webhook Secret
+
+  RazorpayAccountID:
+    Type: String
+    Description: Razorpay Account ID
+
+  DelhiveryAPIToken:
+    Type: String
+    NoEcho: true
+    Description: Delhivery API Token
+
+  WhatsAppAccessToken:
+    Type: String
+    NoEcho: true
+    Description: WhatsApp Access Token
+
+  # WhatsApp Configuration
+  WhatsAppPhoneNumberID:
+    Type: String
+    Description: WhatsApp Phone Number ID
+
+  WhatsAppBusinessAccountID:
+    Type: String
+    Description: WhatsApp Business Account ID
+
+  WhatsAppWebhookToken:
+    Type: String
+    Description: WhatsApp Webhook Verification Token
+
+  # Delhivery Configuration
+  DelhiveryOriginPincode:
+    Type: String
+    Description: Delhivery origin pincode
+
+  DelhiveryOriginCity:
+    Type: String
+    Description: Delhivery origin city
+
+  DelhiveryOriginState:
+    Type: String
+    Description: Delhivery origin state
+
+  DelhiveryOriginAddress:
+    Type: String
+    Description: Delhivery origin full address
+
+  DelhiveryOriginPhone:
+    Type: String
+    Description: Delhivery origin phone number
+
+  DelhiveryWarehouseName:
+    Type: String
+    Description: Delhivery warehouse name
+
+Conditions:
+  IsProduction: !Equals
+    - !Ref Environment
+    - production
 
 Resources:
   # VPC and Networking
@@ -235,6 +380,10 @@ Resources:
           FromPort: 8080
           ToPort: 8080
           SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
       Tags:
         - Key: Name
           Value: !Sub '${Environment}-ecommerce-ecs-sg'
@@ -285,11 +434,11 @@ Resources:
     Type: AWS::RDS::DBInstance
     Properties:
       DBInstanceIdentifier: !Sub '${Environment}-ecommerce-db'
-      DBName: DemoDB
+      DBName: !Ref DatabaseName
       DBInstanceClass: db.t3.micro
       Engine: postgres
       EngineVersion: '15.4'
-      MasterUsername: postgres
+      MasterUsername: !Ref DatabaseUsername
       MasterUserPassword: !Ref DatabasePassword
       AllocatedStorage: 20
       StorageType: gp2
@@ -326,9 +475,8 @@ Resources:
       CacheSubnetGroupName: !Ref RedisSubnetGroup
       SecurityGroupIds:
         - !Ref RedisSecurityGroup
-      AtRestEncryptionEnabled: true
-      TransitEncryptionEnabled: true
-      AuthToken: !Ref RedisPassword
+      AtRestEncryptionEnabled: false
+      TransitEncryptionEnabled: false
       Tags:
         - Key: Name
           Value: !Sub '${Environment}-ecommerce-redis'
@@ -443,16 +591,16 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
       Policies:
-        - PolicyName: SSMParameterAccess
+        - PolicyName: SecretsManagerAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - ssm:GetParameters
-                  - ssm:GetParameter
-                  - ssm:GetParametersByPath
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ecommerce/*'
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Environment}/ecommerce/*'
 
   ECSTaskRole:
     Type: AWS::IAM::Role
@@ -479,6 +627,25 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:s3:::${S3Bucket}'
                   - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt RecipesTable.Arn
+                  - !GetAtt ProductReviewsTable.Arn
+                  - !Sub '${RecipesTable.Arn}/index/*'
+                  - !Sub '${ProductReviewsTable.Arn}/index/*'
 
   # S3 Bucket for application data
   S3Bucket:
@@ -488,14 +655,29 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - '*'
+            ExposedHeaders:
+              - ETag
+            MaxAge: 3000
       LifecycleConfiguration:
         Rules:
           - Id: DeleteIncompleteMultipartUploads
@@ -505,6 +687,511 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${Environment}-ecommerce-backend-bucket'
+
+  # S3 Bucket Policy for public read access to images
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - s3:GetObject
+            Resource: !Sub '${S3Bucket.Arn}/*'
+
+  # DynamoDB Tables
+  RecipesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: recipes
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: category-index
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-recipes-table'
+
+  ProductReviewsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: product_reviews
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: product_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: product_id
+          KeyType: HASH
+        - AttributeName: user_id
+          KeyType: RANGE
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-product-reviews-table'
+
+  # ===========================================
+  # ECS Task Definition
+  # ===========================================
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - Database
+      - RedisCluster
+      - S3Bucket
+      - RecipesTable
+      - ProductReviewsTable
+      - DatabasePasswordSecret
+      - JWTSecretResource
+      - FirebaseAPIKeySecret
+      - FirebaseServiceAccountSecret
+      - AWSAccessKeySecret
+      - AWSSecretKeySecret
+      - RazorpayKeyIDSecret
+      - RazorpayKeySecretResource
+      - RazorpayWebhookSecretResource
+      - DelhiveryTokenSecret
+      - WhatsAppTokenSecret
+    Properties:
+      Family: !Sub '${Environment}-ecommerce-task'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: ecommerce-backend
+          Image: !Ref ContainerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            # Application Configuration
+            - Name: PORT
+              Value: '8080'
+
+            # PostgreSQL Configuration
+            - Name: DB_POSTGRES_HOST
+              Value: !GetAtt Database.Endpoint.Address
+            - Name: DB_POSTGRES_PORT
+              Value: '5432'
+            - Name: DB_POSTGRES_USER
+              Value: !Ref DatabaseUsername
+            - Name: DB_POSTGRES_DBNAME
+              Value: !Ref DatabaseName
+            - Name: DB_POSTGRES_SSLMODE
+              Value: 'disable'
+            - Name: DB_POSTGRES_MAX_CONNS
+              Value: '5'
+            - Name: DB_POSTGRES_IDLE_CONNS
+              Value: '2'
+
+            # AWS Configuration
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: DYNAMODB_RECIPES_TABLE
+              Value: 'recipes'
+
+            # DynamoDB Configuration for Reviews
+            - Name: DB_PRIMARY_BACKEND
+              Value: 'gorm'
+            - Name: DB_DYNAMO_REGION
+              Value: !Ref AWS::Region
+            - Name: DB_DYNAMO_TABLE
+              Value: 'product_reviews'
+
+            # S3 Configuration
+            - Name: DB_S3_REGION
+              Value: !Ref AWS::Region
+            - Name: DB_S3_BUCKET
+              Value: !Ref S3Bucket
+
+            # Firebase Configuration
+            - Name: FIREBASE_SERVICE_ACCOUNT_PATH
+              Value: '/app/internal/config/firebase_service_account.json'
+
+            # Redis Configuration
+            - Name: REDIS_HOST
+              Value: !GetAtt RedisCluster.RedisEndpoint.Address
+            - Name: REDIS_PORT
+              Value: '6379'
+            - Name: REDIS_PASSWORD
+              Value: ''
+            - Name: REDIS_DB
+              Value: '0'
+            - Name: REDIS_MAX_IDLE
+              Value: '10'
+            - Name: REDIS_MAX_ACTIVE
+              Value: '100'
+            - Name: REDIS_TIMEOUT
+              Value: '5'
+
+            # Cart System Configuration
+            - Name: CART_MAX_ITEMS
+              Value: '50'
+            - Name: CART_EXPIRY_HOURS
+              Value: '72'
+
+            # Delhivery Configuration
+            - Name: DELHIVERY_PRODUCTION
+              Value: 'true'
+            - Name: DELHIVERY_BASE_URL
+              Value: 'https://track.delhivery.com'
+            - Name: DELHIVERY_ORIGIN_PINCODE
+              Value: !Ref DelhiveryOriginPincode
+            - Name: DELHIVERY_ORIGIN_CITY
+              Value: !Ref DelhiveryOriginCity
+            - Name: DELHIVERY_ORIGIN_STATE
+              Value: !Ref DelhiveryOriginState
+            - Name: DELHIVERY_ORIGIN_ADDRESS
+              Value: !Ref DelhiveryOriginAddress
+            - Name: DELHIVERY_ORIGIN_PHONE
+              Value: !Ref DelhiveryOriginPhone
+            - Name: DELHIVERY_WAREHOUSE_NAME
+              Value: !Ref DelhiveryWarehouseName
+            - Name: DELHIVERY_DEFAULT_WEIGHT
+              Value: '300'
+
+            # Razorpay Configuration
+            - Name: RAZORPAY_ACCOUNT_ID
+              Value: !Ref RazorpayAccountID
+            - Name: RAZORPAY_LIVE
+              Value: 'false'
+            - Name: RAZORPAY_PRODUCTION
+              Value: 'false'
+
+            # Review System Configuration
+            - Name: REVIEWS_ENABLED
+              Value: 'true'
+            - Name: REVIEWS_MAX_PER_PRODUCT_PER_USER
+              Value: '1'
+            - Name: REVIEWS_REQUIRE_PURCHASE_VERIFICATION
+              Value: 'false'
+
+            # WhatsApp Configuration
+            - Name: WHATSAPP_ENABLED
+              Value: 'true'
+            - Name: WHATSAPP_PHONE_NUMBER_ID
+              Value: !Ref WhatsAppPhoneNumberID
+            - Name: WHATSAPP_BUSINESS_ACCOUNT_ID
+              Value: !Ref WhatsAppBusinessAccountID
+            - Name: WHATSAPP_WEBHOOK_TOKEN
+              Value: !Ref WhatsAppWebhookToken
+            - Name: WHATSAPP_API_BASE_URL
+              Value: 'https://graph.facebook.com/v22.0'
+            - Name: WHATSAPP_RETRY_ATTEMPTS
+              Value: '3'
+            - Name: WHATSAPP_RETRY_BACKOFF_MS
+              Value: '1000'
+            - Name: WHATSAPP_TIMEOUT_SECONDS
+              Value: '30'
+            - Name: WHATSAPP_MAX_MESSAGE_LENGTH
+              Value: '4096'
+
+            # Swagger/Documentation
+            - Name: ENABLE_DOCS
+              Value: 'true'
+            - Name: SWAGGER_TITLE
+              Value: !If [IsProduction, 'Ecommerce API - Production', 'Ecommerce API - Staging']
+            - Name: SWAGGER_HOST
+              Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+          Secrets:
+            # Database Password
+            - Name: DB_POSTGRES_PASSWORD
+              ValueFrom: !Ref DatabasePasswordSecret
+
+            # JWT Secret
+            - Name: JWT_SECRET
+              ValueFrom: !Ref JWTSecretResource
+
+            # Firebase API Key
+            - Name: FIREBASE_WEB_API_KEY
+              ValueFrom: !Ref FirebaseAPIKeySecret
+
+            # Firebase Service Account JSON
+            - Name: FIREBASE_SERVICE_ACCOUNT_JSON_CONTENT
+              ValueFrom: !Ref FirebaseServiceAccountSecret
+
+            # AWS Credentials (for application use)
+            - Name: AWS_ACCESS_KEY_ID
+              ValueFrom: !Ref AWSAccessKeySecret
+            - Name: AWS_SECRET_ACCESS_KEY
+              ValueFrom: !Ref AWSSecretKeySecret
+
+            # DynamoDB Credentials (same as AWS credentials)
+            - Name: DB_DYNAMO_ACCESS_KEY_ID
+              ValueFrom: !Ref AWSAccessKeySecret
+            - Name: DB_DYNAMO_SECRET_ACCESS_KEY
+              ValueFrom: !Ref AWSSecretKeySecret
+
+            # Razorpay Credentials
+            - Name: RAZORPAY_KEY_ID
+              ValueFrom: !Ref RazorpayKeyIDSecret
+            - Name: RAZORPAY_KEY_SECRET
+              ValueFrom: !Ref RazorpayKeySecretResource
+            - Name: RAZORPAY_WEBHOOK_SECRET
+              ValueFrom: !Ref RazorpayWebhookSecretResource
+
+            # Delhivery API Token
+            - Name: DELHIVERY_API_TOKEN
+              ValueFrom: !Ref DelhiveryTokenSecret
+
+            # WhatsApp Access Token
+            - Name: WHATSAPP_ACCESS_TOKEN
+              ValueFrom: !Ref WhatsAppTokenSecret
+
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  # ===========================================
+  # ECS Service
+  # ===========================================
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ALBListener
+      - ECSTaskDefinition
+    Properties:
+      ServiceName: !Sub '${Environment}-ecommerce-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: ecommerce-backend
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-ecommerce-service'
+
+  # ===========================================
+  # Auto Scaling
+  # ===========================================
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ECSService
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: 1
+      ResourceId: !Sub 'service/${ECSCluster}/${ECSService.Name}'
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  CPUScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${Environment}-ecommerce-cpu-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  MemoryScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${Environment}-ecommerce-memory-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        TargetValue: 80.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  # ===========================================
+  # CloudWatch Alarms
+  # ===========================================
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ecommerce-high-cpu'
+      AlarmDescription: Alarm when CPU exceeds 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !GetAtt ECSService.Name
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+      TreatMissingData: notBreaching
+
+  HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ecommerce-high-memory'
+      AlarmDescription: Alarm when memory exceeds 85%
+      MetricName: MemoryUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !GetAtt ECSService.Name
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+      TreatMissingData: notBreaching
+
+  UnhealthyTargetAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ecommerce-unhealthy-targets'
+      AlarmDescription: Alarm when there are unhealthy targets in the load balancer
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+
+  # ===========================================
+  # Secrets Manager
+  # ===========================================
+  DatabasePasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/database-password'
+      Description: RDS PostgreSQL Database Password
+      SecretString: !Ref DatabasePassword
+
+  JWTSecretResource:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/jwt-secret'
+      Description: JWT Secret Key for authentication
+      SecretString: !Ref JWTSecret
+
+  FirebaseAPIKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/firebase-api-key'
+      Description: Firebase Web API Key
+      SecretString: !Ref FirebaseWebAPIKey
+
+  FirebaseServiceAccountSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/firebase-service-account'
+      Description: Firebase Service Account JSON
+      SecretString: !Ref FirebaseServiceAccountJSON
+
+  AWSAccessKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/aws-access-key-id'
+      Description: AWS Access Key ID for application
+      SecretString: !Ref AWSAccessKeyID
+
+  AWSSecretKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/aws-secret-access-key'
+      Description: AWS Secret Access Key for application
+      SecretString: !Ref AWSSecretAccessKey
+
+  RazorpayKeyIDSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/razorpay-key-id'
+      Description: Razorpay Key ID
+      SecretString: !Ref RazorpayKeyID
+
+  RazorpayKeySecretResource:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/razorpay-key-secret'
+      Description: Razorpay Key Secret
+      SecretString: !Ref RazorpayKeySecret
+
+  RazorpayWebhookSecretResource:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/razorpay-webhook-secret'
+      Description: Razorpay Webhook Secret
+      SecretString: !Ref RazorpayWebhookSecret
+
+  DelhiveryTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/delhivery-api-token'
+      Description: Delhivery API Token
+      SecretString: !Ref DelhiveryAPIToken
+
+  WhatsAppTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/whatsapp-access-token'
+      Description: WhatsApp Access Token
+      SecretString: !Ref WhatsAppAccessToken
 
 Outputs:
   VPCId:
@@ -578,3 +1265,57 @@ Outputs:
     Value: !Ref S3Bucket
     Export:
       Name: !Sub '${Environment}-S3-Bucket-Name'
+
+  RecipesTableName:
+    Description: DynamoDB Recipes Table Name
+    Value: !Ref RecipesTable
+    Export:
+      Name: !Sub '${Environment}-Recipes-Table-Name'
+
+  ProductReviewsTableName:
+    Description: DynamoDB Product Reviews Table Name
+    Value: !Ref ProductReviewsTable
+    Export:
+      Name: !Sub '${Environment}-Product-Reviews-Table-Name'
+
+  ECSSecurityGroupId:
+    Description: ECS Security Group ID
+    Value: !Ref ECSSecurityGroup
+    Export:
+      Name: !Sub '${Environment}-ECS-SecurityGroup-ID'
+
+  ALBSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub '${Environment}-ALB-SecurityGroup-ID'
+
+  ECSTaskExecutionRoleArn:
+    Description: ECS Task Execution Role ARN
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${Environment}-ECS-TaskExecutionRole-ARN'
+
+  ECSTaskRoleArn:
+    Description: ECS Task Role ARN
+    Value: !GetAtt ECSTaskRole.Arn
+    Export:
+      Name: !Sub '${Environment}-ECS-TaskRole-ARN'
+
+  DatabaseName:
+    Description: Database Name
+    Value: !Ref DatabaseName
+    Export:
+      Name: !Sub '${Environment}-Database-Name'
+
+  DatabaseUsername:
+    Description: Database Username
+    Value: !Ref DatabaseUsername
+    Export:
+      Name: !Sub '${Environment}-Database-Username'
+
+  LogGroupName:
+    Description: CloudWatch Log Group Name
+    Value: !Ref LogGroup
+    Export:
+      Name: !Sub '${Environment}-LogGroup-Name'
