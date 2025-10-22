@@ -35,12 +35,12 @@ Parameters:
 
   DatabaseName:
     Type: String
-    Default: amrti_db
+    Default: ecommerce_db
     Description: PostgreSQL database name
 
   DatabaseUsername:
     Type: String
-    Default: amrti
+    Default: dbadmin
     Description: PostgreSQL master username
 
   DatabasePassword:
@@ -133,7 +133,6 @@ Parameters:
 
   RazorpayAccountID:
     Type: String
-    Default: PrKkMGhgGKEUo9
     Description: Razorpay Account ID
 
   DelhiveryAPIToken:
@@ -149,48 +148,39 @@ Parameters:
   # WhatsApp Configuration
   WhatsAppPhoneNumberID:
     Type: String
-    Default: '798966973306849'
     Description: WhatsApp Phone Number ID
 
   WhatsAppBusinessAccountID:
     Type: String
-    Default: '2620508361618804'
     Description: WhatsApp Business Account ID
 
   WhatsAppWebhookToken:
     Type: String
-    Default: 'your_webhook_token_here'
     Description: WhatsApp Webhook Verification Token
 
   # Delhivery Configuration
   DelhiveryOriginPincode:
     Type: String
-    Default: '500033'
     Description: Delhivery origin pincode
 
   DelhiveryOriginCity:
     Type: String
-    Default: Hyderabad
     Description: Delhivery origin city
 
   DelhiveryOriginState:
     Type: String
-    Default: Telangana
     Description: Delhivery origin state
 
   DelhiveryOriginAddress:
     Type: String
-    Default: 'plot 27, nandi hills, rd no. 51, BN Reddy Colony, Jubilee Hills, Hyderabad, Telangana 500033'
     Description: Delhivery origin full address
 
   DelhiveryOriginPhone:
     Type: String
-    Default: '7386727007'
     Description: Delhivery origin phone number
 
   DelhiveryWarehouseName:
     Type: String
-    Default: Amrti
     Description: Delhivery warehouse name
 
 Conditions:
