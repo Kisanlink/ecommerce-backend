@@ -8,19 +8,20 @@ import (
 
 // ServiceManager manages all services following the development rules
 type ServiceManager struct {
-	UserService      *UserService
-	ProductService   *ProductService
-	InventoryService *InventoryService
-	ProfileService   *ProfileService
-	FavoriteService  *FavoriteService
-	AddressService   AddressServiceInterface
-	CartService      CartServiceInterface
-	S3Service        *S3Service
-	DeliveryService  DeliveryServiceInterface
-	OrderService     OrderServiceInterface
-	ReviewService    *ReviewService
-	ImageService     ImageServiceInterface
-	WhatsAppService  *WhatsAppService
+	UserService        *UserService
+	ProductService     *ProductService
+	InventoryService   *InventoryService
+	ProfileService     *ProfileService
+	FavoriteService    *FavoriteService
+	AddressService     AddressServiceInterface
+	CartService        CartServiceInterface
+	SessionCartService SessionCartServiceInterface
+	S3Service          *S3Service
+	DeliveryService    DeliveryServiceInterface
+	OrderService       OrderServiceInterface
+	ReviewService      *ReviewService
+	ImageService       ImageServiceInterface
+	WhatsAppService    *WhatsAppService
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -39,6 +40,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	// Create services
 	addressService := NewAddressService(repoManager, logger)
 	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, repoManager.GetDBManager(), logger)
+	sessionCartService := NewSessionCartService(repoManager.CartRepository, repoManager.ProductRepository, logger)
 	deliveryService := NewDeliveryService(repoManager, logger)
 	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, s3Service, logger)
 
@@ -55,18 +57,19 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	whatsappService := NewWhatsAppService(logger)
 
 	return &ServiceManager{
-		UserService:      userService,
-		ProductService:   NewProductService(repoManager),
-		InventoryService: NewInventoryService(repoManager),
-		ProfileService:   NewProfileService(repoManager),
-		FavoriteService:  NewFavoriteService(repoManager),
-		AddressService:   addressService,
-		CartService:      cartService,
-		S3Service:        s3Service,
-		DeliveryService:  deliveryService,
-		OrderService:     orderService,
-		ReviewService:    reviewService,
-		ImageService:     imageService,
-		WhatsAppService:  whatsappService,
+		UserService:        userService,
+		ProductService:     NewProductService(repoManager),
+		InventoryService:   NewInventoryService(repoManager),
+		ProfileService:     NewProfileService(repoManager),
+		FavoriteService:    NewFavoriteService(repoManager),
+		AddressService:     addressService,
+		CartService:        cartService,
+		SessionCartService: sessionCartService,
+		S3Service:          s3Service,
+		DeliveryService:    deliveryService,
+		OrderService:       orderService,
+		ReviewService:      reviewService,
+		ImageService:       imageService,
+		WhatsAppService:    whatsappService,
 	}
 }
