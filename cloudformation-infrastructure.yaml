@@ -101,6 +101,11 @@ Parameters:
     NoEcho: true
     Description: Firebase Web API Key for REST API operations
 
+  FirebaseServiceAccountJSON:
+    Type: String
+    NoEcho: true
+    Description: Firebase Service Account JSON (entire contents of firebase_service_account.json file)
+
   AWSAccessKeyID:
     Type: String
     NoEcho: true
@@ -765,6 +770,7 @@ Resources:
       - DatabasePasswordSecret
       - JWTSecretResource
       - FirebaseAPIKeySecret
+      - FirebaseServiceAccountSecret
       - AWSAccessKeySecret
       - AWSSecretKeySecret
       - RazorpayKeyIDSecret
@@ -931,6 +937,10 @@ Resources:
             # Firebase API Key
             - Name: FIREBASE_WEB_API_KEY
               ValueFrom: !Ref FirebaseAPIKeySecret
+
+            # Firebase Service Account JSON
+            - Name: FIREBASE_SERVICE_ACCOUNT_JSON_CONTENT
+              ValueFrom: !Ref FirebaseServiceAccountSecret
 
             # AWS Credentials (for application use)
             - Name: AWS_ACCESS_KEY_ID
@@ -1136,6 +1146,13 @@ Resources:
       Name: !Sub '${Environment}/ecommerce/firebase-api-key'
       Description: Firebase Web API Key
       SecretString: !Ref FirebaseWebAPIKey
+
+  FirebaseServiceAccountSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Environment}/ecommerce/firebase-service-account'
+      Description: Firebase Service Account JSON
+      SecretString: !Ref FirebaseServiceAccountJSON
 
   AWSAccessKeySecret:
     Type: AWS::SecretsManager::Secret
