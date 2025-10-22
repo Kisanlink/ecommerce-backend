@@ -35,6 +35,9 @@ WORKDIR /app
 # Copy the binary from builder stage
 COPY --from=builder /app/main .
 
+# Copy Firebase service account JSON (optional - comment out if using env vars)
+COPY firebase_service_account.json /app/internal/config/firebase_service_account.json
+
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
 
