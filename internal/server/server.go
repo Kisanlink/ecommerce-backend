@@ -7,6 +7,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/ecommerce-backend/internal/swagger"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -27,5 +28,9 @@ func NewServer(repoManager *repositories.RepositoryManager, serviceManager *serv
 	defer logger.Sync()
 
 	routes.RegisterRoutes(r, repoManager, serviceManager, logger)
+
+	// Register Swagger documentation routes
+	swagger.RegisterSwaggerRoutes(r)
+
 	return r, nil
 }

@@ -39,6 +39,16 @@ func (r *OrderRepository) GetOrderAddress(ctx context.Context, addressID string)
 	return &address, nil
 }
 
+// GetOrderCustomers retrieves order customers with filter
+func (r *OrderRepository) GetOrderCustomers(ctx context.Context, filter *base.Filter, customers *[]*models.OrderCustomer) error {
+	return r.dbManager.List(ctx, filter, customers)
+}
+
+// GetOrderAddresses retrieves order addresses with filter
+func (r *OrderRepository) GetOrderAddresses(ctx context.Context, filter *base.Filter, addresses *[]*models.OrderAddress) error {
+	return r.dbManager.List(ctx, filter, addresses)
+}
+
 // Create creates a new order in the database
 func (r *OrderRepository) Create(ctx context.Context, order *models.Order) error {
 	return r.dbManager.Create(ctx, order)
@@ -489,4 +499,22 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// Find retrieves orders with filtering
+func (r *OrderRepository) Find(ctx context.Context, filter *base.Filter) ([]*models.Order, error) {
+	var orders []*models.Order
+	if err := r.dbManager.List(ctx, filter, &orders); err != nil {
+		return nil, fmt.Errorf("failed to find orders: %w", err)
+	}
+	return orders, nil
+}
+
+// CountWithFilter counts orders with a filter
+func (r *OrderRepository) CountWithFilter(ctx context.Context, filter *base.Filter) (int64, error) {
+	count, err := r.dbManager.Count(ctx, filter, &models.Order{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count orders: %w", err)
+	}
+	return count, nil
 }

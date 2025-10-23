@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"fmt"
+	"mime/multipart"
+	"os"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
@@ -84,7 +86,9 @@ func (s *ProductService) CreateProduct(ctx context.Context, req *requests.Create
 	var images []*models.Image
 	imageUrls := req.GetEffectiveImages()
 	for i, imageURL := range imageUrls {
-		image := models.NewImage(product.ID, imageURL, models.ImageTypeProduct)
+		// For legacy image URLs, we'll use the URL as the S3 key
+		// In a real scenario, these would be uploaded to S3 first
+		image := models.NewImage(product.ID, imageURL, imageURL, models.ImageTypeProduct)
 		image.SetCreatedBy(req.GetUserID())
 
 		// Set first image as primary
@@ -137,10 +141,11 @@ func (s *ProductService) CreateProduct(ctx context.Context, req *requests.Create
 
 // GetProductByID retrieves a product by ID
 func (s *ProductService) GetProductByID(ctx context.Context, req *requests.GetProductRequest) (*base.BaseResponse, error) {
-	// Build filter for active products only
+	// Build filter for active products only (not soft deleted)
 	filter := base.NewFilterBuilder().
 		Where("id", base.OpEqual, req.ID).
 		Where("is_active", base.OpEqual, true).
+		Where("deleted_at", base.OpIsNull, nil).
 		Build()
 
 	product, err := s.repoManager.ProductRepository.FindOne(ctx, filter)
@@ -173,9 +178,10 @@ func (s *ProductService) GetProductByID(ctx context.Context, req *requests.GetPr
 
 // GetProducts retrieves products with filtering and pagination
 func (s *ProductService) GetProducts(ctx context.Context, req *requests.ListProductsRequest) (*base.PaginatedResponse, error) {
-	// Build base filter for active products
+	// Build base filter for active products (not soft deleted)
 	filterBuilder := base.NewFilterBuilder().
 		Where("is_active", base.OpEqual, true).
+		Where("deleted_at", base.OpIsNull, nil).
 		Sort("created_at", "desc").
 		Page(req.Page, req.PerPage)
 
@@ -293,7 +299,9 @@ func (s *ProductService) UpdateProduct(ctx context.Context, req *requests.Update
 	// Create new images
 	var images []*models.Image
 	for i, imageURL := range imageUrls {
-		image := models.NewImage(req.ID, imageURL, models.ImageTypeProduct)
+		// For legacy image URLs, we'll use the URL as the S3 key
+		// In a real scenario, these would be uploaded to S3 first
+		image := models.NewImage(req.ID, imageURL, imageURL, models.ImageTypeProduct)
 		image.SetCreatedBy(req.GetUserID())
 
 		// Set first image as primary
@@ -347,4 +355,182 @@ func (s *ProductService) DeleteProduct(ctx context.Context, req *requests.Delete
 	// Create response
 	productResp := responses.NewProductDeleteResponse()
 	return base.NewSuccessResponse("Product deleted successfully", productResp), nil
+}
+
+// UploadProductImage uploads a product image to S3 and creates image record
+func (s *ProductService) UploadProductImage(ctx context.Context, req *requests.UploadProductImageRequest, file multipart.File, header *multipart.FileHeader, s3Service *S3Service) (*base.BaseResponse, error) {
+	// Check if product exists and is not soft deleted
+	filter := base.NewFilterBuilder().
+		Where("id", base.OpEqual, req.ProductID).
+		Where("is_active", base.OpEqual, true).
+		Where("deleted_at", base.OpIsNull, nil).
+		Build()
+
+	_, err := s.repoManager.ProductRepository.FindOne(ctx, filter)
+	if err != nil {
+		return base.NewErrorResponse("Product not found",
+			base.NewNotFoundError("Product", req.ProductID)), nil
+	}
+
+	// Upload image to S3
+	s3Key, err := s3Service.UploadProductImage(ctx, req.ProductID, file, header)
+	if err != nil {
+		return base.NewErrorResponse("Failed to upload image",
+			base.NewInternalServerError("S3 upload error", err.Error())), nil
+	}
+
+	// Create direct S3 URL (not presigned) for storage
+	// This will be consistent with existing images
+	imageURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s",
+		os.Getenv("DB_S3_BUCKET"),
+		os.Getenv("DB_S3_REGION"),
+		s3Key)
+
+	// Create image record
+	image := models.NewImage(req.ProductID, imageURL, s3Key, models.ImageTypeProduct)
+	image.AltText = req.AltText
+	image.Caption = req.Caption
+	image.FileSize = header.Size
+	image.MimeType = header.Header.Get("Content-Type")
+	image.SetCreatedBy(req.GetUserID())
+
+	// Check if this is the first image for the product
+	existingImages, err := s.repoManager.ImageRepository.GetActiveImagesByProductID(ctx, req.ProductID)
+	if err != nil {
+		// Log error but continue - this shouldn't fail the upload
+		fmt.Printf("Warning: Failed to check existing images for product %s: %v\n", req.ProductID, err)
+	}
+
+	// Set as primary if it's the first image
+	if len(existingImages) == 0 {
+		image.SetAsPrimary()
+	} else {
+		// Set sort order as the next available
+		image.SetSortOrder(len(existingImages))
+	}
+
+	// Save image to database
+	if err := s.repoManager.ImageRepository.Create(ctx, image); err != nil {
+		// If database save fails, try to delete from S3
+		if deleteErr := s3Service.DeleteProductImage(ctx, s3Key); deleteErr != nil {
+			fmt.Printf("Warning: Failed to delete uploaded image from S3: %v\n", deleteErr)
+		}
+		return base.NewErrorResponse("Failed to save image record",
+			base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	// Create response
+	imageResp := responses.NewImageUploadResponse(image, s3Key)
+	return base.NewSuccessResponse("Image uploaded successfully", imageResp), nil
+}
+
+// DeleteProductImage deletes a product image from both database and S3
+func (s *ProductService) DeleteProductImage(ctx context.Context, req *requests.DeleteProductImageRequest, s3Service *S3Service) (*base.BaseResponse, error) {
+	// Get image record
+	var image models.Image
+	imagePtr, err := s.repoManager.ImageRepository.GetByID(ctx, req.ImageID, &image)
+	if err != nil {
+		return base.NewErrorResponse("Image not found",
+			base.NewNotFoundError("Image", req.ImageID)), nil
+	}
+	image = *imagePtr
+
+	// Verify the image belongs to the specified product
+	if image.ProductID != req.ProductID {
+		return base.NewErrorResponse("Image does not belong to the specified product",
+			base.NewValidationError("Product mismatch", "Image product ID does not match")), nil
+	}
+
+	// Use the stored S3 key, fallback to image URL for backward compatibility
+	s3Key := image.S3Key
+	if s3Key == "" {
+		s3Key = image.ImageURL
+	}
+
+	// Delete from S3
+	if err := s3Service.DeleteProductImage(ctx, s3Key); err != nil {
+		fmt.Printf("Warning: Failed to delete image from S3: %v\n", err)
+		// Continue with database deletion even if S3 deletion fails
+	}
+
+	// Delete from database
+	if err := s.repoManager.ImageRepository.Delete(ctx, req.ImageID); err != nil {
+		return base.NewErrorResponse("Failed to delete image",
+			base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	// If this was the primary image, set another image as primary
+	if image.IsPrimary {
+		remainingImages, err := s.repoManager.ImageRepository.GetActiveImagesByProductID(ctx, req.ProductID)
+		if err == nil && len(remainingImages) > 0 {
+			// Set the first remaining image as primary
+			if err := s.repoManager.ImageRepository.SetPrimaryImage(ctx, req.ProductID, remainingImages[0].ID); err != nil {
+				fmt.Printf("Warning: Failed to set new primary image: %v\n", err)
+			}
+		}
+	}
+
+	return base.NewSuccessResponse("Image deleted successfully", nil), nil
+}
+
+// SetPrimaryImage sets an image as the primary image for a product
+func (s *ProductService) SetPrimaryImage(ctx context.Context, req *requests.SetPrimaryImageRequest) (*base.BaseResponse, error) {
+	// Get image record
+	var image models.Image
+	imagePtr, err := s.repoManager.ImageRepository.GetByID(ctx, req.ImageID, &image)
+	if err != nil {
+		return base.NewErrorResponse("Image not found",
+			base.NewNotFoundError("Image", req.ImageID)), nil
+	}
+	image = *imagePtr
+
+	// Verify the image belongs to the specified product
+	if image.ProductID != req.ProductID {
+		return base.NewErrorResponse("Image does not belong to the specified product",
+			base.NewValidationError("Product mismatch", "Image product ID does not match")), nil
+	}
+
+	// Set as primary image
+	if err := s.repoManager.ImageRepository.SetPrimaryImage(ctx, req.ProductID, req.ImageID); err != nil {
+		return base.NewErrorResponse("Failed to set primary image",
+			base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	// Get updated image
+	updatedImage, err := s.repoManager.ImageRepository.GetByID(ctx, req.ImageID, &image)
+	if err != nil {
+		return base.NewErrorResponse("Failed to retrieve updated image",
+			base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	// Create response
+	imageResp := responses.NewImageResponse(updatedImage)
+	return base.NewSuccessResponse("Primary image set successfully", imageResp), nil
+}
+
+// GetProductImages retrieves all images for a product
+func (s *ProductService) GetProductImages(ctx context.Context, req *requests.GetProductImagesRequest) (*base.BaseResponse, error) {
+	// Check if product exists and is not soft deleted
+	filter := base.NewFilterBuilder().
+		Where("id", base.OpEqual, req.ProductID).
+		Where("is_active", base.OpEqual, true).
+		Where("deleted_at", base.OpIsNull, nil).
+		Build()
+
+	_, err := s.repoManager.ProductRepository.FindOne(ctx, filter)
+	if err != nil {
+		return base.NewErrorResponse("Product not found",
+			base.NewNotFoundError("Product", req.ProductID)), nil
+	}
+
+	// Get all active images for the product
+	images, err := s.repoManager.ImageRepository.GetActiveImagesByProductID(ctx, req.ProductID)
+	if err != nil {
+		return base.NewErrorResponse("Failed to retrieve images",
+			base.NewInternalServerError("Database error", err.Error())), nil
+	}
+
+	// Create response
+	imagesResp := responses.NewProductImagesResponse(req.ProductID, images)
+	return base.NewSuccessResponse("Images retrieved successfully", imagesResp), nil
 }

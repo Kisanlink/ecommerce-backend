@@ -10,8 +10,8 @@ import (
 
 // RegisterProductRoutes registers all product related routes
 func RegisterProductRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager, repoManager *repositories.RepositoryManager) {
-	// Create product handler with service
-	productHandler := handlers.NewProductHandler(serviceManager.ProductService)
+	// Create product handler with service and S3 service
+	productHandler := handlers.NewProductHandler(serviceManager.ProductService, serviceManager.S3Service)
 
 	// Public product routes (no authentication required)
 	products := r.Group("/products")
@@ -30,6 +30,12 @@ func RegisterProductRoutes(r *gin.RouterGroup, serviceManager *services.ServiceM
 		adminProducts.POST("", productHandler.CreateProduct)       // Create new product (admin only)
 		adminProducts.PUT("/:id", productHandler.UpdateProduct)    // Update product (admin only)
 		adminProducts.DELETE("/:id", productHandler.DeleteProduct) // Delete product (admin only)
+
+		// Product image management routes (admin only)
+		adminProducts.POST("/:id/images", productHandler.UploadProductImage)              // Upload product image
+		adminProducts.GET("/:id/images", productHandler.GetProductImages)                 // Get product images
+		adminProducts.DELETE("/:id/images/:imageId", productHandler.DeleteProductImage)   // Delete product image
+		adminProducts.PUT("/:id/images/:imageId/primary", productHandler.SetPrimaryImage) // Set primary image
 	}
 
 	// Future route groups (commented until handlers are implemented)

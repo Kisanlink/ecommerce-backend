@@ -3,13 +3,14 @@ package reviews
 import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
+	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
 // RegisterReviewRoutes registers all review related routes
-func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager, logger *zap.Logger) {
+func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager, repoManager *repositories.RepositoryManager, logger *zap.Logger) {
 	// Initialize logger if not provided
 	if logger == nil {
 		logger, _ = zap.NewProduction()
@@ -31,8 +32,9 @@ func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceMa
 		productReviews := products.Group("/:id/reviews")
 		{
 			// Public routes (no authentication required)
-			productReviews.GET("", reviewHandler.GetProductReviews)    // Get all reviews for a product
-			productReviews.GET("/stats", reviewHandler.GetReviewStats) // Get review statistics for a product
+			productReviews.GET("", reviewHandler.GetProductReviews)            // Get all reviews for a product
+			productReviews.GET("/stats", reviewHandler.GetReviewStats)         // Get review statistics for a product
+			productReviews.GET("/debug", reviewHandler.DebugGetProductReviews) // Debug endpoint (temporary)
 
 			// Authenticated routes (require login)
 			authenticated := productReviews.Group("/")
@@ -53,16 +55,16 @@ func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceMa
 		users.GET("/:id/reviews", reviewHandler.GetUserReviews) // Get all reviews by a user
 	}
 
-	// Admin review routes (future implementation)
-	// admin := r.Group("/admin/reviews")
-	// admin.Use(middleware.FirebaseAuthMiddleware())
-	// admin.Use(middleware.AdminGuard(repoManager)) // TODO: Add admin guard
-	// {
-	// 	admin.GET("", reviewHandler.GetAllReviews)                    // Get all reviews (admin)
-	// 	admin.GET("/flagged", reviewHandler.GetFlaggedReviews)        // Get flagged reviews
-	// 	admin.PUT("/:reviewId/flag", reviewHandler.FlagReview)        // Flag/unflag a review
-	// 	admin.DELETE("/:reviewId/force", reviewHandler.ForceDeleteReview) // Force delete review
-	// }
+	// Admin review routes (admin access required)
+	admin := r.Group("/admin/reviews")
+	admin.Use(middleware.FirebaseAuthMiddleware())
+	admin.Use(middleware.AdminGuard(repoManager))
+	{
+		admin.GET("", reviewHandler.AdminListReviews)                         // Get all reviews with admin filtering
+		admin.GET("/flagged", reviewHandler.AdminGetFlaggedReviews)           // Get flagged reviews
+		admin.PUT("/:reviewId", reviewHandler.AdminManageReview)              // Manage review (flag, unflag, approve, reject, force_delete, hard_delete)
+		admin.DELETE("/flagged", reviewHandler.AdminBulkDeleteFlaggedReviews) // Bulk delete all flagged reviews
+	}
 
 	logger.Info("Review routes registered successfully")
 }

@@ -1,5 +1,150 @@
 basePath: /api/v1
 definitions:
+  handlers.AddMultipleImagesRequest:
+    properties:
+      image_type:
+        type: string
+      image_urls:
+        items:
+          type: string
+        type: array
+      product_id:
+        type: string
+    required:
+    - image_type
+    - image_urls
+    - product_id
+    type: object
+  handlers.CreateImageRequest:
+    properties:
+      alt_text:
+        type: string
+      caption:
+        type: string
+      image_type:
+        type: string
+      image_url:
+        type: string
+      product_id:
+        type: string
+    required:
+    - image_type
+    - image_url
+    - product_id
+    type: object
+  handlers.CreateOrderRequest:
+    properties:
+      currency:
+        description: Ignored (hardcoded to INR)
+        type: string
+      first_name:
+        description: Required
+        type: string
+      last_name:
+        type: string
+      mobile:
+        description: Required (primary)
+        type: string
+      mobile_secondary:
+        type: string
+      shipping_address:
+        description: 'Optional: if providing new address'
+        type: string
+      shipping_address_id:
+        description: 'Optional: if using saved addresses'
+        type: string
+      subtotal:
+        type: number
+    type: object
+  handlers.CreateOrderResponse:
+    properties:
+      amount:
+        type: number
+      checkout_url:
+        type: string
+      currency:
+        type: string
+      description:
+        type: string
+      key_id:
+        type: string
+      notes:
+        additionalProperties: true
+        type: object
+      order_id:
+        type: string
+    type: object
+  handlers.ReorderImagesRequest:
+    properties:
+      image_orders:
+        additionalProperties:
+          type: integer
+        type: object
+    required:
+    - image_orders
+    type: object
+  handlers.UpdateImageRequest:
+    properties:
+      alt_text:
+        type: string
+      caption:
+        type: string
+      image_type:
+        type: string
+      image_url:
+        type: string
+      is_active:
+        type: boolean
+      sort_order:
+        type: integer
+    type: object
+  handlers.VerifyPaymentRequest:
+    properties:
+      razorpay_order_id:
+        type: string
+      razorpay_payment_id:
+        type: string
+      razorpay_signature:
+        type: string
+    required:
+    - razorpay_order_id
+    - razorpay_payment_id
+    - razorpay_signature
+    type: object
+  handlers.VerifyPaymentResponse:
+    properties:
+      awb_number:
+        type: string
+      message:
+        type: string
+      order_id:
+        type: string
+      payment_id:
+        type: string
+      success:
+        type: boolean
+      tracking_url:
+        type: string
+    type: object
+  models.CouponRuleType:
+    enum:
+    - percentage
+    - fixed
+    - free_shipping
+    type: string
+    x-enum-varnames:
+    - CouponRuleTypePercentage
+    - CouponRuleTypeFixed
+    - CouponRuleTypeFreeShipping
+  models.Recipe:
+    type: object
+  requests.AddFavoriteRequest:
+    properties:
+      product_id:
+        type: string
+    required:
+    - product_id
+    type: object
   requests.AddToCartRequest:
     properties:
       product_id:
@@ -17,7 +162,291 @@ definitions:
     - product_id
     - quantity
     type: object
+  requests.ApplyCouponRequest:
+    properties:
+      coupon_code:
+        maxLength: 50
+        minLength: 1
+        type: string
+    required:
+    - coupon_code
+    type: object
+  requests.ApplyCouponToUserRequest:
+    properties:
+      code:
+        type: string
+      user_id:
+        type: string
+    required:
+    - code
+    - user_id
+    type: object
+  requests.CreateCouponRequest:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      code:
+        type: string
+      count:
+        type: integer
+      created_by:
+        type: string
+      description:
+        type: string
+      first_time_only:
+        type: boolean
+      max_discount:
+        type: number
+      min_amount:
+        type: number
+      products:
+        items:
+          type: string
+        type: array
+      rule_type:
+        $ref: '#/definitions/models.CouponRuleType'
+      user_limit:
+        type: integer
+      valid_from:
+        type: string
+      valid_until:
+        type: string
+      value:
+        type: number
+    required:
+    - code
+    - count
+    - created_by
+    - description
+    - rule_type
+    - value
+    type: object
+  requests.CreateCouponRuleRequest:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      coupon_id:
+        type: string
+      discount_value:
+        type: number
+      first_time_only:
+        type: boolean
+      max_discount:
+        type: number
+      min_amount:
+        type: number
+      products:
+        items:
+          type: string
+        type: array
+      rule_type:
+        $ref: '#/definitions/models.CouponRuleType'
+      user_limit:
+        type: integer
+      valid_from:
+        type: string
+      valid_until:
+        type: string
+    required:
+    - coupon_id
+    - discount_value
+    - rule_type
+    type: object
+  requests.CreateInventoryRequest:
+    type: object
   requests.CreateProductRequest:
+    type: object
+  requests.CreateReviewRequest:
+    properties:
+      comment:
+        maxLength: 1000
+        minLength: 10
+        type: string
+      product_id:
+        type: string
+      rating:
+        maximum: 5
+        minimum: 1
+        type: integer
+      title:
+        maxLength: 100
+        minLength: 5
+        type: string
+    required:
+    - comment
+    - product_id
+    - rating
+    - title
+    type: object
+  requests.DecrementCartItemRequest:
+    properties:
+      amount:
+        description: Default to 1 if not provided or 0
+        maximum: 100
+        minimum: 1
+        type: integer
+    type: object
+  requests.DelhiveryPickupLocation:
+    properties:
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  requests.DelhiveryShipmentDetail:
+    properties:
+      add:
+        type: string
+      address_type:
+        description: home/office
+        type: string
+      city:
+        type: string
+      cod_amount:
+        type: string
+      country:
+        type: string
+      hsn_code:
+        type: string
+      name:
+        type: string
+      order:
+        description: Order ID
+        type: string
+      order_date:
+        type: string
+      payment_mode:
+        description: Prepaid/COD
+        type: string
+      phone:
+        type: string
+      pin:
+        type: string
+      products_desc:
+        type: string
+      quantity:
+        type: string
+      return_add:
+        type: string
+      return_city:
+        type: string
+      return_country:
+        type: string
+      return_name:
+        type: string
+      return_phone:
+        type: string
+      return_pin:
+        type: string
+      return_state:
+        type: string
+      seller_add:
+        type: string
+      seller_inv:
+        type: string
+      seller_name:
+        type: string
+      shipment_height:
+        type: string
+      shipment_width:
+        type: string
+      shipping_mode:
+        description: Surface/Express
+        type: string
+      state:
+        type: string
+      total_amount:
+        type: string
+      waybill:
+        description: Leave empty for auto-generation
+        type: string
+      weight:
+        type: string
+    required:
+    - add
+    - city
+    - country
+    - name
+    - order
+    - payment_mode
+    - phone
+    - pin
+    - products_desc
+    - quantity
+    - return_add
+    - return_city
+    - return_country
+    - return_name
+    - return_phone
+    - return_pin
+    - return_state
+    - shipping_mode
+    - state
+    - total_amount
+    - weight
+    type: object
+  requests.DelhiveryShipmentRequest:
+    properties:
+      pickup_location:
+        $ref: '#/definitions/requests.DelhiveryPickupLocation'
+      shipments:
+        items:
+          $ref: '#/definitions/requests.DelhiveryShipmentDetail'
+        type: array
+    type: object
+  requests.EstimateShippingRequest:
+    properties:
+      address:
+        properties:
+          city:
+            maxLength: 100
+            minLength: 1
+            type: string
+          country:
+            maxLength: 100
+            minLength: 1
+            type: string
+          postal_code:
+            maxLength: 20
+            minLength: 1
+            type: string
+          state:
+            maxLength: 100
+            minLength: 1
+            type: string
+          street:
+            maxLength: 200
+            minLength: 1
+            type: string
+        required:
+        - city
+        - country
+        - postal_code
+        - state
+        - street
+        type: object
+      phone:
+        type: string
+      shipping_method:
+        enum:
+        - standard
+        - express
+        - overnight
+        type: string
+    required:
+    - address
+    type: object
+  requests.IncrementCartItemRequest:
+    properties:
+      amount:
+        description: Default to 1 if not provided or 0
+        maximum: 100
+        minimum: 1
+        type: integer
     type: object
   requests.LoginRequest:
     properties:
@@ -28,6 +457,37 @@ definitions:
     required:
     - email
     - password
+    type: object
+  requests.ReleaseStockRequest:
+    properties:
+      product_id:
+        type: string
+      quantity:
+        minimum: 1
+        type: integer
+    required:
+    - product_id
+    type: object
+  requests.RemoveFavoriteRequest:
+    properties:
+      product_id:
+        type: string
+    required:
+    - product_id
+    type: object
+  requests.ReserveStockRequest:
+    properties:
+      product_id:
+        type: string
+      quantity:
+        minimum: 1
+        type: integer
+    required:
+    - product_id
+    type: object
+  requests.RestockRequest:
+    type: object
+  requests.SellStockRequest:
     type: object
   requests.SignupRequest:
     properties:
@@ -43,12 +503,461 @@ definitions:
     - name
     - password
     type: object
+  requests.UpdateCartItemRequest:
+    properties:
+      quantity:
+        description: 0 quantity means remove item
+        maximum: 1000
+        minimum: 0
+        type: integer
+    required:
+    - quantity
+    type: object
+  requests.UpdateCouponRequest:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      count:
+        type: integer
+      description:
+        type: string
+      first_time_only:
+        type: boolean
+      id:
+        type: string
+      is_active:
+        type: boolean
+      max_discount:
+        type: number
+      min_amount:
+        type: number
+      products:
+        items:
+          type: string
+        type: array
+      rule_type:
+        $ref: '#/definitions/models.CouponRuleType'
+      user_limit:
+        type: integer
+      valid_from:
+        type: string
+      valid_until:
+        type: string
+      value:
+        type: number
+    type: object
+  requests.UpdateCouponRuleRequest:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      discount_value:
+        type: number
+      first_time_only:
+        type: boolean
+      id:
+        type: string
+      max_discount:
+        type: number
+      min_amount:
+        type: number
+      products:
+        items:
+          type: string
+        type: array
+      rule_type:
+        $ref: '#/definitions/models.CouponRuleType'
+      user_limit:
+        type: integer
+      valid_from:
+        type: string
+      valid_until:
+        type: string
+    type: object
+  requests.UpdateInventoryRequest:
+    type: object
+  requests.UpdateProfileRequest:
+    properties:
+      address_line1:
+        description: Address fields
+        maxLength: 255
+        type: string
+      address_line2:
+        maxLength: 255
+        type: string
+      city:
+        maxLength: 100
+        type: string
+      country:
+        maxLength: 100
+        type: string
+      date_of_birth:
+        type: string
+      first_name:
+        maxLength: 50
+        minLength: 2
+        type: string
+      gender:
+        enum:
+        - male
+        - female
+        - other
+        type: string
+      last_name:
+        maxLength: 50
+        minLength: 2
+        type: string
+      newsletter_subscribed:
+        type: boolean
+      phone:
+        type: string
+      pincode:
+        maxLength: 20
+        type: string
+      preferred_language:
+        description: Preferences
+        maxLength: 10
+        type: string
+      profile_picture_url:
+        description: Profile picture
+        type: string
+      state:
+        maxLength: 100
+        type: string
+    type: object
+  requests.UpdateReviewRequest:
+    properties:
+      comment:
+        maxLength: 1000
+        minLength: 10
+        type: string
+      rating:
+        maximum: 5
+        minimum: 1
+        type: integer
+      title:
+        maxLength: 100
+        minLength: 5
+        type: string
+    required:
+    - comment
+    - rating
+    - title
+    type: object
+  requests.UpdateStockRequest:
+    type: object
+  requests.ValidateCouponRequest:
+    properties:
+      cart_total:
+        minimum: 0
+        type: number
+      code:
+        type: string
+      user_id:
+        type: string
+    required:
+    - cart_total
+    - code
+    - user_id
+    type: object
   requests.VerifyTokenRequest:
     properties:
       id_token:
         type: string
     required:
     - id_token
+    type: object
+  responses.InventoryResponse:
+    properties:
+      available_stock:
+        type: integer
+      created_at:
+        type: string
+      current_stock:
+        type: integer
+      id:
+        type: string
+      is_low_stock:
+        type: boolean
+      is_out_of_stock:
+        type: boolean
+      last_restocked_at:
+        type: string
+      last_sold_at:
+        type: string
+      max_stock_level:
+        type: integer
+      min_stock_level:
+        type: integer
+      needs_reorder:
+        type: boolean
+      product_id:
+        type: string
+      reorder_point:
+        type: integer
+      reserved_stock:
+        type: integer
+      stock_status:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  responses.ItemsNeedingReorderResponse:
+    properties:
+      count:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/responses.InventoryResponse'
+        type: array
+      message:
+        type: string
+    type: object
+  responses.LowStockItemsResponse:
+    properties:
+      count:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/responses.InventoryResponse'
+        type: array
+      message:
+        type: string
+    type: object
+  responses.OutOfStockItemsResponse:
+    properties:
+      count:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/responses.InventoryResponse'
+        type: array
+      message:
+        type: string
+    type: object
+  responses.PaginatedReviewsResponse:
+    properties:
+      has_next:
+        type: boolean
+      has_previous:
+        type: boolean
+      limit:
+        type: integer
+      page:
+        type: integer
+      reviews:
+        items:
+          $ref: '#/definitions/responses.ReviewResponse'
+        type: array
+      total_count:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
+  responses.ReviewActionResponse:
+    properties:
+      is_user_liked:
+        type: boolean
+      likes_count:
+        type: integer
+      message:
+        type: string
+      review_id:
+        type: string
+      success:
+        type: boolean
+    type: object
+  responses.ReviewResponse:
+    properties:
+      can_delete:
+        description: Whether the requesting user can delete this review
+        type: boolean
+      can_edit:
+        description: Whether the requesting user can edit this review
+        type: boolean
+      comment:
+        type: string
+      id:
+        type: string
+      is_active:
+        type: boolean
+      is_owner:
+        description: Whether the requesting user is the review owner
+        type: boolean
+      is_user_liked:
+        description: Whether the requesting user liked this review
+        type: boolean
+      is_verified:
+        description: Whether the reviewer purchased the product
+        type: boolean
+      likes_count:
+        type: integer
+      product_id:
+        type: string
+      rating:
+        type: integer
+      review_date:
+        type: string
+      time_ago:
+        description: Human readable time difference
+        type: string
+      title:
+        type: string
+      updated_date:
+        type: string
+      user_email:
+        type: string
+      user_id:
+        type: string
+      user_name:
+        type: string
+    type: object
+  responses.ReviewStatsResponse:
+    properties:
+      average_rating:
+        type: number
+      product_id:
+        type: string
+      rating_breakdown:
+        additionalProperties:
+          type: integer
+        description: '"1": count, "2": count, etc.'
+        type: object
+      recent_reviews:
+        items:
+          $ref: '#/definitions/responses.ReviewResponse'
+        type: array
+      top_reviews:
+        description: Most liked reviews
+        items:
+          $ref: '#/definitions/responses.ReviewResponse'
+        type: array
+      total_reviews:
+        type: integer
+      unverified_reviews:
+        type: integer
+      verified_reviews:
+        type: integer
+    type: object
+  responses.StockReleaseResponse:
+    properties:
+      available_stock:
+        type: integer
+      message:
+        type: string
+      product_id:
+        type: string
+      released_amount:
+        type: integer
+    type: object
+  responses.StockReserveResponse:
+    properties:
+      available_stock:
+        type: integer
+      message:
+        type: string
+      product_id:
+        type: string
+      reserved_amount:
+        type: integer
+    type: object
+  responses.StockRestockResponse:
+    properties:
+      message:
+        type: string
+      new_stock:
+        type: integer
+      product_id:
+        type: string
+      restocked_amount:
+        type: integer
+      stock_status:
+        type: string
+    type: object
+  responses.StockSellResponse:
+    properties:
+      message:
+        type: string
+      product_id:
+        type: string
+      remaining_stock:
+        type: integer
+      sold_amount:
+        type: integer
+      stock_status:
+        type: string
+    type: object
+  responses.StockUpdateResponse:
+    properties:
+      message:
+        type: string
+      new_stock:
+        type: integer
+      previous_stock:
+        type: integer
+      product_id:
+        type: string
+      stock_status:
+        type: string
+    type: object
+  services.RazorpayPayment:
+    properties:
+      amount:
+        type: integer
+      amount_refunded:
+        type: integer
+      bank:
+        type: string
+      captured:
+        type: boolean
+      card_id:
+        type: string
+      contact:
+        type: string
+      created_at:
+        type: integer
+      currency:
+        type: string
+      description:
+        type: string
+      email:
+        type: string
+      entity:
+        type: string
+      error_code:
+        type: string
+      error_description:
+        type: string
+      fee:
+        type: integer
+      id:
+        type: string
+      international:
+        type: boolean
+      invoice_id:
+        type: string
+      method:
+        type: string
+      notes:
+        additionalProperties: true
+        type: object
+      order_id:
+        type: string
+      refund_status:
+        type: string
+      status:
+        type: string
+      tax:
+        type: integer
+      vpa:
+        type: string
+      wallet:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -269,6 +1178,207 @@ paths:
       summary: Get user's cart
       tags:
       - Cart
+  /cart/admin/cleanup-duplicates:
+    post:
+      produces:
+      - application/json
+      responses: {}
+      security:
+      - FirebaseAuth: []
+      summary: 'Admin: cleanup duplicate carts'
+      tags:
+      - Admin - Cart
+  /cart/checkout/apply-coupon:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Coupon request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.ApplyCouponRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon applied
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Apply coupon
+      tags:
+      - Cart
+  /cart/checkout/estimate-shipping:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Address
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.EstimateShippingRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Shipping estimated
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Estimate shipping (cart)
+      tags:
+      - Cart
+  /cart/checkout/prepare:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Checkout prepared
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Prepare checkout
+      tags:
+      - Cart
+  /cart/checkout/remove-coupon:
+    delete:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon removed
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Remove coupon
+      tags:
+      - Cart
+  /cart/clear:
+    delete:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Cart cleared
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Clear cart
+      tags:
+      - Cart
+  /cart/count:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Item count
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Cart item count
+      tags:
+      - Cart
+  /cart/health:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Service health
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Cart service health
+      tags:
+      - Cart
   /cart/items:
     post:
       consumes:
@@ -309,6 +1419,2180 @@ paths:
       summary: Add item to cart
       tags:
       - Cart
+  /cart/items/{product_id}:
+    delete:
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Item removed
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Product ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Remove item from cart
+      tags:
+      - Cart
+    put:
+      consumes:
+      - application/json
+      description: Update quantity for a specific product in the cart
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Update payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateCartItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Cart item updated
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update cart item
+      tags:
+      - Cart
+  /cart/items/{product_id}/decrement:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Decrement payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.DecrementCartItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Item decremented
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Decrement cart item
+      tags:
+      - Cart
+  /cart/items/{product_id}/increment:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Increment payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.IncrementCartItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Item incremented
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Increment cart item
+      tags:
+      - Cart
+  /cart/summary:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Cart summary
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Cart summary
+      tags:
+      - Cart
+  /cart/validate:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Cart validated
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Validate cart
+      tags:
+      - Cart
+  /coupon-rules/{couponId}:
+    post:
+      consumes:
+      - application/json
+      description: Create a new rule for an existing coupon (Admin only)
+      parameters:
+      - description: Coupon ID
+        in: path
+        name: couponId
+        required: true
+        type: string
+      - description: Coupon rule creation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.CreateCouponRuleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Coupon rule created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create a new coupon rule
+      tags:
+      - Admin - Coupon Rules
+  /coupon-rules/{couponId}/{ruleId}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete an existing coupon rule (Admin only)
+      parameters:
+      - description: Coupon ID
+        in: path
+        name: couponId
+        required: true
+        type: string
+      - description: Rule ID
+        in: path
+        name: ruleId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon rule deleted successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid coupon ID or rule ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon rule not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Delete coupon rule
+      tags:
+      - Admin - Coupon Rules
+    put:
+      consumes:
+      - application/json
+      description: Update an existing coupon rule (Admin only)
+      parameters:
+      - description: Coupon ID
+        in: path
+        name: couponId
+        required: true
+        type: string
+      - description: Rule ID
+        in: path
+        name: ruleId
+        required: true
+        type: string
+      - description: Coupon rule update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateCouponRuleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon rule updated successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon rule not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update coupon rule
+      tags:
+      - Admin - Coupon Rules
+  /coupons:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve all coupons with pagination (Admin only)
+      parameters:
+      - default: 10
+        description: Limit
+        in: query
+        name: limit
+        type: integer
+      - default: 0
+        description: Offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupons retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get all coupons
+      tags:
+      - Admin - Coupons
+    post:
+      consumes:
+      - application/json
+      description: Create a new discount coupon with rules (Admin only)
+      parameters:
+      - description: Coupon creation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.CreateCouponRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Coupon created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create a new coupon
+      tags:
+      - Admin - Coupons
+  /coupons/{code}:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve a coupon by its code (Public endpoint)
+      parameters:
+      - description: Coupon code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid coupon code
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get coupon by code
+      tags:
+      - Coupons
+  /coupons/{code}/stats:
+    get:
+      consumes:
+      - application/json
+      description: Get usage statistics for a specific coupon (Authenticated users)
+      parameters:
+      - description: Coupon code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Usage statistics retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid coupon code
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get coupon usage statistics
+      tags:
+      - Coupons
+  /coupons/{id}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete a coupon by ID (Admin only)
+      parameters:
+      - description: Coupon ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon deleted successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid coupon ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Delete coupon
+      tags:
+      - Admin - Coupons
+    put:
+      consumes:
+      - application/json
+      description: Update an existing coupon (Admin only)
+      parameters:
+      - description: Coupon ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Coupon update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateCouponRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon updated successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update coupon
+      tags:
+      - Admin - Coupons
+  /coupons/active:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve all active coupons with pagination (Public endpoint)
+      parameters:
+      - default: 10
+        description: Limit
+        in: query
+        name: limit
+        type: integer
+      - default: 0
+        description: Offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Active coupons retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get active coupons
+      tags:
+      - Coupons
+  /coupons/apply:
+    post:
+      consumes:
+      - application/json
+      description: Apply a coupon to a user and increment its usage count (Authenticated
+        users)
+      parameters:
+      - description: Coupon application request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.ApplyCouponToUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon applied successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request or coupon cannot be applied
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Apply coupon to user
+      tags:
+      - Coupons
+  /coupons/validate:
+    post:
+      consumes:
+      - application/json
+      description: Validate a coupon for a specific cart total and user (Public endpoint)
+      parameters:
+      - description: Coupon validation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.ValidateCouponRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Coupon validation result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Coupon not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Validate coupon
+      tags:
+      - Coupons
+  /debug/delhivery-config:
+    get:
+      description: Returns the status of Delhivery configuration for debugging purposes
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Configuration status
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Check Delhivery Configuration
+      tags:
+      - Debug
+  /debug/firebase:
+    get:
+      description: Check if Firebase Admin SDK is initialized on server
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Firebase status
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Firebase status
+      tags:
+      - Debug
+  /debug/invoice/{id}:
+    post:
+      description: Generate and test invoice generation for an existing order
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses: {}
+      summary: 'Debug: generate invoice for order'
+      tags:
+      - Debug
+  /debug/order/{id}:
+    get:
+      consumes:
+      - application/json
+      description: Get order details without authentication - for debugging only
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Order details retrieved successfully (debug endpoint)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Order ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Debug order details (no auth)
+      tags:
+      - Debug
+  /delivery/estimate:
+    post:
+      consumes:
+      - application/json
+      description: Get shipping options and charges for an address
+      parameters:
+      - description: Address for estimation
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.EstimateShippingRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Estimate computed
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Estimate shipping
+      tags:
+      - Delivery
+  /delivery/orders/{id}/shipment:
+    get:
+      description: Get shipment details (waybill, status, tracking URL) for an order
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Shipment details
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid order id
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Order not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get order shipment
+      tags:
+      - Delivery
+    post:
+      description: Create a Delhivery shipment for the given order ID
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Shipment created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid order id
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Order not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create shipment for order
+      tags:
+      - Delivery
+  /delivery/serviceability/{pincode}:
+    get:
+      description: Check if delivery is serviceable for a given pincode
+      parameters:
+      - description: Pincode
+        in: path
+        name: pincode
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Serviceability status
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid pincode or error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Check serviceability by pincode
+      tags:
+      - Delivery
+  /delivery/track/{waybill}:
+    get:
+      description: Get tracking URL and info for a waybill
+      parameters:
+      - description: Delhivery Waybill
+        in: path
+        name: waybill
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Tracking info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid waybill
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get tracking info
+      tags:
+      - Delivery
+  /favorites:
+    delete:
+      consumes:
+      - application/json
+      description: Remove a product from the authenticated user's favorites
+      parameters:
+      - description: Remove favorite request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.RemoveFavoriteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Removed from favorites
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Favorite not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Remove product from favorites
+      tags:
+      - Favorites
+    get:
+      description: Get the authenticated user's favorites with product details
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Favorites retrieved
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: List favorites
+      tags:
+      - Favorites
+    post:
+      consumes:
+      - application/json
+      description: Add a product to the authenticated user's favorites
+      parameters:
+      - description: Favorite request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.AddFavoriteRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Added to favorites
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Product not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Already in favorites
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Add product to favorites
+      tags:
+      - Favorites
+  /favorites/check:
+    get:
+      description: Check if a product is in the authenticated user's favorites
+      parameters:
+      - description: Product ID
+        in: query
+        name: product_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Favorite status
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Product ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Check favorite status
+      tags:
+      - Favorites
+  /images:
+    post:
+      consumes:
+      - application/json
+      description: Create a new image for a product
+      parameters:
+      - description: Create image payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateImageRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Image created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create a new image
+      tags:
+      - Images
+  /images/{id}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete an image
+      parameters:
+      - description: Image ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Image deleted successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid image ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Image not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Delete image
+      tags:
+      - Images
+    get:
+      consumes:
+      - application/json
+      description: Get image details by ID
+      parameters:
+      - description: Image ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Image retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid image ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Image not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get image by ID
+      tags:
+      - Images
+    put:
+      consumes:
+      - application/json
+      description: Update image details
+      parameters:
+      - description: Image ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update image payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.UpdateImageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Image updated successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Image not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update image
+      tags:
+      - Images
+  /inventory:
+    get:
+      consumes:
+      - application/json
+      description: Get a paginated list of all inventory records with optional filtering
+      parameters:
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      - description: Filter by product ID
+        in: query
+        name: product_id
+        type: string
+      - description: Filter by stock status
+        in: query
+        name: stock_status
+        type: string
+      - description: Filter low stock items
+        in: query
+        name: low_stock
+        type: boolean
+      - description: Filter out of stock items
+        in: query
+        name: out_of_stock
+        type: boolean
+      - description: Filter items needing reorder
+        in: query
+        name: needs_reorder
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Inventory retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid query parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all inventory records
+      tags:
+      - Inventory
+    post:
+      consumes:
+      - application/json
+      description: Create a new inventory record for a product (Admin only)
+      parameters:
+      - description: Inventory information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.CreateInventoryRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Inventory created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create a new inventory record
+      tags:
+      - Admin - Inventory
+  /inventory/low-stock:
+    get:
+      consumes:
+      - application/json
+      description: Get all items with low stock
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Low stock items retrieved successfully
+          schema:
+            $ref: '#/definitions/responses.LowStockItemsResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get low stock items
+      tags:
+      - Inventory
+  /inventory/needs-reorder:
+    get:
+      consumes:
+      - application/json
+      description: Get all items that need to be reordered
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Items needing reorder retrieved successfully
+          schema:
+            $ref: '#/definitions/responses.ItemsNeedingReorderResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get items needing reorder
+      tags:
+      - Inventory
+  /inventory/out-of-stock:
+    get:
+      consumes:
+      - application/json
+      description: Get all out of stock items
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Out of stock items retrieved successfully
+          schema:
+            $ref: '#/definitions/responses.OutOfStockItemsResponse'
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get out of stock items
+      tags:
+      - Inventory
+  /inventory/product/{product_id}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete inventory record for a product (Admin only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Inventory deleted successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid product ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Delete inventory
+      tags:
+      - Admin - Inventory
+    get:
+      consumes:
+      - application/json
+      description: Get inventory information for a specific product
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Inventory retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid product ID
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get inventory by product ID
+      tags:
+      - Inventory
+    put:
+      consumes:
+      - application/json
+      description: Update inventory information for a product (Admin only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Inventory information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateInventoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Inventory updated successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update inventory
+      tags:
+      - Admin - Inventory
+  /inventory/release/{product_id}:
+    post:
+      consumes:
+      - application/json
+      description: Release reserved stock for a product
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Release information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.ReleaseStockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Stock released successfully
+          schema:
+            $ref: '#/definitions/responses.StockReleaseResponse'
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Release stock
+      tags:
+      - Inventory
+  /inventory/reserve/{product_id}:
+    post:
+      consumes:
+      - application/json
+      description: Reserve stock for a product (typically for pending orders)
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Reserve information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.ReserveStockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Stock reserved successfully
+          schema:
+            $ref: '#/definitions/responses.StockReserveResponse'
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reserve stock
+      tags:
+      - Inventory
+  /inventory/restock/{product_id}:
+    post:
+      consumes:
+      - application/json
+      description: Add stock to inventory
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Restock information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.RestockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Stock restocked successfully
+          schema:
+            $ref: '#/definitions/responses.StockRestockResponse'
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Restock
+      tags:
+      - Inventory
+  /inventory/sell/{product_id}:
+    post:
+      consumes:
+      - application/json
+      description: Process a sale and update stock
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Sale information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.SellStockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Stock sold successfully
+          schema:
+            $ref: '#/definitions/responses.StockSellResponse'
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Sell stock
+      tags:
+      - Inventory
+  /inventory/stock/{product_id}:
+    put:
+      consumes:
+      - application/json
+      description: Update stock quantity for a product (Admin only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: product_id
+        required: true
+        type: string
+      - description: Stock information
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateStockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Stock updated successfully
+          schema:
+            $ref: '#/definitions/responses.StockUpdateResponse'
+        "400":
+          description: Invalid request format
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - Admin access required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Inventory not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update stock
+      tags:
+      - Admin - Inventory
+  /orders:
+    get:
+      consumes:
+      - application/json
+      description: Get a paginated list of orders for the authenticated user
+      parameters:
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 10
+        description: Items per page
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Orders retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: List user's orders
+      tags:
+      - Orders
+    post:
+      consumes:
+      - application/json
+      description: Create an order directly from the user's cart without Razorpay
+        flow
+      parameters:
+      - description: Order creation payload
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            address_line_1:
+              type: string
+            address_line_2:
+              type: string
+            cart_id:
+              type: string
+            city:
+              type: string
+            country:
+              type: string
+            customer_email:
+              type: string
+            customer_first_name:
+              type: string
+            customer_last_name:
+              type: string
+            customer_phone:
+              type: string
+            customer_phone_alt:
+              type: string
+            notes:
+              type: string
+            payment_method:
+              type: string
+            postal_code:
+              type: string
+            state:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Order created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request data
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to create order
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create order from cart (manual)
+      tags:
+      - Orders
+  /orders/{id}:
+    get:
+      consumes:
+      - application/json
+      description: Get details and items of a specific order
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Order details retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Order ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Access denied
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Order not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get order details
+      tags:
+      - Orders
+  /orders/{id}/status:
+    get:
+      consumes:
+      - application/json
+      description: Get current status and payment status of an order
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Order status retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Order ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Access denied
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get order status
+      tags:
+      - Orders
+  /orders/{id}/tracking:
+    get:
+      consumes:
+      - application/json
+      description: Get tracking details and shipping status of an order
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Order tracking retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Order ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Access denied
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get order tracking
+      tags:
+      - Orders
+  /payments/{payment_id}/status:
+    get:
+      description: Get Razorpay payment status by payment ID
+      parameters:
+      - description: Razorpay Payment ID
+        in: path
+        name: payment_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Payment status
+          schema:
+            $ref: '#/definitions/services.RazorpayPayment'
+        "400":
+          description: Payment ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to get payment status
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get payment status
+      tags:
+      - Payments
+  /payments/checkout:
+    get:
+      description: Render a minimal Razorpay Checkout page for a given Razorpay order
+      parameters:
+      - description: Razorpay Order ID
+        in: query
+        name: order_id
+        required: true
+        type: string
+      produces:
+      - text/html
+      responses:
+        "200":
+          description: HTML checkout page
+          schema:
+            type: string
+        "400":
+          description: Missing order_id
+          schema:
+            type: string
+        "500":
+          description: Failed to fetch order
+          schema:
+            type: string
+      security:
+      - FirebaseAuth: []
+      summary: Hosted checkout page
+      tags:
+      - Payments
+  /payments/create-order:
+    post:
+      consumes:
+      - application/json
+      description: Create a Razorpay order for the current user's cart; no DB order
+        yet
+      parameters:
+      - description: Payment intent request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Payment order created
+          schema:
+            $ref: '#/definitions/handlers.CreateOrderResponse'
+        "400":
+          description: Invalid request or empty cart
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to create payment order
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create Razorpay order (payment intent)
+      tags:
+      - Payments
+  /payments/verify:
+    post:
+      consumes:
+      - application/json
+      description: Verify Razorpay signature, create DB order, and create shipment
+      parameters:
+      - description: Verify payment payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.VerifyPaymentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Order created (and shipment if successful)
+          schema:
+            $ref: '#/definitions/handlers.VerifyPaymentResponse'
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Verification failed
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Verify payment and create order
+      tags:
+      - Payments
   /products:
     get:
       consumes:
@@ -400,7 +3684,7 @@ paths:
       - FirebaseAuth: []
       summary: Create a new product
       tags:
-      - Products
+      - Admin - Products
   /products/{id}:
     get:
       consumes:
@@ -438,6 +3722,529 @@ paths:
       summary: Get product by ID
       tags:
       - Products
+  /products/{id}/reviews/{reviewId}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete a review (only by review owner or admin)
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Review ID
+        in: path
+        name: reviewId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete a review
+      tags:
+      - reviews
+    put:
+      consumes:
+      - application/json
+      description: Update an existing review (only by review owner)
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Review ID
+        in: path
+        name: reviewId
+        required: true
+        type: string
+      - description: Review update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateReviewRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/responses.ReviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update a review
+      tags:
+      - reviews
+  /products/{id}/reviews/{reviewId}/like:
+    post:
+      consumes:
+      - application/json
+      description: Like or unlike a review (authenticated users only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Review ID
+        in: path
+        name: reviewId
+        required: true
+        type: string
+      - description: 'Action: like or unlike'
+        in: body
+        name: action
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/responses.ReviewActionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Like or unlike a review
+      tags:
+      - reviews
+  /products/{id}/reviews/stats:
+    get:
+      consumes:
+      - application/json
+      description: Get aggregated review statistics including average rating, rating
+        breakdown, etc.
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/responses.ReviewStatsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get review statistics for a product
+      tags:
+      - reviews
+  /products/{productId}/images:
+    get:
+      consumes:
+      - application/json
+      description: Get all images for a specific product
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      - description: Image type filter
+        in: query
+        name: type
+        type: string
+      - description: Filter by active status
+        in: query
+        name: active
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Images retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid product ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get images by product ID
+      tags:
+      - Images
+  /products/{productId}/images/{imageId}/primary:
+    put:
+      consumes:
+      - application/json
+      description: Set an image as the primary image for a product
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      - description: Image ID
+        in: path
+        name: imageId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Primary image set successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Image not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Set primary image
+      tags:
+      - Images
+  /products/{productId}/images/bulk:
+    post:
+      consumes:
+      - application/json
+      description: Add multiple images to a product
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      - description: Add multiple images payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.AddMultipleImagesRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Images added successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Add multiple images
+      tags:
+      - Images
+  /products/{productId}/images/primary:
+    get:
+      consumes:
+      - application/json
+      description: Get the primary image for a specific product
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Primary image retrieved successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid product ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Primary image not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get primary image by product ID
+      tags:
+      - Images
+  /products/{productId}/images/reorder:
+    put:
+      consumes:
+      - application/json
+      description: Reorder images for a product
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      - description: Reorder images payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ReorderImagesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Images reordered successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Reorder images
+      tags:
+      - Images
+  /products/{productId}/reviews:
+    get:
+      consumes:
+      - application/json
+      description: Get paginated list of reviews for a specific product
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 10
+        description: Items per page
+        in: query
+        name: limit
+        type: integer
+      - default: '"date"'
+        description: 'Sort by: date, rating, likes'
+        in: query
+        name: sort_by
+        type: string
+      - default: '"desc"'
+        description: 'Sort order: asc, desc'
+        in: query
+        name: order
+        type: string
+      - description: Minimum rating filter
+        in: query
+        maximum: 5
+        minimum: 1
+        name: min_rating
+        type: integer
+      - description: Maximum rating filter
+        in: query
+        maximum: 5
+        minimum: 1
+        name: max_rating
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/responses.PaginatedReviewsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all reviews for a product
+      tags:
+      - reviews
+    post:
+      consumes:
+      - application/json
+      description: Create a new review for a product (authenticated users only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: productId
+        required: true
+        type: string
+      - description: Review creation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.CreateReviewRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/responses.ReviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a new product review
+      tags:
+      - reviews
   /products/search:
     get:
       consumes:
@@ -480,6 +4287,685 @@ paths:
       summary: Search products
       tags:
       - Products
+  /profile:
+    get:
+      description: Get the authenticated user's profile
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Profile retrieved
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Profile not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get profile
+      tags:
+      - Profile
+    put:
+      consumes:
+      - application/json
+      description: Update profile fields for the authenticated user
+      parameters:
+      - description: Profile update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/requests.UpdateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Profile updated
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request data
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Profile not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update profile
+      tags:
+      - Profile
+  /profile/auto:
+    post:
+      description: Create a profile for the authenticated user using Firebase info
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Profile created
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Profile already exists
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Create profile (auto)
+      tags:
+      - Profile
+  /profile/image:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a profile image file to S3 and update the profile
+      parameters:
+      - description: Profile image file
+        in: formData
+        name: image
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Image uploaded
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: No image or bad request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Upload profile image
+      tags:
+      - Profile
+  /profile/image/url:
+    get:
+      description: Generate a presigned URL for the profile image
+      parameters:
+      - default: 1
+        description: Expiry in hours
+        in: query
+        name: expires_in_hours
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Image URL generated
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: No profile image
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get profile image URL
+      tags:
+      - Profile
+  /recipes:
+    get:
+      description: Get a paginated list of recipes with optional filters
+      parameters:
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 10
+        description: Items per page
+        in: query
+        name: page_size
+        type: integer
+      - description: Filter by category
+        in: query
+        name: category
+        type: string
+      - description: Search term
+        in: query
+        name: search
+        type: string
+      - description: Filter by ingredient
+        in: query
+        name: ingredient
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recipes retrieved
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get recipes
+      tags:
+      - Recipes
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Recipe
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/models.Recipe'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Recipe created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to create recipe
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create recipe
+      tags:
+      - Recipes
+  /recipes/{id}:
+    delete:
+      parameters:
+      - description: Recipe ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recipe deleted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Recipe ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to delete recipe
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete recipe
+      tags:
+      - Recipes
+    get:
+      parameters:
+      - description: Recipe ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recipe retrieved
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Recipe ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Recipe not found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get recipe by ID
+      tags:
+      - Recipes
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Recipe ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Partial recipe fields
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Recipe updated
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Recipe not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to update recipe
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update recipe
+      tags:
+      - Recipes
+  /shipment:
+    post:
+      consumes:
+      - application/json
+      description: Creates an order shipment and returns waybill + tracking URL
+      parameters:
+      - description: Shipment Request
+        in: body
+        name: shipment
+        required: true
+        schema:
+          $ref: '#/definitions/requests.DelhiveryShipmentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create shipment in Delhivery
+      tags:
+      - Shipment
+  /users:
+    get:
+      parameters:
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: Items per page
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Users listed
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List users
+      tags:
+      - Users
+  /users/{id}:
+    delete:
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: User deleted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: User ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete user
+      tags:
+      - Users
+    get:
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: User retrieved
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: User ID is required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get user by ID
+      tags:
+      - Users
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: User updated
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request or user ID
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update user
+      tags:
+      - Users
+  /users/{userId}/reviews:
+    get:
+      consumes:
+      - application/json
+      description: Get paginated list of reviews written by a specific user
+      parameters:
+      - description: User ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 10
+        description: Items per page
+        in: query
+        name: limit
+        type: integer
+      - default: '"date"'
+        description: 'Sort by: date, rating, likes'
+        in: query
+        name: sort_by
+        type: string
+      - default: '"desc"'
+        description: 'Sort order: asc, desc'
+        in: query
+        name: order
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/responses.PaginatedReviewsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all reviews by a user
+      tags:
+      - reviews
+  /users/me:
+    delete:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Account deleted
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Delete current user
+      tags:
+      - Users
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Profile retrieved
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Get current user profile
+      tags:
+      - Users
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Profile updated
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: User not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - FirebaseAuth: []
+      summary: Update current user
+      tags:
+      - Users
+  /webhooks/razorpay:
+    post:
+      consumes:
+      - application/json
+      description: Handle Razorpay webhook events (public endpoint)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Webhook processed
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing signature or invalid payload
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Processing failed
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Razorpay webhook
+      tags:
+      - Payments
 securityDefinitions:
   BearerAuth:
     description: Type "Bearer" followed by a space and JWT token.

@@ -26,6 +26,21 @@ type ReviewResponse struct {
 	TimeAgo     string    `json:"time_ago"`   // Human readable time difference
 	CanEdit     bool      `json:"can_edit"`   // Whether the requesting user can edit this review
 	CanDelete   bool      `json:"can_delete"` // Whether the requesting user can delete this review
+
+	// Admin-specific fields (only included for admin users)
+	IsFlagged       bool      `json:"is_flagged,omitempty"`       // Whether the review has been flagged
+	IsApproved      bool      `json:"is_approved,omitempty"`      // Whether the review has been approved
+	FlagReason      string    `json:"flag_reason,omitempty"`      // Reason for flagging
+	FlaggedBy       string    `json:"flagged_by,omitempty"`       // Admin who flagged the review
+	FlaggedAt       time.Time `json:"flagged_at,omitempty"`       // When the review was flagged
+	ApprovedBy      string    `json:"approved_by,omitempty"`      // Admin who approved the review
+	ApprovedAt      time.Time `json:"approved_at,omitempty"`      // When the review was approved
+	RejectedBy      string    `json:"rejected_by,omitempty"`      // Admin who rejected the review
+	RejectedAt      time.Time `json:"rejected_at,omitempty"`      // When the review was rejected
+	RejectionReason string    `json:"rejection_reason,omitempty"` // Reason for rejection
+	DeletedBy       string    `json:"deleted_by,omitempty"`       // Admin who deleted the review
+	DeletedAt       time.Time `json:"deleted_at,omitempty"`       // When the review was deleted
+	DeletionReason  string    `json:"deletion_reason,omitempty"`  // Reason for deletion
 }
 
 // NewReviewResponse creates a new review response from a review model
@@ -53,6 +68,23 @@ func NewReviewResponse(review *models.Review, requestingUserID string, isAdmin b
 		TimeAgo:     formatTimeAgo(review.ReviewDate),
 		CanEdit:     review.UserID == requestingUserID,            // Only owner can edit
 		CanDelete:   review.UserID == requestingUserID || isAdmin, // Owner or admin can delete
+	}
+
+	// Include admin-specific fields only for admin users
+	if isAdmin {
+		response.IsFlagged = review.IsFlagged
+		response.IsApproved = review.IsApproved
+		response.FlagReason = review.FlagReason
+		response.FlaggedBy = review.FlaggedBy
+		response.FlaggedAt = review.FlaggedAt
+		response.ApprovedBy = review.ApprovedBy
+		response.ApprovedAt = review.ApprovedAt
+		response.RejectedBy = review.RejectedBy
+		response.RejectedAt = review.RejectedAt
+		response.RejectionReason = review.RejectionReason
+		response.DeletedBy = review.DeletedBy
+		response.DeletedAt = review.DeletedAt
+		response.DeletionReason = review.DeletionReason
 	}
 
 	return response
@@ -232,5 +264,33 @@ func formatTimeAgo(reviewTime time.Time) string {
 			return "1 year ago"
 		}
 		return string(rune(years+'0')) + " years ago"
+	}
+}
+
+// BulkDeleteResponse represents the response for bulk delete operations
+type BulkDeleteResponse struct {
+	Message          string    `json:"message"`
+	Action           string    `json:"action"`
+	TotalFound       int       `json:"total_found"`
+	TotalDeleted     int       `json:"total_deleted"`
+	FailedDeletes    int       `json:"failed_deletes"`
+	DeletedReviewIDs []string  `json:"deleted_review_ids,omitempty"`
+	FailedReviewIDs  []string  `json:"failed_review_ids,omitempty"`
+	Reason           string    `json:"reason,omitempty"`
+	ProcessedAt      time.Time `json:"processed_at"`
+}
+
+// NewBulkDeleteResponse creates a new bulk delete response
+func NewBulkDeleteResponse(action string, totalFound, totalDeleted, failedDeletes int, deletedIDs, failedIDs []string, reason string) *BulkDeleteResponse {
+	return &BulkDeleteResponse{
+		Message:          "Bulk delete operation completed",
+		Action:           action,
+		TotalFound:       totalFound,
+		TotalDeleted:     totalDeleted,
+		FailedDeletes:    failedDeletes,
+		DeletedReviewIDs: deletedIDs,
+		FailedReviewIDs:  failedIDs,
+		Reason:           reason,
+		ProcessedAt:      time.Now(),
 	}
 }

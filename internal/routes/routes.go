@@ -49,15 +49,16 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		auth.RegisterAuthRoutes(v1, repoManager, serviceManager)
 		users.RegisterUserRoutes(v1, repoManager, serviceManager)
 		admin.RegisterAdminUserRoutes(v1, repoManager, serviceManager)
+		admin.RegisterAdminRecipeRoutes(v1, repoManager) // Add admin recipe routes
 		products.RegisterProductRoutes(v1, serviceManager, repoManager)
 		profiles.RegisterProfileRoutes(v1, repoManager, serviceManager)
 		favorites.RegisterFavoriteRoutes(v1, repoManager, serviceManager)
 		orders.RegisterOrderRoutes(v1, repoManager, serviceManager, logger) // Updated with logger
 		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
-		recipes.RegisterRecipeRoutes(v1, repoManager)
+		recipes.RegisterRecipeRoutes(v1, repoManager, serviceManager)
 		payment.RegisterPaymentRoutes(v1, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
-		reviews.RegisterReviewRoutes(v1, serviceManager, logger)              // Add review routes
+		reviews.RegisterReviewRoutes(v1, serviceManager, repoManager, logger) // Add review routes
 		coupons.RegisterCouponRoutes(v1, repoManager, serviceManager, logger) // Add coupon routes
 
 		// Register image routes
@@ -73,7 +74,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 	legacy := r.Group("/")
 	{
 		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager)
-		recipes.RegisterRecipeRoutes(legacy, repoManager)
+		recipes.RegisterRecipeRoutes(legacy, repoManager, serviceManager)
 		// Add other legacy routes as needed
 	}
 }

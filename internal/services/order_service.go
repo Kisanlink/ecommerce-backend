@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -39,6 +41,10 @@ type OrderServiceInterface interface {
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
+	// Admin listing/stats/export
+	ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error)
+	GetOrderStats(ctx context.Context) (map[string]interface{}, error)
+	ExportOrdersCSV(ctx context.Context) ([]byte, string, error)
 }
 
 // OrderService implements order business logic
@@ -69,6 +75,12 @@ func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartSe
 
 	// Initialize order item ID counter from existing database records
 	service.initializeOrderItemIDGenerator()
+
+	// Initialize order customer ID counter from existing database records
+	service.initializeOrderCustomerIDCounter()
+
+	// Initialize order address ID counter from existing database records
+	service.initializeOrderAddressIDCounter()
 
 	return service
 }
@@ -142,6 +154,80 @@ func (s *OrderService) initializeOrderItemIDGenerator() {
 		hash.InitializeGlobalCountersFromDatabase("OITM", existingIDs, hash.Large)
 	}
 	s.logger.Info("Order item ID generator initialized")
+}
+
+// initializeOrderCustomerIDCounter initializes the order customer ID counter from existing database records
+func (s *OrderService) initializeOrderCustomerIDCounter() {
+	ctx := context.Background()
+	s.logger.Info("Initializing order customer ID counter")
+
+	// Query all existing order customer IDs to prevent conflicts (exclude soft-deleted)
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "deleted_at", Operator: base.OpIsNull, Value: nil},
+			},
+			Logic: base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	var orderCustomers []*models.OrderCustomer
+	if err := s.orderRepo.GetOrderCustomers(ctx, filter, &orderCustomers); err != nil {
+		s.logger.Error("Failed to get existing order customers for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("OCUS", []string{}, hash.Medium)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, 0, len(orderCustomers))
+		for _, customer := range orderCustomers {
+			if customer != nil && customer.GetID() != "" {
+				existingIDs = append(existingIDs, customer.GetID())
+			}
+		}
+		s.logger.Info("Found existing order customer IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("OCUS", existingIDs, hash.Medium)
+	}
+
+	s.logger.Info("Order customer ID counter initialized")
+}
+
+// initializeOrderAddressIDCounter initializes the order address ID counter from existing database records
+func (s *OrderService) initializeOrderAddressIDCounter() {
+	ctx := context.Background()
+	s.logger.Info("Initializing order address ID counter")
+
+	// Query all existing order address IDs to prevent conflicts (exclude soft-deleted)
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "deleted_at", Operator: base.OpIsNull, Value: nil},
+			},
+			Logic: base.LogicAnd,
+		},
+		Page:     1,
+		PageSize: 10000,
+	}
+
+	var orderAddresses []*models.OrderAddress
+	if err := s.orderRepo.GetOrderAddresses(ctx, filter, &orderAddresses); err != nil {
+		s.logger.Error("Failed to get existing order addresses for ID initialization", zap.Error(err))
+		// Fallback to empty initialization
+		hash.InitializeGlobalCountersFromDatabase("OADR", []string{}, hash.Medium)
+	} else {
+		// Extract IDs
+		existingIDs := make([]string, 0, len(orderAddresses))
+		for _, address := range orderAddresses {
+			if address != nil && address.GetID() != "" {
+				existingIDs = append(existingIDs, address.GetID())
+			}
+		}
+		s.logger.Info("Found existing order address IDs", zap.Int("count", len(existingIDs)))
+		hash.InitializeGlobalCountersFromDatabase("OADR", existingIDs, hash.Medium)
+	}
+
+	s.logger.Info("Order address ID counter initialized")
 }
 
 // GetUserCart retrieves the user's cart via cart service
@@ -583,6 +669,105 @@ func (s *OrderService) GetOrderByRazorpayOrderID(ctx context.Context, razorpayOr
 	return s.orderRepo.GetOrderByRazorpayOrderID(ctx, razorpayOrderID)
 }
 
+// ListOrders returns filtered, paginated orders for admin
+func (s *OrderService) ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error) {
+	if s.orderRepo == nil {
+		return nil, 0, fmt.Errorf("order repository unavailable")
+	}
+	conds := []base.FilterCondition{}
+	if status != "" {
+		conds = append(conds, base.FilterCondition{Field: "status", Operator: base.OpEqual, Value: status})
+	}
+	if paymentStatus != "" {
+		conds = append(conds, base.FilterCondition{Field: "payment_status", Operator: base.OpEqual, Value: paymentStatus})
+	}
+	if from != nil {
+		conds = append(conds, base.FilterCondition{Field: "created_at", Operator: base.OpGreaterEqual, Value: *from})
+	}
+	if to != nil {
+		conds = append(conds, base.FilterCondition{Field: "created_at", Operator: base.OpLessEqual, Value: *to})
+	}
+	filter := &base.Filter{Group: base.FilterGroup{Conditions: conds, Logic: base.LogicAnd}, Page: page, PageSize: limit}
+	// NOTE: q search omitted to avoid portability issues; can be added with builder if needed
+	found, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list orders: %w", err)
+	}
+	// Convert []*models.Order to []models.Order if needed
+	orders := make([]models.Order, 0, len(found))
+	for _, po := range found {
+		if po != nil {
+			orders = append(orders, *po)
+		}
+	}
+	count, err := s.orderRepo.CountWithFilter(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count orders: %w", err)
+	}
+	// load normalized relations for each order (best-effort)
+	for i := range orders {
+		if orders[i].CustomerID != "" {
+			if customer, err := s.orderRepo.GetOrderCustomer(ctx, orders[i].CustomerID); err == nil {
+				orders[i].Customer = customer
+			}
+		}
+		if orders[i].ShippingAddressID != "" {
+			if addr, err := s.orderRepo.GetOrderAddress(ctx, orders[i].ShippingAddressID); err == nil {
+				orders[i].ShippingAddress = addr
+			}
+		}
+	}
+	return orders, int(count), nil
+}
+
+// GetOrderStats computes simple aggregates
+func (s *OrderService) GetOrderStats(ctx context.Context) (map[string]interface{}, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	// Fetch recent orders and compute simple counts by status and totals
+	filter := &base.Filter{Page: 1, PageSize: 10000}
+	orders, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load orders: %w", err)
+	}
+	counts := map[string]int{}
+	var revenue float64
+	for _, o := range orders {
+		if o == nil {
+			continue
+		}
+		counts[string(o.Status)]++
+		revenue += o.TotalAmount
+	}
+	return map[string]interface{}{
+		"counts":        counts,
+		"revenue_total": revenue,
+		"order_count":   len(orders),
+	}, nil
+}
+
+// ExportOrdersCSV returns CSV bytes and filename
+func (s *OrderService) ExportOrdersCSV(ctx context.Context) ([]byte, string, error) {
+	if s.orderRepo == nil {
+		return nil, "", fmt.Errorf("order repository unavailable")
+	}
+	orders, err := s.orderRepo.Find(ctx, &base.Filter{Page: 1, PageSize: 100000})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to load orders: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString("order_id,user_id,status,payment_status,total_amount,created_at\n")
+	for _, o := range orders {
+		if o == nil {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.2f,%s\n", o.ID, o.UserID, string(o.Status), o.PaymentStatus, o.TotalAmount, o.CreatedAt.Format(time.RFC3339)))
+	}
+	filename := fmt.Sprintf("orders_export_%d.csv", time.Now().Unix())
+	return []byte(b.String()), filename, nil
+}
+
 // CreateOrderFromCartWithShippingAtomic creates an order from cart with shipping charges atomically
 // This method ensures that duplicate orders cannot be created for the same Razorpay order ID
 func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error) {
@@ -710,13 +895,13 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 	// Add shipping charges to get final total (no tax)
 	totalAmount := utils.AddShippingCharges(discountedCartTotal, shippingCharges)
 
-	// Create order customer record
-	if err := s.orderRepo.CreateOrderCustomer(ctx, customerData); err != nil {
+	// Create order customer record with retry logic for duplicate key errors
+	if err := s.createOrderCustomerWithRetry(ctx, customerData); err != nil {
 		return nil, fmt.Errorf("failed to create order customer: %w", err)
 	}
 
-	// Create order address record
-	if err := s.orderRepo.CreateOrderAddress(ctx, addressData); err != nil {
+	// Create order address record with retry logic for duplicate key errors
+	if err := s.createOrderAddressWithRetry(ctx, addressData); err != nil {
 		return nil, fmt.Errorf("failed to create order address: %w", err)
 	}
 
@@ -826,4 +1011,101 @@ func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*mo
 	order.OrderItems = orderItems
 
 	return order, nil
+}
+
+// createOrderCustomerWithRetry creates an order customer with retry logic for duplicate key errors
+func (s *OrderService) createOrderCustomerWithRetry(ctx context.Context, customerData *models.OrderCustomer) error {
+	maxRetries := 3
+	var createErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		createErr = s.orderRepo.CreateOrderCustomer(ctx, customerData)
+		if createErr == nil {
+			// Successfully created customer, break out of retry loop
+			return nil
+		}
+
+		// Check if it's a duplicate key error
+		errorStr := createErr.Error()
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "order_customers_pkey") {
+			// Generate a new ID and try again
+			s.logger.Warn("Duplicate key error detected for order customer, retrying with new ID",
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries),
+				zap.String("old_id", customerData.ID),
+				zap.Error(createErr))
+
+			// Create a new customer with a fresh ID
+			newCustomer := models.NewOrderCustomer(
+				customerData.FirstName,
+				customerData.LastName,
+				customerData.Phone,
+				customerData.PhoneAlt,
+				customerData.Email,
+			)
+			// Copy the new ID to the original customer data
+			customerData.ID = newCustomer.ID
+			customerData.BaseModel = newCustomer.BaseModel
+
+			// Add a small delay before retry to reduce contention
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			continue
+		}
+
+		// If it's not a duplicate key error, return the error immediately
+		return createErr
+	}
+
+	// If we still have an error after all retries, return it
+	return fmt.Errorf("failed to create order customer after %d attempts: %w", maxRetries, createErr)
+}
+
+// createOrderAddressWithRetry creates an order address with retry logic for duplicate key errors
+func (s *OrderService) createOrderAddressWithRetry(ctx context.Context, addressData *models.OrderAddress) error {
+	maxRetries := 3
+	var createErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		createErr = s.orderRepo.CreateOrderAddress(ctx, addressData)
+		if createErr == nil {
+			// Successfully created address, break out of retry loop
+			return nil
+		}
+
+		// Check if it's a duplicate key error
+		errorStr := createErr.Error()
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "order_addresses_pkey") {
+			// Generate a new ID and try again
+			s.logger.Warn("Duplicate key error detected for order address, retrying with new ID",
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries),
+				zap.String("old_id", addressData.ID),
+				zap.Error(createErr))
+
+			// Create a new address with a fresh ID
+			newAddress := models.NewOrderAddress(
+				addressData.AddressLine1,
+				addressData.AddressLine2,
+				addressData.City,
+				addressData.State,
+				addressData.PostalCode,
+				addressData.Country,
+			)
+			// Copy the new ID to the original address data
+			addressData.ID = newAddress.ID
+			addressData.BaseModel = newAddress.BaseModel
+
+			// Add a small delay before retry to reduce contention
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			continue
+		}
+
+		// If it's not a duplicate key error, return the error immediately
+		return createErr
+	}
+
+	// If we still have an error after all retries, return it
+	return fmt.Errorf("failed to create order address after %d attempts: %w", maxRetries, createErr)
 }

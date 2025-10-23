@@ -36,6 +36,10 @@ func AdminGuard(repoManager *repositories.RepositoryManager) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			return
 		}
+
+		// Set user_id in context for handlers to use
+		c.Set("user_id", user.ID)
+		c.Set("role", user.Role)
 		c.Next()
 	}
 }

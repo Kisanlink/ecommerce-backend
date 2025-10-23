@@ -32,30 +32,16 @@ func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.Repositor
 	}
 
 	// Future route groups (commented until handlers are implemented)
-	/*
-		// Admin order routes (add admin middleware later)
-		adminOrders := r.Group("/admin/orders")
-		adminOrders.Use(middleware.FirebaseAuthMiddleware()) // Add admin middleware later
-		{
-			adminOrders.GET("", orderHandler.GetAllOrders)                 // Get all orders
-			adminOrders.PUT("/:id/status", orderHandler.UpdateOrderStatus) // Update order status
-			adminOrders.GET("/stats", orderHandler.GetOrderStats)          // Get order statistics
-			adminOrders.GET("/export", orderHandler.ExportOrders)          // Export orders
-		}
-
-		// Order items
-		items := orders.Group("/:orderId/items")
-		{
-			items.GET("", orderHandler.GetOrderItems)                      // Get order items
-			items.PUT("/:itemId", orderHandler.UpdateOrderItem)           // Update order item (before fulfillment)
-		}
-
-		// Order history and receipts
-		history := orders.Group("/:orderId")
-		{
-			history.GET("/receipt", orderHandler.GetOrderReceipt)          // Get order receipt
-			history.GET("/invoice", orderHandler.GetOrderInvoice)          // Get order invoice
-			history.POST("/reorder", orderHandler.ReorderItems)            // Reorder same items
-		}
-	*/
+	// Admin order routes
+	adminOrders := r.Group("/admin/orders")
+	adminOrders.Use(middleware.FirebaseAuthMiddleware())
+	{
+		adminOrders.GET("", orderHandler.GetAllOrders)                 // GET /api/v1/admin/orders
+		adminOrders.GET("/:id", orderHandler.GetOrderDetailsAdmin)     // GET /api/v1/admin/orders/:id
+		adminOrders.PUT("/:id/status", orderHandler.UpdateOrderStatus) // PUT /api/v1/admin/orders/:id/status
+		adminOrders.PUT("/:id/payment", orderHandler.UpdatePayment)    // PUT /api/v1/admin/orders/:id/payment
+		adminOrders.PUT("/:id/shipment", orderHandler.UpdateShipment)  // PUT /api/v1/admin/orders/:id/shipment
+		adminOrders.GET("/stats", orderHandler.GetOrderStats)          // GET /api/v1/admin/orders/stats
+		adminOrders.GET("/export", orderHandler.ExportOrders)          // GET /api/v1/admin/orders/export
+	}
 }

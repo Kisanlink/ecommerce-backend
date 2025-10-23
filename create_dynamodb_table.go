@@ -16,7 +16,7 @@ import (
 
 func main() {
 	// Load environment variables
-	err := godotenv.Load("local.env")
+	err := godotenv.Load(".env")
 	if err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
 	}
@@ -43,7 +43,7 @@ func main() {
 	client := dynamodb.NewFromConfig(cfg)
 
 	// Check if table already exists
-	tableName := "product-reviews"
+	tableName := "pending_recipe_reviews"
 	_, err = client.DescribeTable(context.TODO(), &dynamodb.DescribeTableInput{
 		TableName: aws.String(tableName),
 	})
@@ -56,26 +56,64 @@ func main() {
 	input := &dynamodb.CreateTableInput{
 		AttributeDefinitions: []types.AttributeDefinition{
 			{
-				AttributeName: aws.String("product_id"),
+				AttributeName: aws.String("review_id"),
 				AttributeType: types.ScalarAttributeTypeS,
 			},
 			{
 				AttributeName: aws.String("user_id"),
+				AttributeType: types.ScalarAttributeTypeS,
+			},
+			{
+				AttributeName: aws.String("status"),
+				AttributeType: types.ScalarAttributeTypeS,
+			},
+			{
+				AttributeName: aws.String("submitted_at"),
 				AttributeType: types.ScalarAttributeTypeS,
 			},
 		},
 		KeySchema: []types.KeySchemaElement{
 			{
-				AttributeName: aws.String("product_id"),
+				AttributeName: aws.String("review_id"),
 				KeyType:       types.KeyTypeHash,
-			},
-			{
-				AttributeName: aws.String("user_id"),
-				KeyType:       types.KeyTypeRange,
 			},
 		},
 		TableName:   aws.String(tableName),
 		BillingMode: types.BillingModePayPerRequest,
+		GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{
+			{
+				IndexName: aws.String("user-id-index"),
+				KeySchema: []types.KeySchemaElement{
+					{
+						AttributeName: aws.String("user_id"),
+						KeyType:       types.KeyTypeHash,
+					},
+					{
+						AttributeName: aws.String("submitted_at"),
+						KeyType:       types.KeyTypeRange,
+					},
+				},
+				Projection: &types.Projection{
+					ProjectionType: types.ProjectionTypeAll,
+				},
+			},
+			{
+				IndexName: aws.String("status-index"),
+				KeySchema: []types.KeySchemaElement{
+					{
+						AttributeName: aws.String("status"),
+						KeyType:       types.KeyTypeHash,
+					},
+					{
+						AttributeName: aws.String("submitted_at"),
+						KeyType:       types.KeyTypeRange,
+					},
+				},
+				Projection: &types.Projection{
+					ProjectionType: types.ProjectionTypeAll,
+				},
+			},
+		},
 	}
 
 	_, err = client.CreateTable(context.TODO(), input)
@@ -85,4 +123,8 @@ func main() {
 
 	fmt.Printf("Successfully initiated creation of DynamoDB table: %s\n", tableName)
 	fmt.Println("Table is being created. It may take a few moments to become active.")
+	fmt.Println("Table structure:")
+	fmt.Println("- Primary Key: review_id (String)")
+	fmt.Println("- GSI 1: user-id-index (user_id, submitted_at)")
+	fmt.Println("- GSI 2: status-index (status, submitted_at)")
 }

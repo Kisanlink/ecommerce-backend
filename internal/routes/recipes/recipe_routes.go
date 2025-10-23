@@ -4,12 +4,14 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
 // RegisterRecipeRoutes registers all recipe related routes
-func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager) {
+func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
 	recipeHandler := handlers.NewRecipeHandler(repoManager)
+	userRecipeHandler := handlers.NewUserRecipeHandler(repoManager, serviceManager.S3Service)
 
 	// Public recipe routes
 	recipes := r.Group("/recipes")
@@ -17,6 +19,16 @@ func RegisterRecipeRoutes(r *gin.RouterGroup, repoManager *repositories.Reposito
 		recipes.GET("", recipeHandler.GetRecipes)                    // Get all recipes with filters
 		recipes.GET("/:id", recipeHandler.GetRecipeByID)             // Get recipe by ID            // Search recipes
 		recipes.GET("/category/:category", recipeHandler.GetRecipes) // Get recipes by category           // Get popular recipes
+	}
+
+	// User recipe submission routes (requires authentication)
+	userRecipes := r.Group("/recipes")
+	userRecipes.Use(middleware.FirebaseAuthMiddleware())
+	{
+		userRecipes.POST("/submit", userRecipeHandler.SubmitRecipeForReview)          // Submit recipe for review
+		userRecipes.GET("/my-submissions", userRecipeHandler.GetUserSubmittedRecipes) // Get user's submitted recipes
+		userRecipes.POST("/images/upload", userRecipeHandler.UploadRecipeImage)       // Upload recipe image
+		userRecipes.DELETE("/images/:s3_key", userRecipeHandler.DeleteRecipeImage)    // Delete recipe image
 	}
 
 	// Admin-only recipe routes (requires authentication + admin role)

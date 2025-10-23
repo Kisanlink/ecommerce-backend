@@ -165,6 +165,64 @@ func GetInventoryEnvConfig() InventoryEnvConfig {
 	}
 }
 
+// SwaggerEnvConfig holds Swagger documentation configuration from env
+type SwaggerEnvConfig struct {
+	Enabled      bool
+	Title        string
+	Description  string
+	Version      string
+	Host         string
+	BasePath     string
+	ContactName  string
+	ContactURL   string
+	ContactEmail string
+	LicenseName  string
+	LicenseURL   string
+}
+
+// GetSwaggerEnvConfig returns Swagger config from environment variables
+func GetSwaggerEnvConfig() SwaggerEnvConfig {
+	enabled := getEnvOrDefault("ENABLE_DOCS", "true") == "true"
+
+	return SwaggerEnvConfig{
+		Enabled:      enabled,
+		Title:        getEnvOrDefault("SWAGGER_TITLE", "Ecommerce Backend API"),
+		Description:  getEnvOrDefault("SWAGGER_DESCRIPTION", "A comprehensive ecommerce backend API with authentication, product management, cart, orders, and payment integration."),
+		Version:      getEnvOrDefault("SWAGGER_VERSION", "1.0.0"),
+		Host:         getEnvOrDefault("SWAGGER_HOST", "localhost:8080"),
+		BasePath:     getEnvOrDefault("SWAGGER_BASE_PATH", "/api/v1"),
+		ContactName:  getEnvOrDefault("SWAGGER_CONTACT_NAME", "API Support"),
+		ContactURL:   getEnvOrDefault("SWAGGER_CONTACT_URL", "http://www.kisanlink.com/support"),
+		ContactEmail: getEnvOrDefault("SWAGGER_CONTACT_EMAIL", "support@kisanlink.com"),
+		LicenseName:  getEnvOrDefault("SWAGGER_LICENSE_NAME", "MIT"),
+		LicenseURL:   getEnvOrDefault("SWAGGER_LICENSE_URL", "https://opensource.org/licenses/MIT"),
+	}
+}
+
+// WhatsAppEnvConfig holds WhatsApp Business API configuration from env
+type WhatsAppEnvConfig struct {
+	Enabled        bool
+	AccessToken    string
+	PhoneNumberID  string
+	BusinessAcctID string
+	WebhookToken   string
+	APIBaseURL     string
+}
+
+// GetWhatsAppEnvConfig returns WhatsApp config from environment variables
+func GetWhatsAppEnvConfig() WhatsAppEnvConfig {
+	enabled := getEnvOrDefault("WHATSAPP_ENABLED", "false") == "true"
+
+	return WhatsAppEnvConfig{
+		Enabled:        enabled,
+		AccessToken:    os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		PhoneNumberID:  os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		BusinessAcctID: os.Getenv("WHATSAPP_BUSINESS_ACCOUNT_ID"),
+		WebhookToken:   os.Getenv("WHATSAPP_WEBHOOK_TOKEN"),
+		APIBaseURL:     getEnvOrDefault("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v22.0"),
+	}
+}
+
 // getEnvOrDefault returns environment variable value or default if empty
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

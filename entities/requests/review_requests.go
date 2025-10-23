@@ -241,3 +241,110 @@ func (f *ReviewFilters) Validate() error {
 
 	return nil
 }
+
+// AdminReviewRequest represents admin-specific review management request
+type AdminReviewRequest struct {
+	ReviewID string `json:"review_id" validate:"required"`
+	Action   string `json:"action" validate:"required,oneof=flag unflag approve reject force_delete hard_delete"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// Validate validates the admin review request
+func (req *AdminReviewRequest) Validate() error {
+	if req.ReviewID == "" {
+		return errors.New("review_id is required")
+	}
+	validActions := []string{"flag", "unflag", "approve", "reject", "force_delete", "hard_delete"}
+	isValid := false
+	for _, valid := range validActions {
+		if req.Action == valid {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		return errors.New("invalid action")
+	}
+	return nil
+}
+
+// AdminListReviewsRequest represents request for admin to list all reviews with filters
+type AdminListReviewsRequest struct {
+	Page      int       `json:"page,omitempty"`
+	Limit     int       `json:"limit,omitempty"`
+	SortBy    string    `json:"sort_by,omitempty"`
+	Order     string    `json:"order,omitempty"`
+	ProductID string    `json:"product_id,omitempty"`
+	UserID    string    `json:"user_id,omitempty"`
+	MinRating int       `json:"min_rating,omitempty"`
+	MaxRating int       `json:"max_rating,omitempty"`
+	IsFlagged *bool     `json:"is_flagged,omitempty"`
+	IsActive  *bool     `json:"is_active,omitempty"`
+	StartDate time.Time `json:"start_date,omitempty"`
+	EndDate   time.Time `json:"end_date,omitempty"`
+}
+
+// Validate validates the admin list reviews request
+func (req *AdminListReviewsRequest) Validate() error {
+	if req.Page < 0 {
+		req.Page = 1
+	}
+	if req.Limit <= 0 {
+		req.Limit = 20
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+	if req.SortBy == "" {
+		req.SortBy = "review_date"
+	}
+	if req.Order == "" {
+		req.Order = "desc"
+	}
+	if req.MinRating < 1 {
+		req.MinRating = 1
+	}
+	if req.MaxRating > 5 || req.MaxRating < req.MinRating {
+		req.MaxRating = 5
+	}
+	if !req.EndDate.IsZero() && !req.StartDate.IsZero() && req.EndDate.Before(req.StartDate) {
+		return errors.New("end_date must be after start_date")
+	}
+	validSortBy := []string{"review_date", "updated_date", "rating", "likes_count", "user_id", "product_id"}
+	isValid := false
+	for _, valid := range validSortBy {
+		if req.SortBy == valid {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		return errors.New("invalid sort_by value")
+	}
+	if req.Order != "asc" && req.Order != "desc" {
+		return errors.New("order must be 'asc' or 'desc'")
+	}
+	return nil
+}
+
+// AdminBulkDeleteFlaggedRequest represents request for bulk deletion of flagged reviews
+type AdminBulkDeleteFlaggedRequest struct {
+	Action string `json:"action" validate:"required,oneof=hard_delete force_delete"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Validate validates the admin bulk delete request
+func (req *AdminBulkDeleteFlaggedRequest) Validate() error {
+	validActions := []string{"hard_delete", "force_delete"}
+	isValid := false
+	for _, valid := range validActions {
+		if req.Action == valid {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		return errors.New("invalid action - must be 'hard_delete' or 'force_delete'")
+	}
+	return nil
+}

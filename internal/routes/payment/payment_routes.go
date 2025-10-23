@@ -15,7 +15,7 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, serviceManager *services.ServiceM
 
 	// Create payment service and handler
 	paymentService := services.NewPaymentService(logger)
-	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, logger) // Payment routes (requires authentication)
+	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, serviceManager.WhatsAppService, logger) // Payment routes (requires authentication)
 	payments := r.Group("/payments")
 	payments.Use(middleware.FirebaseAuthMiddleware())
 	{
