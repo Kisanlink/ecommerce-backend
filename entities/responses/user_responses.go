@@ -47,11 +47,16 @@ type UserStatsResponse struct {
 
 // ToUserResponse converts a User model to UserResponse
 func ToUserResponse(user *models.User) UserResponse {
+	var firebaseUID string
+	if user.FirebaseUID != nil {
+		firebaseUID = *user.FirebaseUID
+	}
+
 	return UserResponse{
 		ID:          user.ID,
 		Email:       user.Email,
 		Name:        user.Name,
-		FirebaseUID: user.FirebaseUID,
+		FirebaseUID: firebaseUID,
 		PhoneNumber: user.PhoneNumber,
 		IsVerified:  user.IsVerified,
 		IsActive:    user.IsActive,

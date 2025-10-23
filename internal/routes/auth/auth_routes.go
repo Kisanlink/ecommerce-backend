@@ -27,6 +27,14 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		auth.GET("/google", firebaseAuth.GetGoogleAuthURL) // Get Google OAuth info
 		auth.POST("/google", firebaseAuth.GoogleSignIn)    // Google Sign-In with ID token
 
+		// Phone Authentication endpoints
+		phone := auth.Group("/phone")
+		{
+			phone.POST("/send-code", firebaseAuth.SendPhoneVerificationCode) // Send SMS verification code
+			phone.POST("/verify-code", firebaseAuth.VerifyPhoneCode)         // Verify SMS code and authenticate
+			phone.POST("/signup", firebaseAuth.PhoneSignup)                  // Alternative phone signup
+		}
+
 		// Protected auth endpoints
 		protected := auth.Group("/")
 		protected.Use(middleware.FirebaseAuthMiddleware())

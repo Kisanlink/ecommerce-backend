@@ -237,7 +237,7 @@ func (s *UserService) UpdateUserFirebaseUID(ctx context.Context, userID, firebas
 		return fmt.Errorf("user not found: %w", err)
 	}
 
-	user.FirebaseUID = firebaseUID
+	user.FirebaseUID = &firebaseUID
 	user.SetUpdatedBy("system")
 
 	return s.userRepo.Update(ctx, user)
@@ -372,4 +372,100 @@ func (s *UserService) SoftDeleteUser(ctx context.Context, userID, deletedBy stri
 	}
 
 	return base.NewSuccessResponse("User deleted successfully", nil), nil
+}
+
+// CreatePhoneUser creates a new user with phone number (no email/password)
+func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSignupRequest) (*base.BaseResponse, error) {
+	// Check if user already exists by phone number
+	existingUser, _ := s.userRepo.GetUserByPhoneNumber(ctx, req.PhoneNumber)
+	if existingUser != nil {
+		return base.NewErrorResponse("User already exists",
+			base.NewValidationError("phone_number", "User with this phone number already exists")), nil
+	}
+
+	// Create phone user model
+	user := models.NewPhoneUser(req.PhoneNumber, req.Name)
+
+	// Save to database with retry logic for duplicate key errors
+	maxRetries := 3
+	var createErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		createErr = s.userRepo.Create(ctx, user)
+		if createErr == nil {
+			// Successfully created user, break out of retry loop
+			break
+		}
+
+		// Check if it's a duplicate key error
+		errorStr := createErr.Error()
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "users_pkey") {
+			// Generate a new ID and try again
+			user = models.NewPhoneUser(req.PhoneNumber, req.Name)
+			fmt.Printf("Duplicate key error detected, retrying with new ID (attempt %d/%d): %s\n", attempt+1, maxRetries, user.GetID())
+			continue
+		}
+
+		// If it's not a duplicate key error, return the error immediately
+		return nil, fmt.Errorf("failed to create phone user: %w", createErr)
+	}
+
+	// If we still have an error after all retries, return it
+	if createErr != nil {
+		return nil, fmt.Errorf("failed to create phone user after %d attempts: %w", maxRetries, createErr)
+	}
+
+	// Return response without password
+	var firebaseUID string
+	if user.FirebaseUID != nil {
+		firebaseUID = *user.FirebaseUID
+	}
+
+	userData := map[string]interface{}{
+		"id":           user.GetID(),
+		"phone_number": user.PhoneNumber,
+		"name":         user.Name,
+		"firebase_uid": firebaseUID,
+		"is_verified":  user.IsVerified,
+		"is_active":    user.IsActive,
+		"role":         user.Role,
+		"created_at":   user.GetCreatedAt(),
+	}
+
+	return base.NewSuccessResponse("Phone user created successfully", userData), nil
+}
+
+// GetUserByPhoneNumber retrieves a user by phone number
+func (s *UserService) GetUserByPhoneNumber(ctx context.Context, phoneNumber string) (*base.BaseResponse, error) {
+	if phoneNumber == "" {
+		return base.NewErrorResponse("Invalid phone number",
+			base.NewValidationError("phone_number", "Phone number cannot be empty")), nil
+	}
+
+	user, err := s.userRepo.GetUserByPhoneNumber(ctx, phoneNumber)
+	if err != nil {
+		return base.NewErrorResponse("User not found",
+			base.NewNotFoundError("User", phoneNumber)), nil
+	}
+
+	// Return user data without password
+	var firebaseUID string
+	if user.FirebaseUID != nil {
+		firebaseUID = *user.FirebaseUID
+	}
+
+	userData := map[string]interface{}{
+		"id":           user.GetID(),
+		"email":        user.Email,
+		"name":         user.Name,
+		"firebase_uid": firebaseUID,
+		"phone_number": user.PhoneNumber,
+		"is_verified":  user.IsVerified,
+		"is_active":    user.IsActive,
+		"created_at":   user.GetCreatedAt(),
+		"updated_at":   user.GetUpdatedAt(),
+	}
+
+	return base.NewSuccessResponse("User retrieved successfully", userData), nil
 }

@@ -824,3 +824,325 @@ func (h *FirebaseAuthHandler) GetGoogleAuthURL(c *gin.Context) {
 		},
 	})
 }
+
+// Phone Authentication structures
+type FirebasePhoneRequest struct {
+	PhoneNumber    string `json:"phoneNumber"`
+	RecaptchaToken string `json:"recaptchaToken"`
+}
+
+type FirebasePhoneResponse struct {
+	SessionInfo string `json:"sessionInfo"`
+}
+
+type FirebasePhoneVerificationRequest struct {
+	SessionInfo string `json:"sessionInfo"`
+	Code        string `json:"code"`
+}
+
+type FirebasePhoneVerificationResponse struct {
+	Kind         string `json:"kind"`
+	LocalId      string `json:"localId"`
+	PhoneNumber  string `json:"phoneNumber"`
+	IdToken      string `json:"idToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresIn    string `json:"expiresIn"`
+	IsNewUser    bool   `json:"isNewUser"`
+}
+
+// SendPhoneVerificationCode sends SMS verification code to phone number
+// @Summary Send SMS verification code
+// @Description Send SMS verification code to the provided phone number
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body requests.SendPhoneCodeRequest true "Phone number for verification"
+// @Success 200 {object} map[string]interface{} "SMS code sent successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/phone/send-code [post]
+func (h *FirebaseAuthHandler) SendPhoneVerificationCode(c *gin.Context) {
+	var req requests.SendPhoneCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.RespondWithError(c, http.StatusBadRequest, "Invalid request payload", err)
+		return
+	}
+
+	// Get Firebase Web API Key from environment
+	firebaseAPIKey := os.Getenv("FIREBASE_WEB_API_KEY")
+	if firebaseAPIKey == "" {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase Web API Key not configured", nil)
+		return
+	}
+
+	// Prepare Firebase Auth REST API request
+	phoneReq := FirebasePhoneRequest{
+		PhoneNumber:    req.PhoneNumber,
+		RecaptchaToken: req.RecaptchaToken,
+	}
+
+	jsonData, err := json.Marshal(phoneReq)
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to prepare phone verification request", err)
+		return
+	}
+
+	// Call Firebase Auth REST API
+	url := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=%s", firebaseAPIKey)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to send verification code", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to read verification response", err)
+		return
+	}
+
+	// Handle API errors
+	if resp.StatusCode != http.StatusOK {
+		var firebaseError FirebaseErrorResponse
+		if err := json.Unmarshal(body, &firebaseError); err == nil {
+			errorMessage := "Failed to send verification code"
+			if len(firebaseError.Error.Errors) > 0 {
+				switch firebaseError.Error.Errors[0].Message {
+				case "INVALID_PHONE_NUMBER":
+					errorMessage = "Invalid phone number format"
+				case "TOO_MANY_ATTEMPTS_TRY_LATER":
+					errorMessage = "Too many attempts. Please try again later"
+				case "MISSING_CLIENT_IDENTIFIER":
+					errorMessage = "Missing client identifier. Please ensure reCAPTCHA is properly configured"
+				case "INVALID_RECAPTCHA_TOKEN":
+					errorMessage = "Invalid reCAPTCHA token. Please try again"
+				default:
+					errorMessage = firebaseError.Error.Errors[0].Message
+				}
+			}
+			utils.RespondWithError(c, http.StatusBadRequest, errorMessage, nil)
+		} else {
+			utils.RespondWithError(c, http.StatusInternalServerError, "Failed to send verification code", nil)
+		}
+		return
+	}
+
+	// Parse successful response
+	var phoneResponse FirebasePhoneResponse
+	if err := json.Unmarshal(body, &phoneResponse); err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to parse verification response", err)
+		return
+	}
+
+	utils.RespondWithSuccess(c, gin.H{
+		"message":      "Verification code sent successfully",
+		"session_info": phoneResponse.SessionInfo,
+	})
+}
+
+// VerifyPhoneCode verifies SMS code and signs in/up the user
+// @Summary Verify SMS code and authenticate
+// @Description Verify SMS code and sign in or sign up the user
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body requests.VerifyPhoneCodeRequest true "Phone verification code"
+// @Success 200 {object} map[string]interface{} "Authentication successful"
+// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Failure 401 {object} map[string]interface{} "Invalid verification code"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/phone/verify-code [post]
+func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
+	var req requests.VerifyPhoneCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.RespondWithError(c, http.StatusBadRequest, "Invalid request payload", err)
+		return
+	}
+
+	// Get Firebase Web API Key from environment
+	firebaseAPIKey := os.Getenv("FIREBASE_WEB_API_KEY")
+	if firebaseAPIKey == "" {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase Web API Key not configured", nil)
+		return
+	}
+
+	// Use the session info from the request (returned from send-code endpoint)
+	// Prepare Firebase Auth REST API request
+	verifyReq := FirebasePhoneVerificationRequest{
+		SessionInfo: req.SessionInfo, // Use the actual session info from send-code
+		Code:        req.Code,
+	}
+
+	jsonData, err := json.Marshal(verifyReq)
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to prepare verification request", err)
+		return
+	}
+
+	// Call Firebase Auth REST API
+	url := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPhoneNumber?key=%s", firebaseAPIKey)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to verify code", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to read verification response", err)
+		return
+	}
+
+	// Handle API errors
+	if resp.StatusCode != http.StatusOK {
+		var firebaseError FirebaseErrorResponse
+		if err := json.Unmarshal(body, &firebaseError); err == nil {
+			errorMessage := "Invalid verification code"
+			if len(firebaseError.Error.Errors) > 0 {
+				switch firebaseError.Error.Errors[0].Message {
+				case "INVALID_CODE":
+					errorMessage = "Invalid or expired verification code"
+				case "SESSION_EXPIRED":
+					errorMessage = "Verification session expired. Please request a new code"
+				default:
+					errorMessage = firebaseError.Error.Errors[0].Message
+				}
+			}
+			utils.RespondWithError(c, http.StatusUnauthorized, errorMessage, nil)
+		} else {
+			utils.RespondWithError(c, http.StatusInternalServerError, "Failed to verify code", nil)
+		}
+		return
+	}
+
+	// Parse successful response
+	var verifyResponse FirebasePhoneVerificationResponse
+	if err := json.Unmarshal(body, &verifyResponse); err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to parse verification response", err)
+		return
+	}
+
+	ctx := context.Background()
+
+	// Handle user creation/retrieval in local database
+	var localUser map[string]interface{}
+
+	// First, try to get existing user from local database
+	userResponse, _ := h.userService.GetUserByPhoneNumber(ctx, verifyResponse.PhoneNumber)
+	if userResponse != nil && userResponse.Success {
+		// User exists in local database
+		localUser = userResponse.Data.(map[string]interface{})
+
+		// Update Firebase UID if not set
+		if localUser["firebase_uid"] == "" {
+			userID := localUser["id"].(string)
+			err := h.userService.UpdateUserFirebaseUID(ctx, userID, verifyResponse.LocalId)
+			if err != nil {
+				fmt.Printf("Failed to update Firebase UID for user %s: %v\n", userID, err)
+			}
+			localUser["firebase_uid"] = verifyResponse.LocalId
+		}
+	} else {
+		// Create new user in local database
+		phoneSignupReq := requests.PhoneSignupRequest{
+			PhoneNumber: verifyResponse.PhoneNumber,
+			Name:        "User", // Default name, can be updated later
+		}
+
+		userResponse, err := h.userService.CreatePhoneUser(ctx, &phoneSignupReq)
+		if err != nil {
+			utils.RespondWithError(c, http.StatusInternalServerError, "Failed to create user in database", err)
+			return
+		}
+
+		if userResponse.Success {
+			localUser = userResponse.Data.(map[string]interface{})
+
+			// Update Firebase UID for the new user
+			userID := localUser["id"].(string)
+			err = h.userService.UpdateUserFirebaseUID(ctx, userID, verifyResponse.LocalId)
+			if err != nil {
+				fmt.Printf("Failed to update Firebase UID for new user %s: %v\n", userID, err)
+			}
+			localUser["firebase_uid"] = verifyResponse.LocalId
+		}
+	}
+
+	// Prepare response
+	responseData := gin.H{
+		"message":       "Phone authentication successful",
+		"id_token":      verifyResponse.IdToken,
+		"refresh_token": verifyResponse.RefreshToken,
+		"expires_in":    verifyResponse.ExpiresIn,
+		"user": gin.H{
+			"uid":          verifyResponse.LocalId,
+			"phone_number": verifyResponse.PhoneNumber,
+			"is_new_user":  verifyResponse.IsNewUser,
+		},
+	}
+
+	// Add local database fields if available
+	if localUser != nil {
+		responseData["user"].(gin.H)["id"] = localUser["id"]
+		responseData["user"].(gin.H)["name"] = localUser["name"]
+		responseData["user"].(gin.H)["is_verified"] = localUser["is_verified"]
+		responseData["user"].(gin.H)["is_active"] = localUser["is_active"]
+		responseData["user"].(gin.H)["created_at"] = localUser["created_at"]
+	}
+
+	utils.RespondWithSuccess(c, responseData)
+}
+
+// PhoneSignup creates a new user with phone number (alternative endpoint)
+// @Summary Create user with phone number
+// @Description Create a new user account using phone number
+// @Tags Authentication
+// @Accept json
+// @Produce json
+// @Param request body requests.PhoneSignupRequest true "Phone signup information"
+// @Success 201 {object} map[string]interface{} "User created successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request or user already exists"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /auth/phone/signup [post]
+func (h *FirebaseAuthHandler) PhoneSignup(c *gin.Context) {
+	var req requests.PhoneSignupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.RespondWithError(c, http.StatusBadRequest, "Invalid request payload", err)
+		return
+	}
+
+	ctx := context.Background()
+
+	// Create user in local database
+	userResponse, err := h.userService.CreatePhoneUser(ctx, &req)
+	if err != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to create user in database", err)
+		return
+	}
+
+	if !userResponse.Success {
+		utils.RespondWithError(c, http.StatusBadRequest, userResponse.Message, userResponse.Error)
+		return
+	}
+
+	// Extract user data from response
+	userData, ok := userResponse.Data.(map[string]interface{})
+	if !ok {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Invalid user data format", nil)
+		return
+	}
+
+	utils.RespondWithSuccess(c, gin.H{
+		"message": "Phone user created successfully. Please verify your phone number to complete registration.",
+		"user": gin.H{
+			"id":           userData["id"],
+			"phone_number": userData["phone_number"],
+			"name":         userData["name"],
+			"is_verified":  userData["is_verified"],
+			"is_active":    userData["is_active"],
+			"created_at":   userData["created_at"],
+		},
+	})
+}
