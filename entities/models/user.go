@@ -8,7 +8,7 @@ import (
 // User represents a user in the system (Authentication only)
 type User struct {
 	*base.BaseModel `gorm:"embedded"`
-	Email           string  `json:"email" gorm:"unique"` // Made optional for phone-only users
+	Email           *string `json:"email,omitempty" gorm:"unique"` // Made optional for phone-only users
 	Name            string  `json:"name" gorm:"not null"`
 	Password        string  `json:"-"` // Made optional for phone-only users
 	FirebaseUID     *string `json:"firebase_uid,omitempty"`
@@ -23,7 +23,7 @@ func NewUser(email, name, password string) *User {
 	baseModel := base.NewBaseModel("USER", hash.Small)
 	return &User{
 		BaseModel:  baseModel,
-		Email:      email,
+		Email:      &email,
 		Name:       name,
 		Password:   password,
 		IsVerified: false,
@@ -37,8 +37,10 @@ func NewPhoneUser(phoneNumber, name string) *User {
 	baseModel := base.NewBaseModel("USER", hash.Small)
 	return &User{
 		BaseModel:   baseModel,
+		Email:       nil, // nil for phone-only users (no email)
 		PhoneNumber: phoneNumber,
 		Name:        name,
+		Password:    "",   // Empty string for phone-only users
 		FirebaseUID: nil,  // Will be set later when Firebase user is created
 		IsVerified:  true, // Phone verification means user is verified
 		IsActive:    true,

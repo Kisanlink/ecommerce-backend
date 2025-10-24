@@ -119,7 +119,11 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 		}
 	} else {
 		// Log user data for debugging
-		log.Printf("Found user in database - ID: %s, Name: %s, Email: %s, Role: %s", user.GetID(), user.Name, user.Email, user.Role)
+		var emailStr string
+		if user.Email != nil {
+			emailStr = *user.Email
+		}
+		log.Printf("Found user in database - ID: %s, Name: %s, Email: %s, Role: %s", user.GetID(), user.Name, emailStr, user.Role)
 
 		// Extract names from display name
 		if user.Name != "" {
@@ -139,8 +143,8 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 
 		// Use Firebase email if available, otherwise fall back to users table email
 		email = firebaseEmail
-		if email == "" {
-			email = user.Email
+		if email == "" && user.Email != nil {
+			email = *user.Email
 		}
 
 		// Log extracted names for debugging

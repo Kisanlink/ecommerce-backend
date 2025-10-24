@@ -52,9 +52,14 @@ func ToUserResponse(user *models.User) UserResponse {
 		firebaseUID = *user.FirebaseUID
 	}
 
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
+
 	return UserResponse{
 		ID:          user.ID,
-		Email:       user.Email,
+		Email:       emailStr,
 		Name:        user.Name,
 		FirebaseUID: firebaseUID,
 		PhoneNumber: user.PhoneNumber,

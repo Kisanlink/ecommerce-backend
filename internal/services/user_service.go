@@ -81,7 +81,7 @@ func (s *UserService) createUserWithTimestampID(email, name, password string) *m
 
 	return &models.User{
 		BaseModel:  baseModel,
-		Email:      email,
+		Email:      &email,
 		Name:       name,
 		Password:   password,
 		IsVerified: false,
@@ -139,9 +139,13 @@ func (s *UserService) CreateUser(ctx context.Context, req *requests.SignupReques
 	}
 
 	// Return response without password
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
 	userData := map[string]interface{}{
 		"id":           user.GetID(),
-		"email":        user.Email,
+		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
 		"is_verified":  user.IsVerified,
@@ -186,9 +190,13 @@ func (s *UserService) GetUserByEmail(ctx context.Context, email string) (*base.B
 	}
 
 	// Return user data without password
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
 	userData := map[string]interface{}{
 		"id":           user.GetID(),
-		"email":        user.Email,
+		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
 		"phone_number": user.PhoneNumber,
@@ -215,9 +223,13 @@ func (s *UserService) GetUserByFirebaseUID(ctx context.Context, firebaseUID stri
 	}
 
 	// Return user data without password
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
 	userData := map[string]interface{}{
 		"id":           user.GetID(),
-		"email":        user.Email,
+		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
 		"phone_number": user.PhoneNumber,
@@ -280,9 +292,13 @@ func (s *UserService) UpdateUser(ctx context.Context, userID string, updateData 
 	}
 
 	// Return updated user data without password
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
 	userData := map[string]interface{}{
 		"id":           user.GetID(),
-		"email":        user.Email,
+		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
 		"phone_number": user.PhoneNumber,
@@ -313,9 +329,13 @@ func (s *UserService) ListUsers(ctx context.Context, page, pageSize int) (*base.
 	// Convert to response format without passwords
 	var userList []map[string]interface{}
 	for _, user := range users {
+		var emailStr string
+		if user.Email != nil {
+			emailStr = *user.Email
+		}
 		userData := map[string]interface{}{
 			"id":           user.GetID(),
-			"email":        user.Email,
+			"email":        emailStr,
 			"name":         user.Name,
 			"firebase_uid": user.FirebaseUID,
 			"phone_number": user.PhoneNumber,
@@ -376,26 +396,42 @@ func (s *UserService) SoftDeleteUser(ctx context.Context, userID, deletedBy stri
 
 // CreatePhoneUser creates a new user with phone number (no email/password)
 func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSignupRequest) (*base.BaseResponse, error) {
+	fmt.Printf("CreatePhoneUser called with: PhoneNumber=%s, Name=%s\n", req.PhoneNumber, req.Name)
+
 	// Check if user already exists by phone number
-	existingUser, _ := s.userRepo.GetUserByPhoneNumber(ctx, req.PhoneNumber)
+	existingUser, err := s.userRepo.GetUserByPhoneNumber(ctx, req.PhoneNumber)
+	if err != nil {
+		fmt.Printf("Error checking existing user: %v\n", err)
+	}
 	if existingUser != nil {
+		fmt.Printf("User already exists with phone number: %s\n", req.PhoneNumber)
 		return base.NewErrorResponse("User already exists",
 			base.NewValidationError("phone_number", "User with this phone number already exists")), nil
 	}
 
 	// Create phone user model
 	user := models.NewPhoneUser(req.PhoneNumber, req.Name)
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
+	fmt.Printf("Created user model: ID=%s, PhoneNumber=%s, Name=%s, Email=%s, Password=%s\n",
+		user.GetID(), user.PhoneNumber, user.Name, emailStr, user.Password)
 
 	// Save to database with retry logic for duplicate key errors
 	maxRetries := 3
 	var createErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		fmt.Printf("Attempting to create user in database (attempt %d/%d)...\n", attempt+1, maxRetries)
 		createErr = s.userRepo.Create(ctx, user)
 		if createErr == nil {
+			fmt.Printf("Successfully created user in database with ID: %s\n", user.GetID())
 			// Successfully created user, break out of retry loop
 			break
 		}
+
+		fmt.Printf("Database creation failed (attempt %d/%d): %v\n", attempt+1, maxRetries, createErr)
 
 		// Check if it's a duplicate key error
 		errorStr := createErr.Error()
@@ -408,6 +444,7 @@ func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSi
 		}
 
 		// If it's not a duplicate key error, return the error immediately
+		fmt.Printf("Non-retryable error occurred: %v\n", createErr)
 		return nil, fmt.Errorf("failed to create phone user: %w", createErr)
 	}
 
@@ -433,6 +470,7 @@ func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSi
 		"created_at":   user.GetCreatedAt(),
 	}
 
+	fmt.Printf("Returning success response for user: %+v\n", userData)
 	return base.NewSuccessResponse("Phone user created successfully", userData), nil
 }
 
@@ -455,9 +493,14 @@ func (s *UserService) GetUserByPhoneNumber(ctx context.Context, phoneNumber stri
 		firebaseUID = *user.FirebaseUID
 	}
 
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
+
 	userData := map[string]interface{}{
 		"id":           user.GetID(),
-		"email":        user.Email,
+		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": firebaseUID,
 		"phone_number": user.PhoneNumber,

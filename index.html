@@ -88,6 +88,11 @@
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
         .info {
             background-color: #d1ecf1;
             color: #0c5460;
@@ -388,9 +393,22 @@
                     showStatus('Verification code sent! Check your phone for SMS.', 'success');
                     document.getElementById('phone-verification').classList.remove('hidden');
                     
-                    // Store session info and phone number for verification
+                    // Store session info and phone number for verification with timestamp
+                    const sessionData = {
+                        session_info: result.data.session_info,
+                        phone_number: phoneNumber,
+                        timestamp: Date.now(),
+                        expires_at: Date.now() + (4 * 60 * 1000) // 4 minutes (Firebase expires at 5 minutes)
+                    };
+                    
                     window.sessionInfo = result.data.session_info;
                     window.lastPhoneNumber = phoneNumber;
+                    
+                    // Persist session data to localStorage
+                    localStorage.setItem('phone_auth_session', JSON.stringify(sessionData));
+                    
+                    // Start session timeout warning
+                    startSessionTimeoutWarning();
                     
                     // Clear the phone number input for security
                     document.getElementById('phone-number').value = '';
@@ -421,9 +439,13 @@
                 return;
             }
 
+            // Check if session info exists and is valid
             if (!window.sessionInfo) {
-                showStatus('Please send verification code first', 'error');
-                return;
+                // Try to restore from localStorage
+                if (!validateSession()) {
+                    showStatus('Please send verification code first', 'error');
+                    return;
+                }
             }
 
             if (!phoneNumber) {
@@ -466,7 +488,26 @@
                         errorMessage = errorText || errorMessage;
                     }
                     
-                    showStatus(`Verification failed: ${errorMessage}`, 'error');
+                    // Handle specific error cases
+                    if (errorMessage.includes('session expired') || errorMessage.includes('SESSION_EXPIRED')) {
+                        showStatus(`❌ Verification session expired. Please request a new code.`, 'error');
+                        clearSessionData();
+                        
+                        // Add retry button
+                        const retryButton = document.createElement('button');
+                        retryButton.textContent = 'Request New Code';
+                        retryButton.className = 'btn btn-primary mt-2';
+                        retryButton.onclick = () => {
+                            document.getElementById('phone-verification').classList.add('hidden');
+                            document.getElementById('phone-number').value = window.lastPhoneNumber || '';
+                            retryButton.remove();
+                        };
+                        
+                        const statusDiv = document.getElementById('status');
+                        statusDiv.appendChild(retryButton);
+                    } else {
+                        showStatus(`Verification failed: ${errorMessage}`, 'error');
+                    }
                     return;
                 }
                 
@@ -512,9 +553,8 @@
                     // Clear the verification code input
                     document.getElementById('verification-code').value = '';
                     
-                    // Reset session info
-                    window.sessionInfo = null;
-                    window.lastPhoneNumber = null;
+                    // Clear session data and timers
+                    clearSessionData();
                     
                 } else {
                     showStatus(`Verification failed: ${result.message || 'Unknown error'}`, 'error');
@@ -526,6 +566,132 @@
             }
         }
 
+        // Session timeout warning and management
+        let sessionTimeoutWarning = null;
+        let sessionTimeoutTimer = null;
+
+        function startSessionTimeoutWarning() {
+            // Clear any existing timers
+            if (sessionTimeoutWarning) {
+                clearTimeout(sessionTimeoutWarning);
+            }
+            if (sessionTimeoutTimer) {
+                clearInterval(sessionTimeoutTimer);
+            }
+
+            // Show warning at 3 minutes (1 minute before expiry)
+            sessionTimeoutWarning = setTimeout(() => {
+                showStatus('⚠️ Verification code will expire in 1 minute. Please enter your code soon or request a new one.', 'warning');
+                
+                // Start countdown timer
+                let timeLeft = 60; // 1 minute
+                sessionTimeoutTimer = setInterval(() => {
+                    timeLeft--;
+                    if (timeLeft > 0) {
+                        showStatus(`⚠️ Verification code expires in ${timeLeft} seconds. Please enter your code or request a new one.`, 'warning');
+                    } else {
+                        clearInterval(sessionTimeoutTimer);
+                        showStatus('❌ Verification code has expired. Please request a new code.', 'error');
+                        clearSessionData();
+                    }
+                }, 1000);
+            }, 3 * 60 * 1000); // 3 minutes
+        }
+
+        function clearSessionData() {
+            // Clear session data
+            window.sessionInfo = null;
+            window.lastPhoneNumber = null;
+            localStorage.removeItem('phone_auth_session');
+            
+            // Clear timers
+            if (sessionTimeoutWarning) {
+                clearTimeout(sessionTimeoutWarning);
+                sessionTimeoutWarning = null;
+            }
+            if (sessionTimeoutTimer) {
+                clearInterval(sessionTimeoutTimer);
+                sessionTimeoutTimer = null;
+            }
+            
+            // Hide verification section
+            document.getElementById('phone-verification').classList.add('hidden');
+        }
+
+        function validateSession() {
+            const sessionData = localStorage.getItem('phone_auth_session');
+            if (!sessionData) {
+                return false;
+            }
+
+            try {
+                const session = JSON.parse(sessionData);
+                const now = Date.now();
+                
+                // Check if session is expired
+                if (now > session.expires_at) {
+                    localStorage.removeItem('phone_auth_session');
+                    return false;
+                }
+                
+                // Restore session data
+                window.sessionInfo = session.session_info;
+                window.lastPhoneNumber = session.phone_number;
+                
+                // Calculate remaining time and restart warning if needed
+                const remainingTime = session.expires_at - now;
+                if (remainingTime > 0) {
+                    // Show verification section if session is still valid
+                    document.getElementById('phone-verification').classList.remove('hidden');
+                    
+                    // Show remaining time
+                    const minutesLeft = Math.ceil(remainingTime / (60 * 1000));
+                    showStatus(`✅ Verification session active. ${minutesLeft} minute(s) remaining.`, 'info');
+                    
+                    // Restart warning if more than 1 minute left
+                    if (remainingTime > 60 * 1000) {
+                        const warningDelay = Math.max(0, remainingTime - (60 * 1000)); // 1 minute before expiry
+                        setTimeout(() => {
+                            startSessionTimeoutWarning();
+                        }, warningDelay);
+                    }
+                }
+                
+                return true;
+            } catch (e) {
+                localStorage.removeItem('phone_auth_session');
+                return false;
+            }
+        }
+
+        // Auto-refresh session if user is actively using the page
+        function setupSessionRefresh() {
+            // Check session validity every 30 seconds
+            setInterval(() => {
+                if (window.sessionInfo) {
+                    const sessionData = localStorage.getItem('phone_auth_session');
+                    if (sessionData) {
+                        try {
+                            const session = JSON.parse(sessionData);
+                            const now = Date.now();
+                            const remainingTime = session.expires_at - now;
+                            
+                            // If less than 2 minutes remaining, show a subtle reminder
+                            if (remainingTime < 2 * 60 * 1000 && remainingTime > 0) {
+                                const minutesLeft = Math.ceil(remainingTime / (60 * 1000));
+                                if (minutesLeft === 1) {
+                                    showStatus(`⏰ Verification code expires in 1 minute. Please enter your code soon.`, 'warning');
+                                }
+                            }
+                        } catch (e) {
+                            // Session data corrupted, clear it
+                            clearSessionData();
+                        }
+                    }
+                }
+            }, 30000); // Check every 30 seconds
+        }
+
         // Resend Verification Code
         async function resendVerificationCode() {
             const phoneNumber = window.lastPhoneNumber || document.getElementById('phone-number').value;
@@ -534,6 +700,9 @@
                 showStatus('Please enter a phone number first', 'error');
                 return;
             }
+            
+            // Clear existing session data
+            clearSessionData();
 
             try {
                 showStatus('Resending verification code...', 'info');
@@ -690,6 +859,12 @@
             
             // Test backend connection
             testBackendConnection();
+            
+            // Validate existing session on page load
+            validateSession();
+            
+            // Setup session refresh monitoring
+            setupSessionRefresh();
             
             // Add input event listeners for better UX
             const phoneInput = document.getElementById('phone-number');
