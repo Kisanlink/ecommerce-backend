@@ -69,6 +69,11 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		cart.DELETE("/items/:product_id", sessionCartHandler.RemoveFromCart) // Remove item from cart
 		cart.DELETE("/clear", sessionCartHandler.ClearCart)                  // Clear entire cart
 
+		// Coupon operations (work for both authenticated and anonymous users)
+		cart.POST("/apply-coupon", sessionCartHandler.ApplyCoupon)      // Apply coupon to cart
+		cart.DELETE("/remove-coupon", sessionCartHandler.RemoveCoupon)  // Remove coupon from cart
+		cart.GET("/validate-coupon", sessionCartHandler.ValidateCoupon) // Validate coupon for cart
+
 		// Cart migration endpoints (require authentication)
 		authenticated := cart.Group("")
 		authenticated.Use(middleware.FirebaseAuthMiddleware())

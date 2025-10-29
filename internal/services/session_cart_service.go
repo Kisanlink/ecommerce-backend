@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"go.uber.org/zap"
@@ -24,6 +26,11 @@ type SessionCartServiceInterface interface {
 	ClearSessionCart(ctx context.Context, sessionID string) error
 	GetSessionCartSummary(ctx context.Context, sessionID string) (*models.CartSummary, error)
 
+	// Coupon operations for session carts
+	ApplyCouponToSessionCart(ctx context.Context, sessionID, couponCode string) (*models.Cart, float64, error)
+	RemoveCouponFromSessionCart(ctx context.Context, sessionID string) (*models.Cart, error)
+	ValidateCouponForSessionCart(ctx context.Context, sessionID, couponCode string) (*models.Cart, float64, error)
+
 	// Cart migration operations
 	MigrateSessionCartToUser(ctx context.Context, sessionID, userID string) (*models.Cart, error)
 	MergeSessionCartWithUserCart(ctx context.Context, sessionID, userID string) (*models.Cart, error)
@@ -37,16 +44,18 @@ type SessionCartServiceInterface interface {
 type SessionCartService struct {
 	cartRepo    repositories.CartRepositoryInterface
 	productRepo repositories.ProductRepositoryInterface
+	couponRepo  repositories.CouponRepositoryInterface
 	logger      *zap.Logger
 	// In-memory storage for session carts (in production, use Redis)
 	sessionCarts map[string]*models.Cart
 }
 
 // NewSessionCartService creates a new session cart service
-func NewSessionCartService(cartRepo repositories.CartRepositoryInterface, productRepo repositories.ProductRepositoryInterface, logger *zap.Logger) SessionCartServiceInterface {
+func NewSessionCartService(cartRepo repositories.CartRepositoryInterface, productRepo repositories.ProductRepositoryInterface, couponRepo repositories.CouponRepositoryInterface, logger *zap.Logger) SessionCartServiceInterface {
 	return &SessionCartService{
 		cartRepo:     cartRepo,
 		productRepo:  productRepo,
+		couponRepo:   couponRepo,
 		logger:       logger,
 		sessionCarts: make(map[string]*models.Cart),
 	}
@@ -556,4 +565,174 @@ func (s *SessionCartService) calculateCartTotals(cart *models.Cart) {
 	if cart.DiscountAmount > cart.TotalPrice {
 		cart.DiscountAmount = cart.TotalPrice
 	}
+}
+
+// ApplyCouponToSessionCart applies a coupon to a session cart
+func (s *SessionCartService) ApplyCouponToSessionCart(ctx context.Context, sessionID, couponCode string) (*models.Cart, float64, error) {
+	if !s.ValidateSessionID(sessionID) {
+		return nil, 0, fmt.Errorf("invalid session ID")
+	}
+
+	code := strings.TrimSpace(strings.ToUpper(couponCode))
+
+	// Get coupon with rules from database
+	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
+	if err != nil {
+		s.logger.Error("Invalid coupon code",
+			zap.String("code", code),
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return nil, 0, fmt.Errorf("invalid coupon code")
+	}
+
+	// Get session cart
+	cart, err := s.GetSessionCart(ctx, sessionID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get session cart: %w", err)
+	}
+	if cart == nil || len(cart.Items) == 0 || cart.TotalPrice <= 0 {
+		return nil, 0, fmt.Errorf("cart is empty")
+	}
+
+	// For session carts, we'll assume first-time user (simplified)
+	isFirstTime := true
+
+	// Extract product IDs from cart items
+	cartProductIDs := make([]string, len(cart.Items))
+	for i, item := range cart.Items {
+		cartProductIDs[i] = item.ProductID
+	}
+
+	// Validate coupon with product restrictions
+	if !coupon.CanUseWithItems(cart.TotalPrice, sessionID, isFirstTime, cartProductIDs) {
+		s.logger.Error("Coupon cannot be used",
+			zap.String("code", code),
+			zap.String("session_id", sessionID),
+			zap.Float64("cart_total", cart.TotalPrice),
+			zap.Strings("cart_products", cartProductIDs))
+		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
+	}
+
+	// Get the best rule for this cart with items
+	bestRule := coupon.GetBestRuleWithItems(cart.TotalPrice, sessionID, isFirstTime, cartProductIDs)
+	if bestRule == nil {
+		s.logger.Error("No applicable rules found for coupon",
+			zap.String("code", code),
+			zap.String("session_id", sessionID),
+			zap.Float64("cart_total", cart.TotalPrice),
+			zap.Strings("cart_products", cartProductIDs))
+		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
+	}
+
+	// Calculate discount using the best rule
+	discount := bestRule.CalculateDiscount(cart.TotalPrice)
+	discount = utils.RoundToTwoDecimals(discount)
+
+	// Update cart with coupon
+	cart.CouponCode = code
+	cart.DiscountAmount = discount
+
+	// Save the updated cart back to session storage
+	s.sessionCarts[sessionID] = cart
+
+	s.logger.Info("Coupon applied to session cart successfully",
+		zap.String("code", code),
+		zap.String("session_id", sessionID),
+		zap.Float64("discount", discount),
+		zap.String("rule_type", string(bestRule.RuleType)))
+
+	return cart, discount, nil
+}
+
+// RemoveCouponFromSessionCart removes a coupon from a session cart
+func (s *SessionCartService) RemoveCouponFromSessionCart(ctx context.Context, sessionID string) (*models.Cart, error) {
+	if !s.ValidateSessionID(sessionID) {
+		return nil, fmt.Errorf("invalid session ID")
+	}
+
+	cart, err := s.GetSessionCart(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session cart: %w", err)
+	}
+
+	cart.CouponCode = ""
+	cart.DiscountAmount = 0
+
+	// Save the updated cart back to session storage
+	s.sessionCarts[sessionID] = cart
+
+	s.logger.Info("Coupon removed from session cart successfully",
+		zap.String("session_id", sessionID))
+
+	return cart, nil
+}
+
+// ValidateCouponForSessionCart validates a coupon for a session cart without applying it
+func (s *SessionCartService) ValidateCouponForSessionCart(ctx context.Context, sessionID, couponCode string) (*models.Cart, float64, error) {
+	if !s.ValidateSessionID(sessionID) {
+		return nil, 0, fmt.Errorf("invalid session ID")
+	}
+
+	code := strings.TrimSpace(strings.ToUpper(couponCode))
+
+	// Get coupon with rules from database
+	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
+	if err != nil {
+		s.logger.Error("Invalid coupon code for validation",
+			zap.String("code", code),
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return nil, 0, fmt.Errorf("invalid coupon code")
+	}
+
+	// Get session cart
+	cart, err := s.GetSessionCart(ctx, sessionID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get session cart: %w", err)
+	}
+	if cart == nil || len(cart.Items) == 0 || cart.TotalPrice <= 0 {
+		return nil, 0, fmt.Errorf("cart is empty")
+	}
+
+	// For session carts, we'll assume first-time user (simplified)
+	isFirstTime := true
+
+	// Extract product IDs from cart items
+	cartProductIDs := make([]string, len(cart.Items))
+	for i, item := range cart.Items {
+		cartProductIDs[i] = item.ProductID
+	}
+
+	// Validate coupon with product restrictions
+	if !coupon.CanUseWithItems(cart.TotalPrice, sessionID, isFirstTime, cartProductIDs) {
+		s.logger.Error("Coupon cannot be used for validation",
+			zap.String("code", code),
+			zap.String("session_id", sessionID),
+			zap.Float64("cart_total", cart.TotalPrice),
+			zap.Strings("cart_products", cartProductIDs))
+		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
+	}
+
+	// Get the best rule for this cart with items
+	bestRule := coupon.GetBestRuleWithItems(cart.TotalPrice, sessionID, isFirstTime, cartProductIDs)
+	if bestRule == nil {
+		s.logger.Error("No applicable rules found for coupon validation",
+			zap.String("code", code),
+			zap.String("session_id", sessionID),
+			zap.Float64("cart_total", cart.TotalPrice),
+			zap.Strings("cart_products", cartProductIDs))
+		return nil, 0, fmt.Errorf("coupon cannot be used for this cart")
+	}
+
+	// Calculate discount using the best rule
+	discount := bestRule.CalculateDiscount(cart.TotalPrice)
+	discount = utils.RoundToTwoDecimals(discount)
+
+	s.logger.Info("Coupon validated for session cart successfully",
+		zap.String("code", code),
+		zap.String("session_id", sessionID),
+		zap.Float64("discount", discount),
+		zap.String("rule_type", string(bestRule.RuleType)))
+
+	return cart, discount, nil
 }

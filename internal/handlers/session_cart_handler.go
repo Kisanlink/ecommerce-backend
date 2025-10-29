@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -665,6 +666,292 @@ func (h *SessionCartHandler) MergeCart(c *gin.Context) {
 		"data":    cartResponse,
 		"message": "Cart merged successfully",
 	})
+}
+
+// ApplyCoupon applies a coupon to the cart (works for both authenticated and session-based)
+// @Summary Apply coupon to cart
+// @Description Apply a discount coupon to the cart (works for both authenticated and anonymous users)
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Param X-Session-ID header string false "Session ID for anonymous users"
+// @Param request body requests.ApplyCouponRequest true "Coupon information"
+// @Success 200 {object} map[string]interface{} "Coupon applied successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request or coupon"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/apply-coupon [post]
+func (h *SessionCartHandler) ApplyCoupon(c *gin.Context) {
+	cartIdentifier, isAuthenticated, err := h.getCartIdentifier(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid session ID",
+		})
+		return
+	}
+
+	var req requests.ApplyCouponRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request: " + err.Error(),
+		})
+		return
+	}
+	req.Sanitize()
+
+	var cart interface{}
+	var discount float64
+	var cartErr error
+
+	if isAuthenticated {
+		// Use regular cart service for authenticated users
+		cart, discount, cartErr = h.cartService.ApplyCoupon(c.Request.Context(), cartIdentifier, req.CouponCode)
+	} else {
+		// Use session cart service for anonymous users
+		cart, discount, cartErr = h.sessionCartService.ApplyCouponToSessionCart(c.Request.Context(), cartIdentifier, req.CouponCode)
+	}
+
+	if cartErr != nil {
+		h.logger.Error("Failed to apply coupon",
+			zap.Error(cartErr),
+			zap.String("identifier", cartIdentifier),
+			zap.String("coupon_code", req.CouponCode))
+
+		// Check if it's a validation error
+		if strings.Contains(cartErr.Error(), "invalid coupon") ||
+			strings.Contains(cartErr.Error(), "cannot be used") ||
+			strings.Contains(cartErr.Error(), "cart is empty") {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   cartErr.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to apply coupon",
+		})
+		return
+	}
+
+	// Convert cart to response structure
+	cartModel, ok := cart.(*models.Cart)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Invalid cart data",
+		})
+		return
+	}
+
+	total := round2Session(cartModel.TotalPrice)
+	discountedTotal := round2Session(total - discount)
+
+	response := gin.H{
+		"success": true,
+		"data": gin.H{
+			"cart_total":       total,
+			"discount_amount":  discount,
+			"discounted_total": discountedTotal,
+		},
+		"message": "Coupon applied successfully",
+	}
+
+	// Add session ID to response for anonymous users
+	if !isAuthenticated {
+		response["data"].(gin.H)["session_id"] = cartIdentifier
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// RemoveCoupon removes a coupon from the cart (works for both authenticated and session-based)
+// @Summary Remove coupon from cart
+// @Description Remove the applied discount coupon from the cart (works for both authenticated and anonymous users)
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Param X-Session-ID header string false "Session ID for anonymous users"
+// @Success 200 {object} map[string]interface{} "Coupon removed successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/remove-coupon [delete]
+func (h *SessionCartHandler) RemoveCoupon(c *gin.Context) {
+	cartIdentifier, isAuthenticated, err := h.getCartIdentifier(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid session ID",
+		})
+		return
+	}
+
+	var cart interface{}
+	var cartErr error
+
+	if isAuthenticated {
+		// Use regular cart service for authenticated users
+		cart, cartErr = h.cartService.RemoveCoupon(c.Request.Context(), cartIdentifier)
+	} else {
+		// Use session cart service for anonymous users
+		cart, cartErr = h.sessionCartService.RemoveCouponFromSessionCart(c.Request.Context(), cartIdentifier)
+	}
+
+	if cartErr != nil {
+		h.logger.Error("Failed to remove coupon",
+			zap.Error(cartErr),
+			zap.String("identifier", cartIdentifier))
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to remove coupon",
+		})
+		return
+	}
+
+	// Convert cart to response structure
+	cartModel, ok := cart.(*models.Cart)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Invalid cart data",
+		})
+		return
+	}
+
+	// Get the original total price (without any discount)
+	originalTotal := round2Session(cartModel.TotalPrice)
+
+	response := gin.H{
+		"success": true,
+		"data": gin.H{
+			"cart_total":       originalTotal,
+			"discount_amount":  0,
+			"discounted_total": originalTotal,
+			"coupon":           nil,
+		},
+		"message": "Coupon removed successfully",
+	}
+
+	// Add session ID to response for anonymous users
+	if !isAuthenticated {
+		response["data"].(gin.H)["session_id"] = cartIdentifier
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// ValidateCoupon validates a coupon for the cart without applying it (works for both authenticated and session-based)
+// @Summary Validate coupon for cart
+// @Description Validate a discount coupon for the cart without applying it (works for both authenticated and anonymous users)
+// @Tags Cart
+// @Accept json
+// @Produce json
+// @Param X-Session-ID header string false "Session ID for anonymous users"
+// @Param coupon_code query string true "Coupon code to validate"
+// @Success 200 {object} map[string]interface{} "Coupon validation result"
+// @Failure 400 {object} map[string]interface{} "Invalid request or coupon"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /cart/validate-coupon [get]
+func (h *SessionCartHandler) ValidateCoupon(c *gin.Context) {
+	cartIdentifier, isAuthenticated, err := h.getCartIdentifier(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid session ID",
+		})
+		return
+	}
+
+	couponCode := c.Query("coupon_code")
+	if couponCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Coupon code is required",
+		})
+		return
+	}
+
+	var cart interface{}
+	var discount float64
+	var cartErr error
+
+	if isAuthenticated {
+		// For authenticated users, we can use the existing coupon service validation
+		// Get the cart first to get the total
+		cart, cartErr = h.cartService.GetUserCart(c.Request.Context(), cartIdentifier)
+		if cartErr == nil {
+			cartModel, ok := cart.(*models.Cart)
+			if ok && cartModel != nil && len(cartModel.Items) > 0 {
+				// Use coupon service to validate
+				// Note: This would require adding a validation method to the coupon service
+				// For now, we'll use the session cart validation logic
+				cart, discount, cartErr = h.sessionCartService.ValidateCouponForSessionCart(c.Request.Context(), cartIdentifier, couponCode)
+			} else {
+				cartErr = fmt.Errorf("cart is empty")
+			}
+		}
+	} else {
+		// Use session cart service for anonymous users
+		cart, discount, cartErr = h.sessionCartService.ValidateCouponForSessionCart(c.Request.Context(), cartIdentifier, couponCode)
+	}
+
+	if cartErr != nil {
+		h.logger.Error("Failed to validate coupon",
+			zap.Error(cartErr),
+			zap.String("identifier", cartIdentifier),
+			zap.String("coupon_code", couponCode))
+
+		// Check if it's a validation error
+		if strings.Contains(cartErr.Error(), "invalid coupon") ||
+			strings.Contains(cartErr.Error(), "cannot be used") ||
+			strings.Contains(cartErr.Error(), "cart is empty") {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   cartErr.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to validate coupon",
+		})
+		return
+	}
+
+	// Convert cart to response structure
+	cartModel, ok := cart.(*models.Cart)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Invalid cart data",
+		})
+		return
+	}
+
+	total := round2Session(cartModel.TotalPrice)
+	discountedTotal := round2Session(total - discount)
+
+	response := gin.H{
+		"success": true,
+		"data": gin.H{
+			"cart_total":       total,
+			"discount_amount":  discount,
+			"discounted_total": discountedTotal,
+			"is_valid":         true,
+		},
+		"message": "Coupon is valid",
+	}
+
+	// Add session ID to response for anonymous users
+	if !isAuthenticated {
+		response["data"].(gin.H)["session_id"] = cartIdentifier
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // round2Session rounds a float64 to 2 decimal places

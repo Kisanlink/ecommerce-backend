@@ -41,7 +41,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	// Create services
 	addressService := NewAddressService(repoManager, logger)
 	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, repoManager.GetDBManager(), logger)
-	sessionCartService := NewSessionCartService(repoManager.CartRepository, repoManager.ProductRepository, logger)
+	sessionCartService := NewSessionCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, logger)
 	sessionFavoriteService := NewSessionFavoriteService(repoManager.FavoriteRepository, repoManager.ProductRepository, repoManager.ImageRepository, repoManager.InventoryRepository, logger)
 	deliveryService := NewDeliveryService(repoManager, logger)
 	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, s3Service, logger)
