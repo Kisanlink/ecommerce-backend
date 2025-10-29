@@ -40,6 +40,11 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 
 		// Set CORS headers
 		if originAllowed {
+			// If wildcard is allowed but credentials are enabled, return the specific origin instead of '*'
+			if allowedOrigin == "*" && config.AllowCredentials && origin != "" {
+				allowedOrigin = origin
+				c.Header("Vary", "Origin")
+			}
 			c.Header("Access-Control-Allow-Origin", allowedOrigin)
 		} else if origin != "" && config.Debug && logger != nil {
 			logger.Warn("CORS: Origin not allowed",
@@ -126,7 +131,7 @@ func GetCORSOriginsFromEnv() []string {
 func GetCORSMethodsFromEnv() []string {
 	methods := os.Getenv("CORS_ALLOWED_METHODS")
 	if methods == "" {
-		return []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+		return []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
 	}
 	return strings.Split(methods, ",")
 }
@@ -198,7 +203,7 @@ func GetCORSDebugFromEnv() bool {
 
 // DefaultCORSConfig returns a default CORS configuration based on environment variables
 func DefaultCORSConfig() CORSConfig {
-	return CORSConfig{
+	cfg := CORSConfig{
 		AllowedOrigins:   GetCORSOriginsFromEnv(),
 		AllowedMethods:   GetCORSMethodsFromEnv(),
 		AllowedHeaders:   GetCORSHeadersFromEnv(),
@@ -208,6 +213,20 @@ func DefaultCORSConfig() CORSConfig {
 		AllowWildcard:    GetCORSAllowWildcardFromEnv(),
 		Debug:            GetCORSDebugFromEnv(),
 	}
+
+	// Ensure OPTIONS is always permitted for preflight requests
+	hasOptions := false
+	for _, m := range cfg.AllowedMethods {
+		if strings.EqualFold(strings.TrimSpace(m), "OPTIONS") {
+			hasOptions = true
+			break
+		}
+	}
+	if !hasOptions {
+		cfg.AllowedMethods = append(cfg.AllowedMethods, "OPTIONS")
+	}
+
+	return cfg
 }
 
 // CartCORSConfig returns a CORS configuration specifically for cart routes
@@ -234,6 +253,8 @@ func APICORSConfig() CORSConfig {
 	config.AllowedHeaders = append(config.AllowedHeaders,
 		"X-API-Version",
 		"X-Request-ID",
+		// Allow session header used by frontend to avoid failing preflights
+		"X-Session-ID",
 	)
 	return config
 }
