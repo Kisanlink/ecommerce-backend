@@ -4,7 +4,6 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
-	"github.com/Kisanlink/ecommerce-backend/internal/routes/address"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/admin"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/routes/cart"
@@ -61,7 +60,6 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
 		reviews.RegisterReviewRoutes(v1, serviceManager, repoManager, logger) // Add review routes
 		coupons.RegisterCouponRoutes(v1, repoManager, serviceManager, logger) // Add coupon routes
-		address.RegisterAddressRoutes(v1, repoManager, serviceManager)        // Add address routes
 
 		// Register image routes
 		imageHandler := handlers.NewImageHandler(serviceManager.ImageService, nil, logger) // AuthContext will be set in the handler

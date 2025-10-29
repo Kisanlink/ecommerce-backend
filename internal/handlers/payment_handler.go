@@ -270,10 +270,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("flow_step", "missing_address_id"))
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "shipping_address_id is required",
-			"message": "Please select an address from your saved addresses or create a new one",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "shipping_address_id is required"})
 		return
 	}
 
@@ -303,10 +300,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Error(err),
 			zap.String("error_type", "address_resolution_error"),
 			zap.String("flow_step", "address_resolution_failed"))
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "Invalid shipping_address_id",
-			"message": "The selected address is not valid or has been deleted. Please select a different address.",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid shipping_address_id"})
 		return
 	}
 

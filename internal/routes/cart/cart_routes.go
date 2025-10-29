@@ -34,9 +34,6 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		if serviceManager.DeliveryService != nil {
 			cartHandler.SetDeliveryService(serviceManager.DeliveryService)
 		}
-		if serviceManager.AddressService != nil {
-			cartHandler.SetAddressService(serviceManager.AddressService)
-		}
 	} else {
 		logger.Error("Cart service not available in service manager")
 	}
