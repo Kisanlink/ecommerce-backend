@@ -41,6 +41,9 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 	// Public cart routes (no authentication required, but can detect auth if present)
 	cart := r.Group("/cart")
 
+	// Apply cart-specific CORS middleware
+	cart.Use(middleware.CORSMiddlewareWithConfig(middleware.CartCORSConfig()))
+
 	// Apply optional authentication middleware to detect auth when present
 	cart.Use(middleware.OptionalFirebaseAuth())
 
@@ -99,6 +102,8 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 	// Authenticated-only cart routes (require authentication)
 	if cartHandler != nil {
 		authenticatedCart := r.Group("/cart")
+		// Apply cart-specific CORS middleware for authenticated routes too
+		authenticatedCart.Use(middleware.CORSMiddlewareWithConfig(middleware.CartCORSConfig()))
 		authenticatedCart.Use(middleware.FirebaseAuthMiddleware())
 
 		// Advanced cart operations (require authentication)
