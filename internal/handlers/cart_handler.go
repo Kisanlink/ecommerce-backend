@@ -16,10 +16,11 @@ import (
 	"go.uber.org/zap"
 ) // CartHandler handles cart operations using the cart service
 type CartHandler struct {
-	cartService services.CartServiceInterface
-	logger      *zap.Logger
-	authContext *auth.AuthContext
-	deliverySvc services.DeliveryServiceInterface
+	cartService    services.CartServiceInterface
+	addressService services.AddressServiceInterface
+	logger         *zap.Logger
+	authContext    *auth.AuthContext
+	deliverySvc    services.DeliveryServiceInterface
 }
 
 // Coupon represents a simple coupon configuration for runtime validation
@@ -34,6 +35,11 @@ func NewCartHandler(cartService services.CartServiceInterface, logger *zap.Logge
 		logger:      logger,
 		authContext: auth.NewAuthContext(),
 	}
+}
+
+// SetAddressService allows wiring the address service for address history
+func (h *CartHandler) SetAddressService(svc services.AddressServiceInterface) {
+	h.addressService = svc
 }
 
 // SetDeliveryService allows wiring the delivery service for checkout flows
@@ -671,6 +677,17 @@ func (h *CartHandler) EstimateShipping(c *gin.Context) {
 		zap.Int("options_count", len(est.Options)),
 		zap.String("flow_step", "estimation_success"))
 
+	// Get user's last 4 addresses for quick selection
+	var userAddresses []*models.Address
+	if h.addressService != nil {
+		addresses, err := h.addressService.GetLast4Addresses(c.Request.Context(), userID)
+		if err != nil {
+			h.logger.Warn("Failed to get user addresses for history", zap.Error(err))
+		} else {
+			userAddresses = addresses
+		}
+	}
+
 	// Transform the DeliveryEstimate response to match expected format
 	response := gin.H{
 		"success": true,
@@ -679,6 +696,7 @@ func (h *CartHandler) EstimateShipping(c *gin.Context) {
 			"subtotal":         est.Subtotal,
 			"user_id":          est.UserID,
 			"address_id":       est.AddressID, // Include the address_id in response
+			"user_addresses":   userAddresses, // Include user's address history
 		},
 		"message": "Shipping estimated successfully",
 	}

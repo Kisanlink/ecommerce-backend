@@ -21,6 +21,14 @@ type AddressServiceInterface interface {
 	DeleteAddress(ctx context.Context, userID, addressID string) error
 	SetDefaultAddress(ctx context.Context, userID, addressID string) error
 	FindOrCreateAddress(ctx context.Context, userID, street, city, state, postalCode, country string) (*models.Address, error)
+
+	// NEW: Address history methods
+	GetLast4Addresses(ctx context.Context, userID string) ([]*models.Address, error)
+	GetAddressHistoryFromOrders(ctx context.Context, userID string) ([]*models.Address, error)
+	GetAllUserAddresses(ctx context.Context, userID string) ([]*models.Address, error)
+	SaveAddressFromOrder(ctx context.Context, userID string, orderAddressID string) (*models.Address, error)
+	UpdateAddressFromOrder(ctx context.Context, userID, addressID string, req *models.Address) (*models.Address, error)
+	ManageAddressLimit(ctx context.Context, userID string) error
 }
 
 type AddressService struct {
@@ -232,4 +240,259 @@ func (s *AddressService) getUserNames(ctx context.Context, userID string) (strin
 
 	// Final fallback: return generic names
 	return "User", ""
+}
+
+// GetLast4Addresses retrieves the last 4 addresses used by the user
+func (s *AddressService) GetLast4Addresses(ctx context.Context, userID string) ([]*models.Address, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+
+	// Get all user addresses ordered by updated_at desc, limit to 4
+	filter := base.NewFilterBuilder().
+		Where("user_id", base.OpEqual, userID).
+		Sort("updated_at", "desc").
+		Page(1, 4).
+		Build()
+
+	var addresses []*models.Address
+	if err := s.repoManager.GetDBManager().List(ctx, filter, &addresses); err != nil {
+		return nil, fmt.Errorf("failed to get last 4 addresses: %w", err)
+	}
+
+	return addresses, nil
+}
+
+// GetAddressHistoryFromOrders retrieves all unique addresses used in previous orders
+func (s *AddressService) GetAddressHistoryFromOrders(ctx context.Context, userID string) ([]*models.Address, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+
+	// Get all orders for the user
+	orders, err := s.repoManager.OrderRepository.GetOrdersByUserWithDetails(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user orders: %w", err)
+	}
+
+	// Extract unique addresses from orders
+	addressMap := make(map[string]*models.Address)
+
+	for _, order := range orders {
+		if order.ShippingAddress != nil {
+			// Create a unique key based on address components
+			addressKey := fmt.Sprintf("%s|%s|%s|%s|%s",
+				order.ShippingAddress.AddressLine1,
+				order.ShippingAddress.City,
+				order.ShippingAddress.State,
+				order.ShippingAddress.PostalCode,
+				order.ShippingAddress.Country)
+
+			// Convert OrderAddress to Address for consistency
+			baseModel := &base.BaseModel{}
+			baseModel.ID = order.ShippingAddress.ID
+			address := &models.Address{
+				BaseModel:    baseModel,
+				UserID:       userID,
+				Type:         models.AddressTypeShipping,
+				FirstName:    "Previous Order", // You might want to get this from order customer
+				LastName:     "",
+				AddressLine1: order.ShippingAddress.AddressLine1,
+				AddressLine2: order.ShippingAddress.AddressLine2,
+				City:         order.ShippingAddress.City,
+				State:        order.ShippingAddress.State,
+				PostalCode:   order.ShippingAddress.PostalCode,
+				Country:      order.ShippingAddress.Country,
+				Phone:        "",
+				IsDefault:    false,
+			}
+
+			addressMap[addressKey] = address
+		}
+	}
+
+	// Convert map to slice
+	var addresses []*models.Address
+	for _, addr := range addressMap {
+		addresses = append(addresses, addr)
+	}
+
+	return addresses, nil
+}
+
+// GetAllUserAddresses retrieves both saved addresses and address history
+func (s *AddressService) GetAllUserAddresses(ctx context.Context, userID string) ([]*models.Address, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+
+	// Get saved addresses
+	savedAddresses, err := s.GetUserAddresses(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get saved addresses: %w", err)
+	}
+
+	// Get address history from orders
+	historyAddresses, err := s.GetAddressHistoryFromOrders(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get address history: %w", err)
+	}
+
+	// Combine and deduplicate
+	addressMap := make(map[string]*models.Address)
+
+	// Add saved addresses first
+	for _, addr := range savedAddresses {
+		addressKey := fmt.Sprintf("%s|%s|%s|%s|%s",
+			addr.AddressLine1, addr.City, addr.State, addr.PostalCode, addr.Country)
+		addressMap[addressKey] = addr
+	}
+
+	// Add history addresses (won't overwrite saved addresses)
+	for _, addr := range historyAddresses {
+		addressKey := fmt.Sprintf("%s|%s|%s|%s|%s",
+			addr.AddressLine1, addr.City, addr.State, addr.PostalCode, addr.Country)
+		if _, exists := addressMap[addressKey]; !exists {
+			addressMap[addressKey] = addr
+		}
+	}
+
+	// Convert map to slice
+	var addresses []*models.Address
+	for _, addr := range addressMap {
+		addresses = append(addresses, addr)
+	}
+
+	return addresses, nil
+}
+
+// SaveAddressFromOrder saves an address from order history to user's saved addresses
+func (s *AddressService) SaveAddressFromOrder(ctx context.Context, userID string, orderAddressID string) (*models.Address, error) {
+	if userID == "" || orderAddressID == "" {
+		return nil, fmt.Errorf("user ID and order address ID are required")
+	}
+
+	// Get the order address
+	orderAddress, err := s.repoManager.OrderRepository.GetOrderAddress(ctx, orderAddressID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get order address: %w", err)
+	}
+
+	// Check if similar address already exists
+	existingAddresses, err := s.GetUserAddresses(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get existing addresses: %w", err)
+	}
+
+	// Check for duplicates
+	for _, existing := range existingAddresses {
+		if existing.AddressLine1 == orderAddress.AddressLine1 &&
+			existing.City == orderAddress.City &&
+			existing.State == orderAddress.State &&
+			existing.PostalCode == orderAddress.PostalCode {
+			// Address already exists, return it
+			return existing, nil
+		}
+	}
+
+	// Create new address from order address
+	firstName, lastName := s.getUserNames(ctx, userID)
+
+	newAddress := &models.Address{
+		UserID:       userID,
+		Type:         models.AddressTypeShipping,
+		FirstName:    firstName,
+		LastName:     lastName,
+		AddressLine1: orderAddress.AddressLine1,
+		AddressLine2: orderAddress.AddressLine2,
+		City:         orderAddress.City,
+		State:        orderAddress.State,
+		PostalCode:   orderAddress.PostalCode,
+		Country:      orderAddress.Country,
+		Phone:        "",
+		IsDefault:    false,
+	}
+
+	// Create the address
+	createdAddress, err := s.CreateAddress(ctx, userID, newAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create address from order: %w", err)
+	}
+
+	// Manage address limit (keep only last 4)
+	if err := s.ManageAddressLimit(ctx, userID); err != nil {
+		s.logger.Warn("Failed to manage address limit", zap.Error(err))
+	}
+
+	return createdAddress, nil
+}
+
+// UpdateAddressFromOrder updates an existing address from order data
+func (s *AddressService) UpdateAddressFromOrder(ctx context.Context, userID, addressID string, req *models.Address) (*models.Address, error) {
+	if userID == "" || addressID == "" {
+		return nil, fmt.Errorf("user ID and address ID are required")
+	}
+
+	// Get existing address
+	existing, err := s.GetAddressByID(ctx, userID, addressID)
+	if err != nil {
+		return nil, fmt.Errorf("address not found: %w", err)
+	}
+
+	// Update fields
+	existing.Type = req.Type
+	existing.FirstName = req.FirstName
+	existing.LastName = req.LastName
+	existing.Company = req.Company
+	existing.AddressLine1 = req.AddressLine1
+	existing.AddressLine2 = req.AddressLine2
+	existing.City = req.City
+	existing.State = req.State
+	existing.PostalCode = req.PostalCode
+	existing.Country = req.Country
+	existing.Phone = req.Phone
+
+	// Update in database
+	if err := s.addressRepo.UpdateAddress(ctx, existing); err != nil {
+		return nil, fmt.Errorf("failed to update address: %w", err)
+	}
+
+	return existing, nil
+}
+
+// ManageAddressLimit keeps only the last 4 addresses for a user
+func (s *AddressService) ManageAddressLimit(ctx context.Context, userID string) error {
+	if userID == "" {
+		return fmt.Errorf("user ID is required")
+	}
+
+	// Get all addresses for user ordered by updated_at desc
+	filter := base.NewFilterBuilder().
+		Where("user_id", base.OpEqual, userID).
+		Sort("updated_at", "desc").
+		Build()
+
+	var addresses []*models.Address
+	if err := s.repoManager.GetDBManager().List(ctx, filter, &addresses); err != nil {
+		return fmt.Errorf("failed to get user addresses: %w", err)
+	}
+
+	// If we have more than 4 addresses, delete the oldest ones
+	if len(addresses) > 4 {
+		addressesToDelete := addresses[4:] // Keep first 4, delete the rest
+
+		for _, addr := range addressesToDelete {
+			if err := s.DeleteAddress(ctx, userID, addr.ID); err != nil {
+				s.logger.Warn("Failed to delete old address",
+					zap.String("address_id", addr.ID),
+					zap.Error(err))
+			}
+		}
+
+		s.logger.Info("Cleaned up old addresses",
+			zap.String("user_id", userID),
+			zap.Int("deleted_count", len(addressesToDelete)))
+	}
+
+	return nil
 }

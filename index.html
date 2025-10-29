@@ -52,12 +52,7 @@
             background-color: #ccc;
             cursor: not-allowed;
         }
-        .google-btn {
-            background-color: #db4437;
-        }
-        .google-btn:hover {
-            background-color: #c23321;
-        }
+        
         .phone-btn {
             background-color: #34a853;
         }
@@ -123,23 +118,6 @@
         </div>
 
         <div id="auth-forms">
-            <!-- Email Authentication -->
-            <div class="auth-section">
-                <h3>📧 Email Authentication</h3>
-                <div>
-                    <input type="email" id="email" placeholder="Enter your email" />
-                    <input type="password" id="password" placeholder="Enter your password" />
-                    <button onclick="signInWithEmail()">Sign In with Email</button>
-                    <button onclick="signUpWithEmail()">Sign Up with Email</button>
-                </div>
-            </div>
-
-            <!-- Google Authentication -->
-            <div class="auth-section">
-                <h3>🔍 Google Authentication</h3>
-                <button class="google-btn" onclick="signInWithGoogle()">Sign In with Google</button>
-            </div>
-
             <!-- Phone Authentication -->
             <div class="auth-section">
                 <h3>📱 Phone Authentication</h3>
@@ -191,7 +169,7 @@
         function initializeRecaptcha() {
             if (!recaptchaVerifier) {
                 recaptchaVerifier = new firebase.auth.RecaptchaVerifier('recaptcha-container', {
-                    'size': 'normal', // Changed from invisible to normal for better user experience
+                    'size': 'invisible', // Changed from invisible to normal for better user experience
                     'callback': (response) => {
                         console.log('reCAPTCHA solved');
                         showStatus('reCAPTCHA verified successfully', 'success');
@@ -241,63 +219,7 @@
             document.getElementById('auth-forms').classList.remove('hidden');
         }
 
-        // Email Sign In
-        async function signInWithEmail() {
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            
-            if (!email || !password) {
-                showStatus('Please enter both email and password', 'error');
-                return;
-            }
-
-            try {
-                showStatus('Signing in...', 'info');
-                const userCredential = await auth.signInWithEmailAndPassword(email, password);
-                showStatus('Successfully signed in with email!', 'success');
-                showUserInfo(userCredential.user);
-            } catch (error) {
-                showStatus(`Sign in failed: ${error.message}`, 'error');
-            }
-        }
-
-        // Email Sign Up
-        async function signUpWithEmail() {
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            
-            if (!email || !password) {
-                showStatus('Please enter both email and password', 'error');
-                return;
-            }
-
-            if (password.length < 6) {
-                showStatus('Password must be at least 6 characters', 'error');
-                return;
-            }
-
-            try {
-                showStatus('Creating account...', 'info');
-                const userCredential = await auth.createUserWithEmailAndPassword(email, password);
-                showStatus('Account created successfully!', 'success');
-                showUserInfo(userCredential.user);
-            } catch (error) {
-                showStatus(`Sign up failed: ${error.message}`, 'error');
-            }
-        }
-
-        // Google Sign In
-        async function signInWithGoogle() {
-            try {
-                showStatus('Signing in with Google...', 'info');
-                const provider = new firebase.auth.GoogleAuthProvider();
-                const result = await auth.signInWithPopup(provider);
-                showStatus('Successfully signed in with Google!', 'success');
-                showUserInfo(result.user);
-            } catch (error) {
-                showStatus(`Google sign in failed: ${error.message}`, 'error');
-            }
-        }
+        
 
         // Send Phone Verification Code
         async function sendPhoneVerificationCode() {
@@ -824,41 +746,11 @@
             }
         });
 
-        // Test backend connectivity
-        async function testBackendConnection() {
-            try {
-                const response = await fetch('http://127.0.0.1:8080/api/v1/auth/phone/send-code', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        phone_number: '+1234567890',
-                        recaptcha_token: 'test'
-                    })
-                });
-                
-                console.log('Backend test response status:', response.status);
-                const responseText = await response.text();
-                console.log('Backend test response:', responseText);
-                
-                if (response.status === 400) {
-                    showStatus('Backend is running and accessible. Ready for phone authentication.', 'success');
-                } else {
-                    showStatus('Backend responded with unexpected status. Check server configuration.', 'error');
-                }
-            } catch (error) {
-                console.error('Backend connection test failed:', error);
-                showStatus('Backend server is not accessible. Please ensure the server is running.', 'error');
-            }
-        }
+        
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', function() {
-            showStatus('Firebase Authentication Test Page Ready. Testing backend connection...', 'info');
-            
-            // Test backend connection
-            testBackendConnection();
+            showStatus('Firebase Authentication Test Page Ready.', 'info');
             
             // Validate existing session on page load
             validateSession();
