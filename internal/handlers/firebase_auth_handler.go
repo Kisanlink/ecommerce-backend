@@ -304,20 +304,41 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 	if resp.StatusCode != http.StatusOK {
 		var firebaseError FirebaseErrorResponse
 		if err := json.Unmarshal(body, &firebaseError); err == nil {
+			// Log the actual Firebase error for debugging
+			fmt.Printf("Firebase Auth Error: %+v\n", firebaseError)
+			fmt.Printf("Firebase Error Body: %s\n", string(body))
+			
 			// Map Firebase error messages to user-friendly messages
+			// Check both Error.Message and Error.Errors array
 			message := "Invalid email or password"
-			switch firebaseError.Error.Message {
+			errorMsg := firebaseError.Error.Message
+			
+			// Check Errors array first (more specific)
+			if len(firebaseError.Error.Errors) > 0 {
+				errorMsg = firebaseError.Error.Errors[0].Message
+			}
+			
+			switch errorMsg {
 			case "EMAIL_NOT_FOUND":
 				message = "User not found"
 			case "INVALID_PASSWORD":
 				message = "Invalid password"
+			case "INVALID_EMAIL":
+				message = "Invalid email format"
 			case "USER_DISABLED":
 				message = "Account has been disabled"
 			case "TOO_MANY_ATTEMPTS_TRY_LATER":
 				message = "Too many failed attempts. Please try again later"
+			case "OPERATION_NOT_ALLOWED":
+				message = "Email/password authentication is not enabled for this project"
+			default:
+				// Return the actual Firebase error message for debugging
+				message = fmt.Sprintf("Authentication failed: %s", errorMsg)
 			}
 			utils.RespondWithError(c, http.StatusUnauthorized, message, nil)
 		} else {
+			// Log raw error body if unmarshal fails
+			fmt.Printf("Failed to parse Firebase error. Raw response: %s\n", string(body))
 			utils.RespondWithError(c, http.StatusUnauthorized, "Authentication failed", nil)
 		}
 		return
@@ -386,6 +407,9 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			userData["is_verified"] = localUser["is_verified"]
 			userData["is_active"] = localUser["is_active"]
 			userData["phone_number"] = localUser["phone_number"]
+			if role, exists := localUser["role"]; exists {
+				userData["role"] = role
+			}
 		}
 
 		// Return successful authentication response with real Firebase tokens
@@ -414,6 +438,9 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			userData["is_verified"] = localUser["is_verified"]
 			userData["is_active"] = localUser["is_active"]
 			userData["phone_number"] = localUser["phone_number"]
+			if role, exists := localUser["role"]; exists {
+				userData["role"] = role
+			}
 		}
 
 		utils.RespondWithSuccess(c, gin.H{
