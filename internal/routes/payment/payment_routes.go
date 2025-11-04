@@ -3,19 +3,20 @@ package payment
 import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
+	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
 // RegisterPaymentRoutes registers all payment related routes
-func RegisterPaymentRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager) {
+func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
 	// Initialize logger
 	logger, _ := zap.NewProduction()
 
 	// Create payment service and handler
 	paymentService := services.NewPaymentService(logger)
-	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, serviceManager.WhatsAppService, logger) // Payment routes (requires authentication)
+	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, serviceManager.WhatsAppService, serviceManager.UserService, serviceManager.ProductService, logger) // Payment routes (requires authentication)
 	payments := r.Group("/payments")
 	payments.Use(middleware.FirebaseAuthMiddleware())
 	{
@@ -32,6 +33,37 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, serviceManager *services.ServiceM
 	{
 		webhooks.POST("/razorpay", paymentHandler.ProcessWebhook) // Razorpay webhook
 	}
+
+	// Magic Checkout routes (public endpoints called by Razorpay)
+	magicCheckout := r.Group("/magic-checkout")
+	{
+		// Initialize services for Magic Checkout handler
+		paymentServiceForMC := services.NewPaymentService(logger)
+		couponRepo := repositories.NewCouponRepository(repoManager.GetDBManager(), logger)
+		couponRuleRepo := repositories.NewCouponRuleRepository(repoManager.GetDBManager(), logger)
+		couponService := services.NewCouponService(couponRepo, couponRuleRepo, logger)
+
+		magicCheckoutHandler := handlers.NewMagicCheckoutHandler(
+			paymentServiceForMC,
+			couponService,
+			serviceManager.DeliveryService,
+			serviceManager.CartService,
+			serviceManager.OrderService,
+			logger,
+		)
+
+		// These endpoints are called by Razorpay Magic Checkout
+		// They must be publicly accessible (no auth middleware)
+		magicCheckout.POST("/get-promotions", magicCheckoutHandler.GetPromotions)
+		magicCheckout.POST("/apply-promotion", magicCheckoutHandler.ApplyPromotion)
+		magicCheckout.POST("/shipping-info", magicCheckoutHandler.GetShippingInfo)
+	}
+
+	// Magic Checkout order creation endpoint (supports both authenticated and guest)
+	// Note: This endpoint is in /payments group but doesn't require auth (optional auth)
+	magicPayments := r.Group("/payments")
+	magicPayments.Use(middleware.OptionalFirebaseAuth()) // Optional auth - verifies token if provided
+	magicPayments.POST("/magic-checkout/create-order", paymentHandler.CreateMagicCheckoutOrder)
 
 	// Legacy routes for compatibility (deprecated)
 	payments.POST("/process", func(c *gin.Context) {

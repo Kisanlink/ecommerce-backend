@@ -26,32 +26,97 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 		originAllowed := false
 		var allowedOrigin string
 
-		for _, allowed := range config.AllowedOrigins {
-			if allowed == "*" && config.AllowWildcard {
-				originAllowed = true
-				allowedOrigin = "*"
-				break
-			} else if origin == allowed {
+		// Handle empty or null origin (same-origin requests, direct navigation, file:// protocol)
+		// For same-origin requests (no Origin header), browsers don't send Origin
+		// For file:// protocol or some cases, Origin might be "null"
+		if origin == "" || origin == "null" {
+			// Always allow null origin (file:// protocol) - this is safe as it's a local protocol
+			originAllowed = true
+			allowedOrigin = "*"
+		}
+
+		// Check against allowed origins list
+		if !originAllowed && origin != "" && origin != "null" {
+			for _, allowed := range config.AllowedOrigins {
+				if allowed == "*" && config.AllowWildcard {
+					originAllowed = true
+					allowedOrigin = "*"
+					break
+				} else if origin == allowed {
+					originAllowed = true
+					allowedOrigin = origin
+					break
+				}
+			}
+
+			// Fallback: Allow ngrok domains for development/testing
+			// This helps with testing via ngrok tunnels
+			if !originAllowed && strings.Contains(origin, "ngrok") {
 				originAllowed = true
 				allowedOrigin = origin
-				break
+				if config.Debug && logger != nil {
+					logger.Info("CORS: Allowing ngrok domain",
+						zap.String("origin", origin),
+						zap.String("host", c.Request.Host),
+						zap.String("path", c.Request.URL.Path),
+					)
+				}
 			}
 		}
 
 		// Set CORS headers
 		if originAllowed {
 			// If wildcard is allowed but credentials are enabled, return the specific origin instead of '*'
-			if allowedOrigin == "*" && config.AllowCredentials && origin != "" {
+			if allowedOrigin == "*" && config.AllowCredentials && origin != "" && origin != "null" {
 				allowedOrigin = origin
 				c.Header("Vary", "Origin")
 			}
 			c.Header("Access-Control-Allow-Origin", allowedOrigin)
-		} else if origin != "" && config.Debug && logger != nil {
-			logger.Warn("CORS: Origin not allowed",
-				zap.String("origin", origin),
-				zap.Strings("allowed_origins", config.AllowedOrigins),
-				zap.String("path", c.Request.URL.Path),
-			)
+		} else {
+			// Fallback: Allow localhost/127.0.0.1 requests for development even if not in allowed list
+			host := c.Request.Host
+			if strings.HasPrefix(host, "localhost:") || strings.HasPrefix(host, "127.0.0.1:") {
+				originAllowed = true
+				allowedOrigin = "*"
+				c.Header("Access-Control-Allow-Origin", allowedOrigin)
+				if config.Debug && logger != nil {
+					logger.Info("CORS: Allowing localhost request",
+						zap.String("origin", origin),
+						zap.String("host", host),
+						zap.String("path", c.Request.URL.Path),
+					)
+				}
+			} else if strings.Contains(host, "ngrok") {
+				// Allow ngrok domains for development/testing
+				originAllowed = true
+				if origin != "" && origin != "null" {
+					allowedOrigin = origin
+				} else {
+					allowedOrigin = "*"
+				}
+				c.Header("Access-Control-Allow-Origin", allowedOrigin)
+				if config.Debug && logger != nil {
+					logger.Info("CORS: Allowing ngrok request",
+						zap.String("origin", origin),
+						zap.String("host", host),
+						zap.String("path", c.Request.URL.Path),
+					)
+				}
+			} else if origin != "" && origin != "null" && config.Debug && logger != nil {
+				logger.Warn("CORS: Origin not allowed",
+					zap.String("origin", origin),
+					zap.String("host", host),
+					zap.Strings("allowed_origins", config.AllowedOrigins),
+					zap.String("path", c.Request.URL.Path),
+				)
+			} else if (origin == "" || origin == "null") && config.Debug && logger != nil {
+				// Log when origin is missing (might indicate file:// protocol or same-origin)
+				logger.Info("CORS: Request without Origin header",
+					zap.String("host", host),
+					zap.String("path", c.Request.URL.Path),
+					zap.String("method", c.Request.Method),
+				)
+			}
 		}
 
 		// Set credentials header
@@ -84,10 +149,47 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 			if config.Debug && logger != nil {
 				logger.Info("CORS: Handling preflight request",
 					zap.String("origin", origin),
+					zap.String("host", c.Request.Host),
 					zap.String("method", c.Request.Header.Get("Access-Control-Request-Method")),
 					zap.String("headers", c.Request.Header.Get("Access-Control-Request-Headers")),
+					zap.Bool("origin_allowed", originAllowed),
 				)
 			}
+
+			// For preflight, always set CORS headers if origin is allowed or if it's a localhost/ngrok request
+			if !originAllowed {
+				// Check again for localhost or ngrok if not already allowed
+				host := c.Request.Host
+				if strings.HasPrefix(host, "localhost:") || strings.HasPrefix(host, "127.0.0.1:") {
+					originAllowed = true
+					allowedOrigin = "*"
+					c.Header("Access-Control-Allow-Origin", allowedOrigin)
+				} else if strings.Contains(host, "ngrok") {
+					originAllowed = true
+					if origin != "" && origin != "null" {
+						allowedOrigin = origin
+					} else {
+						allowedOrigin = "*"
+					}
+					c.Header("Access-Control-Allow-Origin", allowedOrigin)
+				}
+			}
+
+			// Always set other CORS headers for preflight even if origin check failed
+			// This helps with debugging
+			if len(config.AllowedMethods) > 0 {
+				c.Header("Access-Control-Allow-Methods", strings.Join(config.AllowedMethods, ", "))
+			}
+			if len(config.AllowedHeaders) > 0 {
+				c.Header("Access-Control-Allow-Headers", strings.Join(config.AllowedHeaders, ", "))
+			}
+			if config.AllowCredentials && originAllowed {
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
+			if config.MaxAge > 0 {
+				c.Header("Access-Control-Max-Age", fmt.Sprintf("%d", config.MaxAge))
+			}
+
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
@@ -112,19 +214,27 @@ type CORSConfig struct {
 func GetCORSOriginsFromEnv() []string {
 	origins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if origins == "" {
-		// Default development origins
+		// Default development origins - include common localhost ports
 		return []string{
 			"http://localhost:3000",
 			"http://localhost:5173",
 			"http://127.0.0.1:5500",
 			"http://localhost:5500",
+			"http://127.0.0.1:8080",
+			"http://localhost:8080",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:5173",
 			"https://amrti.com",
 			"https://www.amrti.com",
 		}
 	}
 
-	// Split comma-separated origins
-	return strings.Split(origins, ",")
+	// Split comma-separated origins and trim whitespace
+	originList := strings.Split(origins, ",")
+	for i, o := range originList {
+		originList[i] = strings.TrimSpace(o)
+	}
+	return originList
 }
 
 // GetCORSMethodsFromEnv reads allowed methods from environment variables

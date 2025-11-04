@@ -423,30 +423,78 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	}
 
 	var pincode, destCity, destState string
+	var shippingAddressString string
 
-	// Try to use structured address data first (preferred method)
-	if order.ShippingAddrID != "" && s.repoManager != nil && s.repoManager.AddressRepository != nil {
+	// PRIORITY 1: Try to use OrderAddress (normalized address from order)
+	// This is used for Magic Checkout and new orders
+	if order.ShippingAddressID != "" && s.repoManager != nil && s.repoManager.OrderRepository != nil {
+		orderAddr, addrErr := s.repoManager.OrderRepository.GetOrderAddress(ctx, order.ShippingAddressID)
+		if addrErr == nil && orderAddr != nil {
+			pincode = orderAddr.PostalCode
+			destCity = orderAddr.City
+			destState = orderAddr.State
+			// Build address string from OrderAddress
+			line2 := ""
+			if orderAddr.AddressLine2 != "" {
+				line2 = ", " + orderAddr.AddressLine2
+			}
+			shippingAddressString = fmt.Sprintf("%s%s, %s, %s %s, %s",
+				orderAddr.AddressLine1, line2, orderAddr.City, orderAddr.State, orderAddr.PostalCode, orderAddr.Country)
+
+			s.logger.Info("Using OrderAddress for shipment",
+				zap.String("order_id", order.ID),
+				zap.String("address_id", order.ShippingAddressID),
+				zap.String("city", destCity),
+				zap.String("state", destState),
+				zap.String("pincode", pincode))
+		} else {
+			s.logger.Warn("Failed to fetch OrderAddress, trying next option",
+				zap.String("order_id", order.ID),
+				zap.String("address_id", order.ShippingAddressID),
+				zap.Error(addrErr))
+		}
+	}
+
+	// PRIORITY 2: Try to use legacy Address table (for backward compatibility)
+	if pincode == "" && order.ShippingAddrID != "" && s.repoManager != nil && s.repoManager.AddressRepository != nil {
 		addr, addrErr := s.repoManager.AddressRepository.GetAddressByID(ctx, order.UserID, order.ShippingAddrID)
 		if addrErr == nil && addr != nil {
 			pincode = addr.PostalCode
 			destCity = addr.City
 			destState = addr.State
-			s.logger.Info("Using structured address data for shipment",
+			// Build address string from Address
+			line2 := ""
+			if addr.AddressLine2 != "" {
+				line2 = ", " + addr.AddressLine2
+			}
+			name := addr.FirstName
+			if addr.LastName != "" {
+				name = name + " " + addr.LastName
+			}
+			shippingAddressString = fmt.Sprintf("%s, %s%s, %s, %s %s, %s",
+				name, addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country)
+
+			s.logger.Info("Using legacy Address for shipment",
 				zap.String("order_id", order.ID),
 				zap.String("address_id", order.ShippingAddrID),
 				zap.String("city", destCity),
 				zap.String("state", destState),
 				zap.String("pincode", pincode))
 		} else {
-			s.logger.Warn("Failed to fetch structured address, falling back to string parsing",
+			s.logger.Warn("Failed to fetch legacy address, falling back to string parsing",
 				zap.String("order_id", order.ID),
 				zap.String("address_id", order.ShippingAddrID),
 				zap.Error(addrErr))
 		}
 	}
 
-	// Fallback to parsing address string if structured data not available
+	// PRIORITY 3: Fallback to parsing address string if structured data not available
 	if pincode == "" {
+		// Use existing ShippingAddr string if available
+		if order.ShippingAddr != "" {
+			shippingAddressString = order.ShippingAddr
+		}
+
 		pincode = s.extractPincode(order.ShippingAddr)
 		if pincode == "" {
 			return &ShipmentResult{
@@ -463,6 +511,11 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 				Success: false,
 				Message: "Could not get city/state information for pincode",
 			}, fmt.Errorf("could not get city/state for pincode: %w", err)
+		}
+
+		// If address string is empty, build a basic one
+		if shippingAddressString == "" {
+			shippingAddressString = fmt.Sprintf("Address, %s, %s %s", destCity, destState, pincode)
 		}
 	}
 
@@ -543,10 +596,14 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	uniqueOrderID := fmt.Sprintf("%s_%d", order.ID, time.Now().Unix())
 
+	// Use the address string we built (from OrderAddress, Address, or parsed string)
 	// Include phone number subtly in the address - not highlighted, just there if needed
-	enhancedAddress := order.ShippingAddr
-	if custPhone != "" {
-		enhancedAddress = fmt.Sprintf("%s, %s", order.ShippingAddr, custPhone)
+	enhancedAddress := shippingAddressString
+	if enhancedAddress == "" {
+		enhancedAddress = order.ShippingAddr // Final fallback
+	}
+	if custPhone != "" && enhancedAddress != "" {
+		enhancedAddress = fmt.Sprintf("%s, %s", enhancedAddress, custPhone)
 	}
 
 	shipmentDetail := requests.DelhiveryShipmentDetail{

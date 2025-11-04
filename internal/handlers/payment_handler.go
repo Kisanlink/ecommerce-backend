@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"fmt"
 	"html/template"
@@ -29,17 +30,21 @@ type PaymentHandler struct {
 	orderService    services.OrderServiceInterface
 	deliveryService services.DeliveryServiceInterface
 	whatsappService *services.WhatsAppService
+	userService     *services.UserService
+	productService  *services.ProductService
 	logger          *zap.Logger
 	authContext     *auth.AuthContext
 }
 
 // NewPaymentHandler creates a new payment handler
-func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderService services.OrderServiceInterface, deliveryService services.DeliveryServiceInterface, whatsappService *services.WhatsAppService, logger *zap.Logger) *PaymentHandler {
+func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderService services.OrderServiceInterface, deliveryService services.DeliveryServiceInterface, whatsappService *services.WhatsAppService, userService *services.UserService, productService *services.ProductService, logger *zap.Logger) *PaymentHandler {
 	return &PaymentHandler{
 		paymentService:  paymentService,
 		orderService:    orderService,
 		deliveryService: deliveryService,
 		whatsappService: whatsappService,
+		userService:     userService,
+		productService:  productService,
 		logger:          logger,
 		authContext:     auth.NewAuthContext(),
 	}
@@ -634,6 +639,21 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID))
 
+		// Fetch Razorpay payment to get customer details (contact, email, address)
+		// Magic Checkout stores address and customer details in payment entity
+		h.logger.Info("Fetching Razorpay payment for customer details",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("payment_id", req.PaymentID))
+
+		rzpPayment, paymentErr := h.paymentService.GetPaymentStatus(c.Request.Context(), req.PaymentID)
+		if paymentErr != nil {
+			h.logger.Warn("Failed to fetch Razorpay payment - proceeding without payment metadata",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Error(paymentErr))
+		}
+
 		// Fetch Razorpay order to get notes (subtotal, cart_total, shipping_charges, shipping_address)
 		h.logger.Info("Fetching Razorpay order metadata",
 			zap.String("request_id", requestID),
@@ -657,6 +677,30 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		var shippingCharges float64 = 0
 		var etaMin, etaMax int = 0, 0
 		var firstName, lastName, mobile, mobileSecondary string
+
+		// Extract customer details from payment entity (Magic Checkout stores them here)
+		if rzpPayment != nil {
+			if rzpPayment.Contact != "" {
+				mobile = rzpPayment.Contact
+				h.logger.Info("Using contact from payment entity",
+					zap.String("request_id", requestID),
+					zap.String("contact", mobile))
+			}
+			if rzpPayment.Email != "" {
+				h.logger.Info("Email from payment entity",
+					zap.String("request_id", requestID),
+					zap.String("email", rzpPayment.Email))
+			}
+			// Extract address from payment notes (Magic Checkout stores structured address here)
+			if rzpPayment.Notes != nil {
+				if addrNote, ok := rzpPayment.Notes["address"].(string); ok && addrNote != "" {
+					shippingAddress = addrNote
+					h.logger.Info("Using address from payment notes",
+						zap.String("request_id", requestID),
+						zap.String("address", shippingAddress))
+				}
+			}
+		}
 		if rzpOrder != nil && rzpOrder.Notes != nil {
 			notes = rzpOrder.Notes
 			// Note: shipping_address removed from notes to reduce field count
@@ -858,6 +902,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("shipping_address", shippingAddress))
 			addressData = h.parseShippingAddressToOrderAddress(shippingAddress)
 		}
+
+		// Note: Address is already saved in the order via addressData
+		// The order will have the address stored in OrderAddress table
+		// For now, we store address in the order. To save to user's address book,
+		// we would need to add AddressService to PaymentHandler (can be done later)
 
 		// Create order - simplified approach, always create new order
 		order, err := h.orderService.CreateOrder(
@@ -1588,4 +1637,237 @@ func (h *PaymentHandler) parseShippingAddressToOrderAddress(shippingAddress stri
 		postalCode,
 		country,
 	)
+}
+
+// CreateMagicCheckoutOrder creates a Razorpay order specifically for Magic Checkout
+// @Summary Create Magic Checkout order
+// @Description Create a Razorpay order with line items for Magic Checkout
+// @Tags Payments
+// @Accept json
+// @Produce json
+// @Security FirebaseAuth optional
+// @Success 200 {object} map[string]interface{} "Magic Checkout order created"
+// @Failure 400 {object} map[string]interface{} "Bad request"
+// @Failure 401 {object} map[string]interface{} "Unauthorized"
+// @Failure 500 {object} map[string]interface{} "Internal server error"
+// @Router /payments/magic-checkout/create-order [post]
+func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
+	requestID := c.GetString("request_id")
+
+	// Support both authenticated and guest checkout
+	// GetAuthenticatedUserID returns Firebase UID when available (from OptionalFirebaseAuth middleware)
+	userID, authenticated := h.authContext.GetAuthenticatedUserID(c)
+
+	if !authenticated {
+		// For guest checkout, use session ID
+		sessionID := c.GetHeader("X-Session-ID")
+		if sessionID == "" {
+			h.logger.Error("No authentication or session ID provided",
+				zap.String("request_id", requestID))
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Please login or provide session ID for guest checkout",
+			})
+			return
+		}
+		userID = "session_" + sessionID
+	}
+
+	h.logger.Info("Creating Magic Checkout order",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userID),
+		zap.Bool("authenticated", authenticated))
+
+	// Get cart - for now, only support authenticated users
+	// TODO: Add session cart support for guest checkout
+	if !authenticated {
+		h.logger.Warn("Guest checkout not yet supported for Magic Checkout",
+			zap.String("request_id", requestID))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Please login to use Magic Checkout. Guest checkout coming soon.",
+		})
+		return
+	}
+
+	// Get cart using Firebase UID (userID is already Firebase UID from GetAuthenticatedUserID)
+	cart, err := h.orderService.GetUserCart(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("Failed to get user cart",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to get cart",
+		})
+		return
+	}
+
+	if cart == nil || len(cart.Items) == 0 {
+		h.logger.Warn("Cart is empty or not found",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Cart is empty. Please add items to cart.",
+		})
+		return
+	}
+
+	// Calculate totals
+	cartTotal := cart.GetTotalAmount()
+	discountedTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
+
+	// Prepare line items for Magic Checkout
+	lineItems := []map[string]interface{}{}
+	lineItemsTotal := 0
+
+	for _, item := range cart.Items {
+		itemTotal := int(item.UnitPrice * float64(item.Quantity) * 100) // Convert to paise
+		lineItemsTotal += itemTotal
+
+		// Fetch product details for proper display
+		productName := item.ProductID
+		productDescription := ""
+		productImageURL := ""
+
+		// Fetch product details for proper display (non-blocking - continue even if it fails)
+		// Use a goroutine to fetch products in parallel, but don't block on errors
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Recover from any panics in product fetching
+					h.logger.Warn("Panic in product fetching, using ProductID",
+						zap.String("request_id", requestID),
+						zap.String("product_id", item.ProductID),
+						zap.Any("panic", r))
+				}
+			}()
+
+			if h.productService != nil {
+				productReq := &requests.GetProductRequest{}
+				productReq.ID = item.ProductID
+				productResp, err := h.productService.GetProductByID(c.Request.Context(), productReq)
+				if err == nil && productResp != nil && productResp.Success {
+					// Extract product data from response (response.Data is typically a map after JSON unmarshaling)
+					if productData, ok := productResp.Data.(map[string]interface{}); ok {
+						// Handle map response
+						if name, ok := productData["name"].(string); ok && name != "" {
+							productName = name
+						}
+						if desc, ok := productData["description"].(string); ok && desc != "" {
+							productDescription = desc
+						}
+						// Get first image if available - images is array of ProductImageResponse
+						if images, ok := productData["images"].([]interface{}); ok && len(images) > 0 {
+							if firstImage, ok := images[0].(map[string]interface{}); ok {
+								// ProductImageResponse uses "image_url" field
+								if url, ok := firstImage["image_url"].(string); ok && url != "" {
+									productImageURL = url
+								}
+							}
+						}
+					}
+				}
+				// Silently continue if product fetch fails - use ProductID as fallback
+			}
+		}()
+
+		lineItem := map[string]interface{}{
+			"sku":         item.ProductID,
+			"name":        productName,
+			"price":       int(item.UnitPrice * 100), // in paise
+			"offer_price": int(item.UnitPrice * 100), // same as price for now
+			"tax_amount":  0,
+			"quantity":    item.Quantity,
+			"description": productDescription,
+			"image_url":   productImageURL,
+			"product_url": fmt.Sprintf("https://amrti.com/products/%s", item.ProductID),
+			"weight":      100, // 100g per item (default)
+			"dimensions": map[string]int{
+				"length": 10,
+				"width":  10,
+				"height": 10,
+			},
+			"variant_id": item.ProductID,
+		}
+
+		lineItems = append(lineItems, lineItem)
+	}
+
+	// Prepare notes for order tracking
+	notes := map[string]interface{}{
+		"user_id":        userID,
+		"cart_total":     cartTotal,
+		"discount":       cart.DiscountAmount,
+		"coupon_code":    cart.CouponCode,
+		"total_items":    len(cart.Items),
+		"magic_checkout": true,
+		"authenticated":  authenticated,
+	}
+
+	// Create Razorpay order with line items
+	// Generate short receipt (max 40 chars for Razorpay requirement)
+	// Format: mc_<short_userID>_<timestamp>
+	timestamp := time.Now().Unix()
+	// Use first 6 chars of userID + timestamp to ensure < 40 chars
+	// Format: "mc_" (3) + userID (6) + "_" (1) + timestamp (10) = 20 chars max
+	userIDHash := userID
+	if len(userIDHash) > 6 {
+		userIDHash = userIDHash[:6]
+	}
+	receipt := fmt.Sprintf("mc_%s_%d", userIDHash, timestamp)
+	// Ensure receipt is max 40 chars (should always be < 40 with this format)
+	if len(receipt) > 40 {
+		// Fallback: use just timestamp if still too long
+		receipt = fmt.Sprintf("mc_%d", timestamp)
+	}
+
+	orderOptions := map[string]interface{}{
+		"amount":           int(discountedTotal * 100), // Convert to paise
+		"currency":         "INR",
+		"receipt":          receipt,
+		"notes":            notes,
+		"line_items_total": lineItemsTotal,
+		"line_items":       lineItems,
+	}
+
+	razorpayOrder, err := h.paymentService.CreateOrderWithOptions(
+		c.Request.Context(),
+		orderOptions,
+	)
+
+	if err != nil {
+		h.logger.Error("Failed to create Razorpay order",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+			zap.String("user_id", userID),
+			zap.Float64("amount", discountedTotal),
+			zap.Int("line_items_count", len(lineItems)),
+			zap.Int("line_items_total", lineItemsTotal))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to create payment order. Please try again.",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Prepare response
+	cfg := config.GetRazorpayConfig()
+	response := gin.H{
+		"order_id": razorpayOrder.ID,
+		"amount":   services.PaisaToRupees(razorpayOrder.Amount),
+		"currency": "INR",
+		"key_id":   cfg.KeyID,
+		"receipt":  razorpayOrder.Receipt,
+	}
+
+	// TODO: Add prefill data if user is authenticated
+	// For now, Magic Checkout will collect phone number during checkout
+
+	h.logger.Info("Magic Checkout order created successfully",
+		zap.String("request_id", requestID),
+		zap.String("razorpay_order_id", razorpayOrder.ID),
+		zap.String("user_id", userID),
+		zap.Float64("amount", discountedTotal),
+		zap.Int("line_items", len(lineItems)))
+
+	c.JSON(http.StatusOK, response)
 }

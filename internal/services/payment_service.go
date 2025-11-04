@@ -20,6 +20,7 @@ import (
 // PaymentServiceInterface defines the contract for payment operations
 type PaymentServiceInterface interface {
 	CreateOrder(ctx context.Context, userID string, amount float64, currency string, cartID string, notes map[string]interface{}) (*RazorpayOrder, error)
+	CreateOrderWithOptions(ctx context.Context, orderOptions map[string]interface{}) (*RazorpayOrder, error)
 	VerifyPayment(ctx context.Context, orderID, paymentID, signature string) (bool, error)
 	ProcessWebhook(ctx context.Context, body []byte, signature string) error
 	GetPaymentStatus(ctx context.Context, paymentID string) (*RazorpayPayment, error)
@@ -179,6 +180,128 @@ func (s *PaymentService) CreateOrder(ctx context.Context, userID string, amount 
 		zap.String("user_id", userID),
 		zap.Float64("amount", amount),
 		zap.String("receipt", receipt))
+
+	return &order, nil
+}
+
+// CreateOrderWithOptions creates a Razorpay order with custom options including line_items for Magic Checkout
+func (s *PaymentService) CreateOrderWithOptions(ctx context.Context, orderOptions map[string]interface{}) (*RazorpayOrder, error) {
+	// Validate required fields
+	amount, ok := orderOptions["amount"].(int)
+	if !ok {
+		return nil, fmt.Errorf("amount must be an integer (in paise)")
+	}
+	if amount <= 0 {
+		return nil, fmt.Errorf("invalid amount %d; must be greater than 0", amount)
+	}
+
+	currency, ok := orderOptions["currency"].(string)
+	if !ok || currency == "" {
+		currency = "INR"
+	}
+
+	if s.config.KeyID == "" || s.config.KeySecret == "" {
+		return nil, fmt.Errorf("razorpay credentials missing: KeyID or KeySecret not configured")
+	}
+
+	// Generate receipt if not provided
+	receipt, ok := orderOptions["receipt"].(string)
+	if !ok || receipt == "" {
+		receipt = s.makeCompactReceipt(fmt.Sprintf("order_%d", time.Now().Unix()))
+	}
+
+	// Prepare order data
+	orderData := map[string]interface{}{
+		"amount":   amount,
+		"currency": currency,
+		"receipt":  receipt,
+	}
+
+	// Add notes if provided
+	if notes, ok := orderOptions["notes"].(map[string]interface{}); ok {
+		orderData["notes"] = notes
+	}
+
+	// Add line_items_total and line_items for Magic Checkout (if provided)
+	var lineItemsCount int
+	if lineItemsTotal, ok := orderOptions["line_items_total"].(int); ok {
+		orderData["line_items_total"] = lineItemsTotal
+	}
+	if lineItems, ok := orderOptions["line_items"].([]interface{}); ok && len(lineItems) > 0 {
+		orderData["line_items"] = lineItems
+		lineItemsCount = len(lineItems)
+	}
+
+	jsonData, err := json.Marshal(orderData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal order data: %w", err)
+	}
+
+	// Validate credentials before making request
+	if s.config.KeyID == "" || s.config.KeySecret == "" {
+		keySecretDisplay := ""
+		if s.config.KeySecret != "" {
+			keySecretDisplay = "***"
+		}
+		s.logger.Error("Razorpay credentials missing in CreateOrderWithOptions",
+			zap.String("key_id", s.config.KeyID),
+			zap.Bool("has_key_secret", s.config.KeySecret != ""),
+			zap.String("base_url", s.config.BaseURL))
+		return nil, fmt.Errorf("razorpay credentials missing: KeyID=%q, KeySecret=%q (check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET env vars)",
+			s.config.KeyID,
+			keySecretDisplay)
+	}
+
+	// Log key prefix for debugging (first 10 chars only)
+	keyIDPrefix := s.config.KeyID
+	if len(keyIDPrefix) > 10 {
+		keyIDPrefix = keyIDPrefix[:10] + "..."
+	}
+	s.logger.Info("Creating Razorpay order with options",
+		zap.String("key_id_prefix", keyIDPrefix),
+		zap.String("base_url", s.config.BaseURL),
+		zap.Int("amount", amount),
+		zap.Bool("has_line_items", lineItemsCount > 0))
+
+	endpoint := fmt.Sprintf("%s/orders", s.config.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.SetBasicAuth(s.config.KeyID, s.config.KeySecret)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.logger.Error("Razorpay order creation failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to create order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("Razorpay API error",
+			zap.Int("status", resp.StatusCode),
+			zap.String("body", string(body)),
+			zap.String("key_id_prefix", keyIDPrefix))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var order RazorpayOrder
+	if err := json.Unmarshal(body, &order); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	s.logger.Info("Razorpay order created successfully with options",
+		zap.String("order_id", order.ID),
+		zap.Int("amount", order.Amount),
+		zap.String("receipt", receipt),
+		zap.Bool("has_line_items", lineItemsCount > 0))
 
 	return &order, nil
 }

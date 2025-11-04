@@ -56,7 +56,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		orders.RegisterOrderRoutes(v1, repoManager, serviceManager, logger) // Updated with logger
 		cart.RegisterCartRoutes(v1, repoManager, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager, serviceManager)
-		payment.RegisterPaymentRoutes(v1, serviceManager)
+		payment.RegisterPaymentRoutes(v1, repoManager, serviceManager)
 		delivery.RegisterDeliveryRoutes(v1, repoManager, serviceManager, logger)
 		reviews.RegisterReviewRoutes(v1, serviceManager, repoManager, logger) // Add review routes
 		coupons.RegisterCouponRoutes(v1, repoManager, serviceManager, logger) // Add coupon routes
