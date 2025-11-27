@@ -35,6 +35,12 @@ WORKDIR /app
 # Copy the binary from builder stage
 COPY --from=builder /app/main .
 
+# Copy runtime configuration needed at startup (.env + firebase service account)
+COPY --from=builder /app/.env .env
+RUN mkdir -p internal/config && \
+    chown -R appuser:appgroup /app/internal
+COPY --from=builder /app/internal/config/firebase_service_account.json internal/config/firebase_service_account.json
+
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
 
