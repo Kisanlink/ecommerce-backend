@@ -19,14 +19,15 @@ func LoadEnv() {
 
 // PostgresEnvConfig holds PostgreSQL connection configuration from env
 type PostgresEnvConfig struct {
-	Host      string
-	Port      string
-	User      string
-	Password  string
-	DBName    string
-	SSLMode   string
-	MaxConns  int
-	IdleConns int
+	Host           string
+	Port           string
+	User           string
+	Password       string
+	DBName         string
+	SSLMode        string
+	ChannelBinding string
+	MaxConns       int
+	IdleConns      int
 }
 
 // GetPostgresEnvConfig returns Postgres config from environment variables
@@ -40,14 +41,15 @@ func GetPostgresEnvConfig() PostgresEnvConfig {
 		idleConns = 5
 	}
 	return PostgresEnvConfig{
-		Host:      os.Getenv("DB_POSTGRES_HOST"),
-		Port:      os.Getenv("DB_POSTGRES_PORT"),
-		User:      os.Getenv("DB_POSTGRES_USER"),
-		Password:  os.Getenv("DB_POSTGRES_PASSWORD"),
-		DBName:    os.Getenv("DB_POSTGRES_DBNAME"),
-		SSLMode:   os.Getenv("DB_POSTGRES_SSLMODE"),
-		MaxConns:  maxConns,
-		IdleConns: idleConns,
+		Host:           getEnvOrDefault("DB_POSTGRES_HOST", ""),
+		Port:           getEnvOrDefault("DB_POSTGRES_PORT", "5432"),
+		User:           getEnvOrDefault("DB_POSTGRES_USER", ""),
+		Password:       getEnvOrDefault("DB_POSTGRES_PASSWORD", ""),
+		DBName:         getEnvOrDefault("DB_POSTGRES_DBNAME", ""),
+		SSLMode:        getEnvOrDefault("DB_POSTGRES_SSLMODE", "require"),
+		ChannelBinding: os.Getenv("DB_POSTGRES_CHANNEL_BINDING"),
+		MaxConns:       maxConns,
+		IdleConns:      idleConns,
 	}
 }
 

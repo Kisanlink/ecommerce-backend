@@ -15,6 +15,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// getPhoneNumberString safely extracts phone number string from pointer
+func getPhoneNumberString(phoneNum *string) string {
+	if phoneNum == nil {
+		return ""
+	}
+	return *phoneNum
+}
+
 // UserService provides user-related business logic
 type UserService struct {
 	userRepo *repositories.UserRepository
@@ -80,13 +88,14 @@ func (s *UserService) createUserWithTimestampID(email, name, password string) *m
 	baseModel.SetID(timestampID)
 
 	return &models.User{
-		BaseModel:  baseModel,
-		Email:      &email,
-		Name:       name,
-		Password:   password,
-		IsVerified: false,
-		IsActive:   true,
-		Role:       "user",
+		BaseModel:   baseModel,
+		Email:       &email,
+		Name:        name,
+		Password:    password,
+		PhoneNumber: nil, // nil for email-based users (no phone number)
+		IsVerified:  false,
+		IsActive:    true,
+		Role:        "user",
 	}
 }
 
@@ -121,6 +130,22 @@ func (s *UserService) CreateUser(ctx context.Context, req *requests.SignupReques
 
 		// Check if it's a duplicate key error
 		errorStr := createErr.Error()
+
+		// Check for email duplicate error
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "users_email_key") {
+			return base.NewErrorResponse("User already exists",
+				base.NewValidationError("email", "User with this email already exists")), nil
+		}
+
+		// Check for phone number duplicate error
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "uni_users_phone_number") {
+			return base.NewErrorResponse("User already exists",
+				base.NewValidationError("phone_number", "User with this phone number already exists")), nil
+		}
+
+		// Check for primary key duplicate error
 		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
 			strings.Contains(errorStr, "users_pkey") {
 			// Generate a new ID and try again with timestamp-based ID
@@ -199,7 +224,7 @@ func (s *UserService) GetUserByEmail(ctx context.Context, email string) (*base.B
 		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
-		"phone_number": user.PhoneNumber,
+		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"is_verified":  user.IsVerified,
 		"is_active":    user.IsActive,
 		"created_at":   user.GetCreatedAt(),
@@ -232,7 +257,7 @@ func (s *UserService) GetUserByFirebaseUID(ctx context.Context, firebaseUID stri
 		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
-		"phone_number": user.PhoneNumber,
+		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"is_verified":  user.IsVerified,
 		"is_active":    user.IsActive,
 		"created_at":   user.GetCreatedAt(),
@@ -272,8 +297,11 @@ func (s *UserService) UpdateUser(ctx context.Context, userID string, updateData 
 	if name, ok := updateData["name"].(string); ok && name != "" {
 		user.Name = name
 	}
-	if phoneNumber, ok := updateData["phone_number"].(string); ok {
-		user.PhoneNumber = phoneNumber
+	if phoneNumber, ok := updateData["phone_number"].(string); ok && phoneNumber != "" {
+		user.PhoneNumber = &phoneNumber
+	} else if phoneNumber == "" {
+		// Clear phone number if empty string provided
+		user.PhoneNumber = nil
 	}
 	if isVerified, ok := updateData["is_verified"].(bool); ok {
 		user.IsVerified = isVerified
@@ -301,7 +329,7 @@ func (s *UserService) UpdateUser(ctx context.Context, userID string, updateData 
 		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": user.FirebaseUID,
-		"phone_number": user.PhoneNumber,
+		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"is_verified":  user.IsVerified,
 		"is_active":    user.IsActive,
 		"role":         user.Role,
@@ -338,7 +366,7 @@ func (s *UserService) ListUsers(ctx context.Context, page, pageSize int) (*base.
 			"email":        emailStr,
 			"name":         user.Name,
 			"firebase_uid": user.FirebaseUID,
-			"phone_number": user.PhoneNumber,
+			"phone_number": getPhoneNumberString(user.PhoneNumber),
 			"is_verified":  user.IsVerified,
 			"is_active":    user.IsActive,
 			"role":         user.Role,
@@ -401,7 +429,11 @@ func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSi
 	// Check if user already exists by phone number
 	existingUser, err := s.userRepo.GetUserByPhoneNumber(ctx, req.PhoneNumber)
 	if err != nil {
-		fmt.Printf("Error checking existing user: %v\n", err)
+		// If error is "not found", that's okay - user doesn't exist yet
+		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "record not found") {
+			fmt.Printf("Error checking existing user: %v\n", err)
+			// Continue anyway - database constraint will catch duplicates
+		}
 	}
 	if existingUser != nil {
 		fmt.Printf("User already exists with phone number: %s\n", req.PhoneNumber)
@@ -415,8 +447,9 @@ func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSi
 	if user.Email != nil {
 		emailStr = *user.Email
 	}
+	phoneNumStr := getPhoneNumberString(user.PhoneNumber)
 	fmt.Printf("Created user model: ID=%s, PhoneNumber=%s, Name=%s, Email=%s, Password=%s\n",
-		user.GetID(), user.PhoneNumber, user.Name, emailStr, user.Password)
+		user.GetID(), phoneNumStr, user.Name, emailStr, user.Password)
 
 	// Save to database with retry logic for duplicate key errors
 	maxRetries := 3
@@ -435,6 +468,17 @@ func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSi
 
 		// Check if it's a duplicate key error
 		errorStr := createErr.Error()
+
+		// Check for phone number duplicate error
+		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
+			strings.Contains(errorStr, "uni_users_phone_number") {
+			// Phone number already exists - return user-friendly error
+			fmt.Printf("Phone number already exists: %s\n", req.PhoneNumber)
+			return base.NewErrorResponse("User already exists",
+				base.NewValidationError("phone_number", "User with this phone number already exists")), nil
+		}
+
+		// Check for primary key duplicate error
 		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
 			strings.Contains(errorStr, "users_pkey") {
 			// Generate a new ID and try again
@@ -461,7 +505,7 @@ func (s *UserService) CreatePhoneUser(ctx context.Context, req *requests.PhoneSi
 
 	userData := map[string]interface{}{
 		"id":           user.GetID(),
-		"phone_number": user.PhoneNumber,
+		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"name":         user.Name,
 		"firebase_uid": firebaseUID,
 		"is_verified":  user.IsVerified,
@@ -503,7 +547,7 @@ func (s *UserService) GetUserByPhoneNumber(ctx context.Context, phoneNumber stri
 		"email":        emailStr,
 		"name":         user.Name,
 		"firebase_uid": firebaseUID,
-		"phone_number": user.PhoneNumber,
+		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"is_verified":  user.IsVerified,
 		"is_active":    user.IsActive,
 		"created_at":   user.GetCreatedAt(),

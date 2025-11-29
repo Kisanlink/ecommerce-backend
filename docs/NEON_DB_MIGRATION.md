@@ -184,5 +184,4 @@ Following this guide migrates all existing tables to Neon and ensures the
 Go services connect exclusively to the managed database.
 
 
-
 1st psql path setup c->programfiles->PostgreSQ->bin copy path go to the edit env variables and click o path ad them click on edit adn click o new and add path and click on ok on all , then get the dsn connection strings of source adn tagret db for migration adn runthe script with surce and destinamtion and 

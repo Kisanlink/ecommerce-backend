@@ -46,11 +46,10 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 	deliveryService := NewDeliveryService(repoManager, logger)
 	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, s3Service, logger)
 
-	// Create review service with DynamoDB support
-	dbManager := repoManager.GetDBManager()
+	// Create review service with PostgreSQL support
 	userService := NewUserService(repoManager.UserRepository)
 	profileService := NewProfileService(repoManager)
-	reviewService := NewReviewService(dbManager, userService, profileService, logger)
+	reviewService := NewReviewService(repoManager.ReviewRepository, userService, profileService, logger)
 
 	// Create image service
 	imageService := NewImageService(repoManager.ImageRepository, repoManager.ProductRepository, logger)
