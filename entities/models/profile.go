@@ -13,6 +13,7 @@ type Profile struct {
 	UserID          string     `json:"user_id" gorm:"uniqueIndex;not null"`
 	FirstName       string     `json:"first_name" gorm:"size:100;not null"`
 	LastName        string     `json:"last_name" gorm:"size:100;not null"`
+	Email           string     `json:"email,omitempty" gorm:"size:255;not null"` // Required by DB schema (legacy)
 	DateOfBirth     *time.Time `json:"date_of_birth" gorm:"type:date"`
 	Gender          string     `json:"gender" gorm:"size:10"` // Male, Female, Other
 
@@ -39,13 +40,14 @@ type Profile struct {
 }
 
 // NewProfile creates a new profile instance
-func NewProfile(userID, firstName, lastName string) *Profile {
+func NewProfile(userID, firstName, lastName, email string) *Profile {
 	baseModel := base.NewBaseModel("PROF", hash.Small)
 	return &Profile{
 		BaseModel:            baseModel,
 		UserID:               userID,
 		FirstName:            firstName,
 		LastName:             lastName,
+		Email:                email, // Required by DB schema
 		IsActive:             true,
 		IsVerified:           false,
 		NewsletterSubscribed: false,

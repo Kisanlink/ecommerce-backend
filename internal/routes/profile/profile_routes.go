@@ -18,7 +18,8 @@ func RegisterProfileRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 	profiles.Use(middleware.FirebaseAuthMiddleware())
 	{
 		// Core functionality routes
-		profiles.POST("/auto", profileHandler.CreateAutoProfile)          // Auto-create profile from user info
+		// Note: /auto endpoint removed - profiles are now automatically created during signup
+		// profiles.POST("/auto", profileHandler.CreateAutoProfile)          // DEPRECATED: Profiles auto-created during signup
 		profiles.GET("", profileHandler.GetProfile)                       // Get user's profile
 		profiles.PUT("", profileHandler.UpdateProfile)                    // Update profile
 		profiles.POST("/upload-image", profileHandler.UploadProfileImage) // Upload profile image to S3

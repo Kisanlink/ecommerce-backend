@@ -37,15 +37,16 @@ func (rm *RepositoryManager) GetDBManager() db.DBManager {
 }
 
 // NewRepositoryManager creates a new repository manager with database manager
-func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *RepositoryManager {
-	// Create recipes repository with logger
-	recipesRepo := NewRecipesRepository(logger)
+// pgManager is passed separately for repositories that need direct GORM access
+func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager, logger *zap.Logger) *RepositoryManager {
+	// Create recipes repository with pgManager and logger (needs direct GORM access)
+	recipesRepo := NewRecipesRepository(pgManager, logger)
 
-	// Create pending recipe review repository with logger
-	pendingRecipeReviewRepo := NewPendingRecipeReviewRepository(logger)
+	// Create pending recipe review repository with pgManager and logger (needs direct GORM access)
+	pendingRecipeReviewRepo := NewPendingRecipeReviewRepository(pgManager, logger)
 
-	// Create review repository with logger
-	reviewRepo := NewReviewRepository(logger)
+	// Create review repository with pgManager and logger (needs direct GORM access)
+	reviewRepo := NewReviewRepository(pgManager, logger)
 
 	// Initialize Redis manager
 	redisManager, err := database.NewRedisManager(logger)

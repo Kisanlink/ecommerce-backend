@@ -3,152 +3,446 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firebase Authentication Test</title>
+    <title>Authentication & Profile Test Suite</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            text-align: center;
-            color: #333;
-            margin-bottom: 30px;
-        }
-        .auth-section {
-            margin: 20px 0;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            background-color: #fafafa;
-        }
-        .auth-section h3 {
-            margin-top: 0;
-            color: #555;
-        }
-        button {
-            background-color: #4285f4;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 16px;
-            margin: 5px;
-            transition: background-color 0.3s;
-        }
-        button:hover {
-            background-color: #3367d6;
-        }
-        button:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
-        }
-        
-        .phone-btn {
-            background-color: #34a853;
-        }
-        .phone-btn:hover {
-            background-color: #2d8f47;
-        }
-        input {
-            width: 100%;
-            padding: 10px;
-            margin: 5px 0;
-            border: 1px solid #ddd;
-            border-radius: 4px;
+        * {
+            margin: 0;
+            padding: 0;
             box-sizing: border-box;
         }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .auth-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .auth-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            transition: transform 0.3s;
+        }
+
+        .auth-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+        }
+
+        .auth-card h3 {
+            color: #333;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.3em;
+        }
+
+        .auth-card .icon {
+            font-size: 1.5em;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+            margin: 5px 0;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #34a853 0%, #2d8f47 100%);
+            color: white;
+        }
+
+        .btn-google {
+            background: white;
+            color: #333;
+            border: 2px solid #ddd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-google:hover {
+            background: #f8f8f8;
+            border-color: #4285f4;
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            color: white;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .status-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .status-card h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
         .status {
+            padding: 12px;
+            border-radius: 8px;
             margin: 10px 0;
-            padding: 10px;
-            border-radius: 4px;
-            font-weight: bold;
+            font-weight: 500;
+            animation: slideIn 0.3s;
         }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(-20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
         .success {
-            background-color: #d4edda;
+            background: #d4edda;
             color: #155724;
-            border: 1px solid #c3e6cb;
+            border-left: 4px solid #28a745;
         }
+
         .error {
-            background-color: #f8d7da;
+            background: #f8d7da;
             color: #721c24;
-            border: 1px solid #f5c6cb;
+            border-left: 4px solid #dc3545;
         }
+
         .warning {
-            background-color: #fff3cd;
+            background: #fff3cd;
             color: #856404;
-            border: 1px solid #ffeaa7;
+            border-left: 4px solid #ffc107;
         }
+
         .info {
-            background-color: #d1ecf1;
+            background: #d1ecf1;
             color: #0c5460;
-            border: 1px solid #bee5eb;
+            border-left: 4px solid #17a2b8;
         }
-        #recaptcha-container {
-            margin: 10px 0;
-        }
+
         .user-info {
-            background-color: #e8f5e8;
-            padding: 15px;
-            border-radius: 6px;
-            margin: 10px 0;
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
         }
+
+        .user-info h3 {
+            color: #333;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .user-details {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+
+        .user-details p {
+            margin: 8px 0;
+            color: #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .user-details strong {
+            color: #555;
+            min-width: 150px;
+        }
+
+        .profile-info {
+            background: #e8f5e9;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border: 2px solid #4caf50;
+        }
+
+        .profile-info h4 {
+            color: #2e7d32;
+            margin-bottom: 10px;
+        }
+
         .hidden {
-            display: none;
+            display: none !important;
+        }
+
+        .tab-navigation {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab-btn {
+            padding: 10px 20px;
+            background: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tab-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .verification-section {
+            background: #f0f4ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 2px dashed #667eea;
+        }
+
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔥 Firebase Authentication Test</h1>
-        
-        <div id="user-info" class="user-info hidden">
-            <h3>✅ Authenticated User</h3>
-            <div id="user-details"></div>
-            <button onclick="signOut()">Sign Out</button>
+        <div class="header">
+            <h1>🔐 Authentication & Profile Test Suite</h1>
+            <p>Test all authentication methods and verify profile creation</p>
         </div>
 
+        <!-- User Info Display -->
+        <div id="user-info" class="user-info hidden">
+            <h3>✅ Authenticated User</h3>
+            <div id="user-details" class="user-details"></div>
+            <div id="profile-details" class="profile-info"></div>
+            <button class="btn btn-warning" onclick="signOut()">Sign Out</button>
+            <button class="btn btn-primary" onclick="checkProfile()">Refresh Profile</button>
+        </div>
+
+        <!-- Authentication Forms -->
         <div id="auth-forms">
-            <!-- Phone Authentication -->
-            <div class="auth-section">
-                <h3>📱 Phone Authentication</h3>
-                <div>
-                    <input type="tel" id="phone-number" placeholder="Enter phone number (+1234567890)" 
-                           pattern="\+[1-9]\d{1,14}" title="Enter phone number with country code (e.g., +1234567890)" />
-                    <button class="phone-btn" onclick="sendPhoneVerificationCode()">Send Verification Code</button>
+            <div class="auth-grid">
+                <!-- Email/Password Authentication -->
+                <div class="auth-card">
+                    <h3><span class="icon">📧</span> Email & Password</h3>
+
+                    <div class="tab-navigation">
+                        <button class="tab-btn active" onclick="switchEmailTab('signin')">Sign In</button>
+                        <button class="tab-btn" onclick="switchEmailTab('signup')">Sign Up</button>
+                    </div>
+
+                    <!-- Sign In Form -->
+                    <div id="email-signin" class="email-tab">
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="signin-email" placeholder="user@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="signin-password" placeholder="Enter your password">
+                        </div>
+                        <button class="btn btn-primary" onclick="signInWithEmail()">Sign In</button>
+                    </div>
+
+                    <!-- Sign Up Form -->
+                    <div id="email-signup" class="email-tab hidden">
+                        <div class="form-group">
+                            <label>Name</label>
+                            <input type="text" id="signup-name" placeholder="John Doe">
+                        </div>
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="signup-email" placeholder="user@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="signup-password" placeholder="Create a password (min 6 chars)">
+                        </div>
+                        <button class="btn btn-success" onclick="signUpWithEmail()">Sign Up</button>
+                    </div>
                 </div>
-                <div id="phone-verification" class="hidden">
-                    <input type="text" id="verification-code" placeholder="Enter 6-digit verification code" 
-                           maxlength="6" pattern="\d{6}" title="Enter 6-digit verification code" />
-                    <button class="phone-btn" onclick="verifyPhoneCode()">Verify Code</button>
-                    <button class="phone-btn" onclick="resendVerificationCode()" style="background-color: #ff9800;">Resend Code</button>
+
+                <!-- Google Authentication -->
+                <div class="auth-card">
+                    <h3><span class="icon">🔷</span> Google Sign-In</h3>
+                    <p style="color: #666; margin-bottom: 20px;">
+                        Sign in with your Google account to test OAuth authentication and automatic profile creation.
+                    </p>
+                    <button class="btn btn-google" onclick="signInWithGoogle()">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="20" height="20">
+                        Sign in with Google
+                    </button>
+                    <div class="info" style="margin-top: 15px; font-size: 13px;">
+                        <strong>Note:</strong> Google sign-in will create a user account and profile automatically.
+                    </div>
                 </div>
-                <div id="recaptcha-container"></div>
-                <div class="info" style="margin-top: 10px; font-size: 14px;">
-                    <strong>Note:</strong> Phone authentication requires reCAPTCHA verification. Make sure to complete the reCAPTCHA challenge before sending the verification code.
+
+                <!-- Phone Authentication -->
+                <div class="auth-card">
+                    <h3><span class="icon">📱</span> Phone Authentication</h3>
+                    <div class="form-group">
+                        <label>Phone Number</label>
+                        <input type="tel" id="phone-number" placeholder="+1234567890">
+                    </div>
+                    <button class="btn btn-success" onclick="sendPhoneCode()">Send Verification Code</button>
+
+                    <div id="phone-verification" class="verification-section hidden">
+                        <div class="form-group">
+                            <label>Verification Code</label>
+                            <input type="text" id="verification-code" placeholder="Enter 6-digit code" maxlength="6">
+                        </div>
+                        <button class="btn btn-primary" onclick="verifyPhoneCode()">Verify Code</button>
+                        <button class="btn btn-warning" onclick="resendCode()">Resend Code</button>
+                    </div>
+
+                    <div id="recaptcha-container"></div>
                 </div>
             </div>
         </div>
 
-        <div id="status"></div>
+        <!-- Status Messages -->
+        <div class="status-card">
+            <h3>📊 Status Messages</h3>
+            <div id="status"></div>
+        </div>
     </div>
 
     <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 
     <script>
-        // Firebase Configuration - Your actual config
+        // Configuration
+        const API_BASE_URL = 'http://127.0.0.1:8080/api/v1';
+
+        // Firebase Configuration
         const firebaseConfig = {
             apiKey: "AIzaSyCPzNrFV3Q6a4rcAQF-60G3h3K1WBQqQFI",
             authDomain: "amrti-m1355.firebaseapp.com",
@@ -163,104 +457,238 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         let recaptchaVerifier;
-        let confirmationResult;
+        let currentUser = null;
+        let authToken = null;
 
-        // Initialize reCAPTCHA for phone authentication
+        // Utility Functions
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            const statusMessage = document.createElement('div');
+            statusMessage.className = `status ${type}`;
+            statusMessage.innerHTML = `${new Date().toLocaleTimeString()}: ${message}`;
+            statusDiv.insertBefore(statusMessage, statusDiv.firstChild);
+
+            // Keep only last 5 messages
+            while (statusDiv.children.length > 5) {
+                statusDiv.removeChild(statusDiv.lastChild);
+            }
+        }
+
+        function switchEmailTab(tab) {
+            const tabs = document.querySelectorAll('.tab-btn');
+            const signinForm = document.getElementById('email-signin');
+            const signupForm = document.getElementById('email-signup');
+
+            if (tab === 'signin') {
+                tabs[0].classList.add('active');
+                tabs[1].classList.remove('active');
+                signinForm.classList.remove('hidden');
+                signupForm.classList.add('hidden');
+            } else {
+                tabs[1].classList.add('active');
+                tabs[0].classList.remove('active');
+                signupForm.classList.remove('hidden');
+                signinForm.classList.add('hidden');
+            }
+        }
+
+        // Email/Password Sign Up
+        async function signUpWithEmail() {
+            const name = document.getElementById('signup-name').value;
+            const email = document.getElementById('signup-email').value;
+            const password = document.getElementById('signup-password').value;
+
+            if (!name || !email || !password) {
+                showStatus('Please fill in all fields', 'error');
+                return;
+            }
+
+            if (password.length < 6) {
+                showStatus('Password must be at least 6 characters', 'error');
+                return;
+            }
+
+            try {
+                showStatus('Creating account...', 'info');
+
+                // Call backend signup API
+                const response = await fetch(`${API_BASE_URL}/auth/signup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name, email, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    showStatus('✅ Account created successfully!', 'success');
+
+                    // Store tokens if provided
+                    if (data.data && data.data.tokens) {
+                        authToken = data.data.tokens.id_token;
+                        localStorage.setItem('firebase_id_token', authToken);
+                    }
+
+                    // Display user info
+                    if (data.data && data.data.user) {
+                        displayUserInfo(data.data.user);
+                        // Check profile after signup
+                        setTimeout(() => checkProfile(), 1000);
+                    }
+
+                    // Clear form
+                    document.getElementById('signup-name').value = '';
+                    document.getElementById('signup-email').value = '';
+                    document.getElementById('signup-password').value = '';
+                } else {
+                    showStatus(`Signup failed: ${data.message || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Signup error: ${error.message}`, 'error');
+            }
+        }
+
+        // Email/Password Sign In
+        async function signInWithEmail() {
+            const email = document.getElementById('signin-email').value;
+            const password = document.getElementById('signin-password').value;
+
+            if (!email || !password) {
+                showStatus('Please enter email and password', 'error');
+                return;
+            }
+
+            try {
+                showStatus('Signing in...', 'info');
+
+                // Call backend login API
+                const response = await fetch(`${API_BASE_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    showStatus('✅ Signed in successfully!', 'success');
+
+                    // Store tokens
+                    if (data.data && data.data.tokens) {
+                        authToken = data.data.tokens.id_token;
+                        localStorage.setItem('firebase_id_token', authToken);
+                    }
+
+                    // Display user info
+                    if (data.data && data.data.user) {
+                        displayUserInfo(data.data.user);
+                        // Check profile after signin
+                        setTimeout(() => checkProfile(), 1000);
+                    }
+
+                    // Clear form
+                    document.getElementById('signin-email').value = '';
+                    document.getElementById('signin-password').value = '';
+                } else {
+                    showStatus(`Login failed: ${data.message || 'Invalid credentials'}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Login error: ${error.message}`, 'error');
+            }
+        }
+
+        // Google Sign In
+        async function signInWithGoogle() {
+            try {
+                showStatus('Opening Google sign-in...', 'info');
+
+                const provider = new firebase.auth.GoogleAuthProvider();
+                const result = await auth.signInWithPopup(provider);
+
+                // Get the Google ID token
+                const idToken = await result.user.getIdToken();
+
+                showStatus('Authenticating with backend...', 'info');
+
+                // Send to backend
+                const response = await fetch(`${API_BASE_URL}/auth/google`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        id_token: idToken,
+                        returnSecureToken: true
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    showStatus('✅ Google sign-in successful!', 'success');
+
+                    // Store tokens
+                    if (data.data) {
+                        authToken = data.data.id_token || idToken;
+                        localStorage.setItem('firebase_id_token', authToken);
+                    }
+
+                    // Display user info from backend response
+                    if (data.data && data.data.user) {
+                        displayUserInfo(data.data.user);
+                    } else {
+                        // Fallback to Firebase user info
+                        displayUserInfo({
+                            uid: result.user.uid,
+                            email: result.user.email,
+                            name: result.user.displayName,
+                            is_new_user: result.additionalUserInfo.isNewUser
+                        });
+                    }
+
+                    // Check profile after Google signin
+                    setTimeout(() => checkProfile(), 1000);
+                } else {
+                    showStatus(`Google authentication failed: ${data.message || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Google sign-in error: ${error.message}`, 'error');
+            }
+        }
+
+        // Phone Authentication
         function initializeRecaptcha() {
             if (!recaptchaVerifier) {
                 recaptchaVerifier = new firebase.auth.RecaptchaVerifier('recaptcha-container', {
-                    'size': 'invisible', // Changed from invisible to normal for better user experience
+                    'size': 'invisible',
                     'callback': (response) => {
-                        console.log('reCAPTCHA solved');
-                        showStatus('reCAPTCHA verified successfully', 'success');
-                    },
-                    'expired-callback': () => {
-                        showStatus('reCAPTCHA expired. Please try again.', 'error');
-                        recaptchaVerifier = null; // Reset verifier
+                        console.log('reCAPTCHA verified');
                     }
-                });
-                
-                // Render the reCAPTCHA
-                recaptchaVerifier.render().then((widgetId) => {
-                    console.log('reCAPTCHA rendered with widget ID:', widgetId);
-                }).catch((error) => {
-                    console.error('Error rendering reCAPTCHA:', error);
-                    showStatus('Failed to load reCAPTCHA. Please refresh the page.', 'error');
                 });
             }
         }
 
-        // Show status messages
-        function showStatus(message, type = 'info') {
-            const statusDiv = document.getElementById('status');
-            statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
-        }
-
-        // Show user info
-        function showUserInfo(user) {
-            const userInfoDiv = document.getElementById('user-info');
-            const userDetailsDiv = document.getElementById('user-details');
-            
-            userDetailsDiv.innerHTML = `
-                <p><strong>UID:</strong> ${user.uid}</p>
-                <p><strong>Email:</strong> ${user.email || 'N/A'}</p>
-                <p><strong>Phone:</strong> ${user.phoneNumber || 'N/A'}</p>
-                <p><strong>Name:</strong> ${user.displayName || 'N/A'}</p>
-                <p><strong>Email Verified:</strong> ${user.emailVerified ? 'Yes' : 'No'}</p>
-            `;
-            
-            userInfoDiv.classList.remove('hidden');
-            document.getElementById('auth-forms').classList.add('hidden');
-        }
-
-        // Hide user info
-        function hideUserInfo() {
-            document.getElementById('user-info').classList.add('hidden');
-            document.getElementById('auth-forms').classList.remove('hidden');
-        }
-
-        
-
-        // Send Phone Verification Code
-        async function sendPhoneVerificationCode() {
+        async function sendPhoneCode() {
             const phoneNumber = document.getElementById('phone-number').value;
-            
+
             if (!phoneNumber) {
                 showStatus('Please enter a phone number', 'error');
                 return;
             }
 
-            // Validate phone number format
-            const phoneRegex = /^\+[1-9]\d{1,14}$/;
-            if (!phoneRegex.test(phoneNumber)) {
-                showStatus('Please enter a valid phone number with country code (e.g., +1234567890)', 'error');
-                return;
-            }
-
             try {
-                showStatus('Initializing reCAPTCHA...', 'info');
-                
-                // Initialize reCAPTCHA first
-                initializeRecaptcha();
-                
-                // Wait a moment for reCAPTCHA to be ready
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                showStatus('Getting reCAPTCHA token...', 'info');
-                
-                // Get reCAPTCHA token
-                const recaptchaToken = await recaptchaVerifier.verify();
-                
                 showStatus('Sending verification code...', 'info');
-                
-                // Call backend API instead of direct Firebase
-                console.log('Sending request to:', 'http://127.0.0.1:8080/api/v1/auth/phone/send-code');
-                console.log('Request payload:', {
-                    phone_number: phoneNumber,
-                    recaptcha_token: recaptchaToken
-                });
-                
-                const response = await fetch('http://127.0.0.1:8080/api/v1/auth/phone/send-code', {
+
+                initializeRecaptcha();
+                await recaptchaVerifier.render();
+                const recaptchaToken = await recaptchaVerifier.verify();
+
+                // Call backend API
+                const response = await fetch(`${API_BASE_URL}/auth/phone/send-code`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -270,532 +698,215 @@
                         recaptcha_token: recaptchaToken
                     })
                 });
-                
-                console.log('Response status:', response.status);
-                console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-                
-                // Check if response is ok and has content
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.log('Error response text:', errorText);
-                    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-                    
-                    try {
-                        const errorJson = JSON.parse(errorText);
-                        errorMessage = errorJson.message || errorJson.error || errorMessage;
-                    } catch (e) {
-                        // If not JSON, use the text as is
-                        errorMessage = errorText || errorMessage;
-                    }
-                    
-                    showStatus(`Failed to send verification code: ${errorMessage}`, 'error');
-                    return;
-                }
-                
-                // Try to parse JSON response
-                let result;
-                try {
-                    const responseText = await response.text();
-                    console.log('Response text:', responseText);
-                    
-                    if (!responseText) {
-                        showStatus('Empty response from server', 'error');
-                        return;
-                    }
-                    result = JSON.parse(responseText);
-                    console.log('Parsed result:', result);
-                } catch (e) {
-                    showStatus('Invalid response format from server', 'error');
-                    console.error('JSON parse error:', e);
-                    return;
-                }
-                
-                // Handle the response based on the backend's API format
-                if (result.success && result.data) {
-                    showStatus('Verification code sent! Check your phone for SMS.', 'success');
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    showStatus('✅ Verification code sent!', 'success');
                     document.getElementById('phone-verification').classList.remove('hidden');
-                    
-                    // Store session info and phone number for verification with timestamp
-                    const sessionData = {
-                        session_info: result.data.session_info,
-                        phone_number: phoneNumber,
-                        timestamp: Date.now(),
-                        expires_at: Date.now() + (4 * 60 * 1000) // 4 minutes (Firebase expires at 5 minutes)
-                    };
-                    
-                    window.sessionInfo = result.data.session_info;
-                    window.lastPhoneNumber = phoneNumber;
-                    
-                    // Persist session data to localStorage
-                    localStorage.setItem('phone_auth_session', JSON.stringify(sessionData));
-                    
-                    // Start session timeout warning
-                    startSessionTimeoutWarning();
-                    
-                    // Clear the phone number input for security
-                    document.getElementById('phone-number').value = '';
+
+                    // Store session info
+                    window.sessionInfo = data.data.session_info;
+                    window.phoneNumber = phoneNumber;
                 } else {
-                    showStatus(`Failed to send verification code: ${result.message || 'Unknown error'}`, 'error');
+                    showStatus(`Failed to send code: ${data.message}`, 'error');
                 }
-                
             } catch (error) {
-                console.error('Phone auth error:', error);
-                
-                // Handle specific error cases
-                if (error.message && error.message.includes('reCAPTCHA')) {
-                    showStatus('reCAPTCHA verification failed. Please try again.', 'error');
-                    recaptchaVerifier = null; // Reset verifier
-                } else {
-                    showStatus(`Failed to send verification code: ${error.message}`, 'error');
-                }
+                showStatus(`Error: ${error.message}`, 'error');
             }
         }
 
-        // Verify Phone Code
         async function verifyPhoneCode() {
             const code = document.getElementById('verification-code').value;
-            const phoneNumber = document.getElementById('phone-number').value || window.lastPhoneNumber;
-            
-            if (!code) {
-                showStatus('Please enter the verification code', 'error');
-                return;
-            }
 
-            // Check if session info exists and is valid
-            if (!window.sessionInfo) {
-                // Try to restore from localStorage
-                if (!validateSession()) {
-                    showStatus('Please send verification code first', 'error');
-                    return;
-                }
-            }
-
-            if (!phoneNumber) {
-                showStatus('Phone number not found. Please start the process again.', 'error');
-                return;
-            }
-
-            // Validate OTP format (6 digits)
-            const otpRegex = /^\d{6}$/;
-            if (!otpRegex.test(code)) {
-                showStatus('Please enter a valid 6-digit verification code', 'error');
+            if (!code || !window.sessionInfo) {
+                showStatus('Please enter verification code', 'error');
                 return;
             }
 
             try {
                 showStatus('Verifying code...', 'info');
-                
-                // Call backend API to verify the code
-                const response = await fetch('http://127.0.0.1:8080/api/v1/auth/phone/verify-code', {
+
+                // Call backend API
+                const response = await fetch(`${API_BASE_URL}/auth/phone/verify-code`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        phone_number: phoneNumber,
+                        phone_number: window.phoneNumber,
                         code: code,
                         session_info: window.sessionInfo
                     })
                 });
-                
-                // Check if response is ok and has content
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-                    
-                    try {
-                        const errorJson = JSON.parse(errorText);
-                        errorMessage = errorJson.message || errorJson.error || errorMessage;
-                    } catch (e) {
-                        errorMessage = errorText || errorMessage;
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    showStatus('✅ Phone verified successfully!', 'success');
+
+                    // Store tokens
+                    if (data.data) {
+                        authToken = data.data.id_token;
+                        localStorage.setItem('firebase_id_token', authToken);
                     }
-                    
-                    // Handle specific error cases
-                    if (errorMessage.includes('session expired') || errorMessage.includes('SESSION_EXPIRED')) {
-                        showStatus(`❌ Verification session expired. Please request a new code.`, 'error');
-                        clearSessionData();
-                        
-                        // Add retry button
-                        const retryButton = document.createElement('button');
-                        retryButton.textContent = 'Request New Code';
-                        retryButton.className = 'btn btn-primary mt-2';
-                        retryButton.onclick = () => {
-                            document.getElementById('phone-verification').classList.add('hidden');
-                            document.getElementById('phone-number').value = window.lastPhoneNumber || '';
-                            retryButton.remove();
-                        };
-                        
-                        const statusDiv = document.getElementById('status');
-                        statusDiv.appendChild(retryButton);
-                    } else {
-                        showStatus(`Verification failed: ${errorMessage}`, 'error');
+
+                    // Display user info
+                    if (data.data && data.data.user) {
+                        displayUserInfo(data.data.user);
+                        // Check profile after phone verification
+                        setTimeout(() => checkProfile(), 1000);
                     }
-                    return;
-                }
-                
-                // Try to parse JSON response
-                let result;
-                try {
-                    const responseText = await response.text();
-                    if (!responseText) {
-                        showStatus('Empty response from server', 'error');
-                        return;
-                    }
-                    result = JSON.parse(responseText);
-                } catch (e) {
-                    showStatus('Invalid response format from server', 'error');
-                    console.error('JSON parse error:', e);
-                    return;
-                }
-                
-                // Handle the response based on the backend's API format
-                if (result.success && result.data) {
-                    showStatus('Phone authentication successful! Welcome!', 'success');
-                    
-                    // Store the authentication tokens
-                    if (result.data.id_token) {
-                        localStorage.setItem('firebase_id_token', result.data.id_token);
-                    }
-                    if (result.data.refresh_token) {
-                        localStorage.setItem('firebase_refresh_token', result.data.refresh_token);
-                    }
-                    
-                    // Create a mock user object for display
-                    const mockUser = {
-                        uid: result.data.local_id || 'phone_user',
-                        phoneNumber: result.data.phone_number || phoneNumber,
-                        email: null,
-                        displayName: null,
-                        emailVerified: false
-                    };
-                    
-                    showUserInfo(mockUser);
-                    document.getElementById('phone-verification').classList.add('hidden');
-                    
-                    // Clear the verification code input
+
+                    // Clear forms
+                    document.getElementById('phone-number').value = '';
                     document.getElementById('verification-code').value = '';
-                    
-                    // Clear session data and timers
-                    clearSessionData();
-                    
+                    document.getElementById('phone-verification').classList.add('hidden');
                 } else {
-                    showStatus(`Verification failed: ${result.message || 'Unknown error'}`, 'error');
+                    showStatus(`Verification failed: ${data.message}`, 'error');
                 }
-                
             } catch (error) {
-                console.error('OTP verification error:', error);
-                showStatus(`Verification failed: ${error.message}`, 'error');
+                showStatus(`Error: ${error.message}`, 'error');
             }
         }
 
-        // Session timeout warning and management
-        let sessionTimeoutWarning = null;
-        let sessionTimeoutTimer = null;
-
-        function startSessionTimeoutWarning() {
-            // Clear any existing timers
-            if (sessionTimeoutWarning) {
-                clearTimeout(sessionTimeoutWarning);
-            }
-            if (sessionTimeoutTimer) {
-                clearInterval(sessionTimeoutTimer);
-            }
-
-            // Show warning at 3 minutes (1 minute before expiry)
-            sessionTimeoutWarning = setTimeout(() => {
-                showStatus('⚠️ Verification code will expire in 1 minute. Please enter your code soon or request a new one.', 'warning');
-                
-                // Start countdown timer
-                let timeLeft = 60; // 1 minute
-                sessionTimeoutTimer = setInterval(() => {
-                    timeLeft--;
-                    if (timeLeft > 0) {
-                        showStatus(`⚠️ Verification code expires in ${timeLeft} seconds. Please enter your code or request a new one.`, 'warning');
-                    } else {
-                        clearInterval(sessionTimeoutTimer);
-                        showStatus('❌ Verification code has expired. Please request a new code.', 'error');
-                        clearSessionData();
-                    }
-                }, 1000);
-            }, 3 * 60 * 1000); // 3 minutes
+        async function resendCode() {
+            await sendPhoneCode();
         }
 
-        function clearSessionData() {
-            // Clear session data
-            window.sessionInfo = null;
-            window.lastPhoneNumber = null;
-            localStorage.removeItem('phone_auth_session');
-            
-            // Clear timers
-            if (sessionTimeoutWarning) {
-                clearTimeout(sessionTimeoutWarning);
-                sessionTimeoutWarning = null;
-            }
-            if (sessionTimeoutTimer) {
-                clearInterval(sessionTimeoutTimer);
-                sessionTimeoutTimer = null;
-            }
-            
-            // Hide verification section
-            document.getElementById('phone-verification').classList.add('hidden');
-        }
+        // Profile Management
+        async function checkProfile() {
+            const token = authToken || localStorage.getItem('firebase_id_token');
 
-        function validateSession() {
-            const sessionData = localStorage.getItem('phone_auth_session');
-            if (!sessionData) {
-                return false;
-            }
-
-            try {
-                const session = JSON.parse(sessionData);
-                const now = Date.now();
-                
-                // Check if session is expired
-                if (now > session.expires_at) {
-                    localStorage.removeItem('phone_auth_session');
-                    return false;
-                }
-                
-                // Restore session data
-                window.sessionInfo = session.session_info;
-                window.lastPhoneNumber = session.phone_number;
-                
-                // Calculate remaining time and restart warning if needed
-                const remainingTime = session.expires_at - now;
-                if (remainingTime > 0) {
-                    // Show verification section if session is still valid
-                    document.getElementById('phone-verification').classList.remove('hidden');
-                    
-                    // Show remaining time
-                    const minutesLeft = Math.ceil(remainingTime / (60 * 1000));
-                    showStatus(`✅ Verification session active. ${minutesLeft} minute(s) remaining.`, 'info');
-                    
-                    // Restart warning if more than 1 minute left
-                    if (remainingTime > 60 * 1000) {
-                        const warningDelay = Math.max(0, remainingTime - (60 * 1000)); // 1 minute before expiry
-                        setTimeout(() => {
-                            startSessionTimeoutWarning();
-                        }, warningDelay);
-                    }
-                }
-                
-                return true;
-            } catch (e) {
-                localStorage.removeItem('phone_auth_session');
-                return false;
-            }
-        }
-
-        // Auto-refresh session if user is actively using the page
-        function setupSessionRefresh() {
-            // Check session validity every 30 seconds
-            setInterval(() => {
-                if (window.sessionInfo) {
-                    const sessionData = localStorage.getItem('phone_auth_session');
-                    if (sessionData) {
-                        try {
-                            const session = JSON.parse(sessionData);
-                            const now = Date.now();
-                            const remainingTime = session.expires_at - now;
-                            
-                            // If less than 2 minutes remaining, show a subtle reminder
-                            if (remainingTime < 2 * 60 * 1000 && remainingTime > 0) {
-                                const minutesLeft = Math.ceil(remainingTime / (60 * 1000));
-                                if (minutesLeft === 1) {
-                                    showStatus(`⏰ Verification code expires in 1 minute. Please enter your code soon.`, 'warning');
-                                }
-                            }
-                        } catch (e) {
-                            // Session data corrupted, clear it
-                            clearSessionData();
-                        }
-                    }
-                }
-            }, 30000); // Check every 30 seconds
-        }
-
-        // Resend Verification Code
-        async function resendVerificationCode() {
-            const phoneNumber = window.lastPhoneNumber || document.getElementById('phone-number').value;
-            
-            if (!phoneNumber) {
-                showStatus('Please enter a phone number first', 'error');
+            if (!token) {
+                showStatus('No authentication token found', 'error');
                 return;
             }
-            
-            // Clear existing session data
-            clearSessionData();
 
             try {
-                showStatus('Resending verification code...', 'info');
-                
-                // Reset reCAPTCHA verifier
-                if (recaptchaVerifier) {
-                    recaptchaVerifier.clear();
-                    recaptchaVerifier = null;
-                }
-                
-                // Initialize new reCAPTCHA
-                initializeRecaptcha();
-                
-                // Wait for reCAPTCHA to be ready
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                // Get new reCAPTCHA token
-                const recaptchaToken = await recaptchaVerifier.verify();
-                
-                // Call backend API to resend verification code
-                const response = await fetch('http://127.0.0.1:8080/api/v1/auth/phone/send-code', {
-                    method: 'POST',
+                showStatus('Fetching profile...', 'info');
+
+                // Call backend profile API
+                const response = await fetch(`${API_BASE_URL}/profiles`, {
+                    method: 'GET',
                     headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        phone_number: phoneNumber,
-                        recaptcha_token: recaptchaToken
-                    })
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
                 });
-                
-                // Check if response is ok and has content
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-                    
-                    try {
-                        const errorJson = JSON.parse(errorText);
-                        errorMessage = errorJson.message || errorJson.error || errorMessage;
-                    } catch (e) {
-                        errorMessage = errorText || errorMessage;
-                    }
-                    
-                    showStatus(`Failed to resend verification code: ${errorMessage}`, 'error');
-                    return;
-                }
-                
-                // Try to parse JSON response
-                let result;
-                try {
-                    const responseText = await response.text();
-                    if (!responseText) {
-                        showStatus('Empty response from server', 'error');
-                        return;
-                    }
-                    result = JSON.parse(responseText);
-                } catch (e) {
-                    showStatus('Invalid response format from server', 'error');
-                    console.error('JSON parse error:', e);
-                    return;
-                }
-                
-                // Handle the response based on the backend's API format
-                if (result.success && result.data) {
-                    showStatus('New verification code sent! Check your phone.', 'success');
-                    // Update session info
-                    window.sessionInfo = result.data.session_info;
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    showStatus('✅ Profile fetched successfully!', 'success');
+                    displayProfileInfo(data.data);
+                } else if (response.status === 404) {
+                    showStatus('⚠️ Profile not found - It should be created automatically', 'warning');
+                    // Profile should be auto-created, but show message if not
+                    document.getElementById('profile-details').innerHTML = `
+                        <h4>Profile Status</h4>
+                        <p style="color: #f57c00;">Profile not found. It will be created on next access.</p>
+                    `;
                 } else {
-                    showStatus(`Failed to resend verification code: ${result.message || 'Unknown error'}`, 'error');
+                    showStatus(`Failed to fetch profile: ${data.message || data.error}`, 'error');
                 }
-                
             } catch (error) {
-                console.error('Resend OTP error:', error);
-                showStatus(`Failed to resend verification code: ${error.message}`, 'error');
+                showStatus(`Profile fetch error: ${error.message}`, 'error');
             }
+        }
+
+        // Display Functions
+        function displayUserInfo(user) {
+            currentUser = user;
+            const userDetails = document.getElementById('user-details');
+
+            userDetails.innerHTML = `
+                <p><strong>User ID:</strong> <span>${user.id || user.uid || 'N/A'}</span></p>
+                <p><strong>Firebase UID:</strong> <span>${user.uid || user.firebase_uid || 'N/A'}</span></p>
+                <p><strong>Name:</strong> <span>${user.name || user.display_name || 'N/A'}</span></p>
+                <p><strong>Email:</strong> <span>${user.email || 'N/A'}</span></p>
+                <p><strong>Phone:</strong> <span>${user.phone_number || user.phoneNumber || 'N/A'}</span></p>
+                <p><strong>Verified:</strong> <span>${user.is_verified ? '✅ Yes' : '❌ No'}</span></p>
+                <p><strong>Active:</strong> <span>${user.is_active ? '✅ Yes' : '❌ No'}</span></p>
+                <p><strong>Created:</strong> <span>${user.created_at ? new Date(user.created_at).toLocaleString() : 'N/A'}</span></p>
+            `;
+
+            document.getElementById('user-info').classList.remove('hidden');
+            document.getElementById('auth-forms').classList.add('hidden');
+        }
+
+        function displayProfileInfo(profile) {
+            const profileDetails = document.getElementById('profile-details');
+
+            profileDetails.innerHTML = `
+                <h4>✅ Profile Information</h4>
+                <p><strong>Profile ID:</strong> <span>${profile.id || 'N/A'}</span></p>
+                <p><strong>User ID:</strong> <span>${profile.user_id || 'N/A'}</span></p>
+                <p><strong>First Name:</strong> <span>${profile.first_name || 'N/A'}</span></p>
+                <p><strong>Last Name:</strong> <span>${profile.last_name || 'N/A'}</span></p>
+                <p><strong>Email:</strong> <span>${profile.email || 'N/A'}</span></p>
+                <p><strong>Country:</strong> <span>${profile.country || 'N/A'}</span></p>
+                <p><strong>Language:</strong> <span>${profile.preferred_language || 'en'}</span></p>
+                <p><strong>Newsletter:</strong> <span>${profile.newsletter_subscribed ? '✅ Subscribed' : '❌ Not subscribed'}</span></p>
+                <p><strong>Profile Created:</strong> <span>${profile.created_at ? new Date(profile.created_at).toLocaleString() : 'N/A'}</span></p>
+                ${profile.address_line_1 ? `
+                    <p><strong>Address:</strong> <span>${profile.address_line_1}, ${profile.city || ''}, ${profile.state || ''}, ${profile.country || ''}</span></p>
+                ` : ''}
+            `;
         }
 
         // Sign Out
         async function signOut() {
             try {
-                // Clear Firebase auth if it exists
-                if (auth.currentUser) {
-                    await auth.signOut();
-                }
-                
-                // Clear stored tokens
+                // Sign out from Firebase
+                await auth.signOut();
+
+                // Clear local storage
                 localStorage.removeItem('firebase_id_token');
                 localStorage.removeItem('firebase_refresh_token');
-                
-                showStatus('Signed out successfully', 'info');
-                hideUserInfo();
-                
-                // Reset phone verification state
-                document.getElementById('phone-verification').classList.add('hidden');
-                document.getElementById('phone-number').value = '';
-                document.getElementById('verification-code').value = '';
-                
-                // Clear backend-related state
+
+                // Clear variables
+                currentUser = null;
+                authToken = null;
                 window.sessionInfo = null;
-                window.lastPhoneNumber = null;
-                
-                // Clear reCAPTCHA
-                if (recaptchaVerifier) {
-                    recaptchaVerifier.clear();
-                    recaptchaVerifier = null;
-                }
-                
+                window.phoneNumber = null;
+
+                // Reset UI
+                document.getElementById('user-info').classList.add('hidden');
+                document.getElementById('auth-forms').classList.remove('hidden');
+                document.getElementById('phone-verification').classList.add('hidden');
+
+                // Clear forms
+                document.querySelectorAll('input').forEach(input => input.value = '');
+
+                showStatus('Signed out successfully', 'info');
             } catch (error) {
-                showStatus(`Sign out failed: ${error.message}`, 'error');
+                showStatus(`Sign out error: ${error.message}`, 'error');
             }
         }
 
-        // Listen for authentication state changes
-        auth.onAuthStateChanged((user) => {
-            if (user) {
-                showUserInfo(user);
-            } else {
-                hideUserInfo();
-            }
-        });
-
-        
-
-        // Initialize on page load
+        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            showStatus('Firebase Authentication Test Page Ready.', 'info');
-            
-            // Validate existing session on page load
-            validateSession();
-            
-            // Setup session refresh monitoring
-            setupSessionRefresh();
-            
-            // Add input event listeners for better UX
-            const phoneInput = document.getElementById('phone-number');
-            const codeInput = document.getElementById('verification-code');
-            
-            // Auto-format phone number input
-            phoneInput.addEventListener('input', function(e) {
-                let value = e.target.value.replace(/\D/g, ''); // Remove non-digits
-                if (value.length > 0 && !value.startsWith('+')) {
-                    value = '+' + value;
-                }
-                e.target.value = value;
-            });
-            
-            // Auto-submit OTP when 6 digits are entered
-            codeInput.addEventListener('input', function(e) {
-                let value = e.target.value.replace(/\D/g, ''); // Only allow digits
-                e.target.value = value;
-                
-                if (value.length === 6) {
-                    // Auto-verify after a short delay
-                    setTimeout(() => {
-                        if (window.sessionInfo) {
-                            verifyPhoneCode();
-                        }
-                    }, 500);
-                }
-            });
-            
-            // Allow Enter key to trigger actions
-            phoneInput.addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    sendPhoneVerificationCode();
-                }
-            });
-            
-            codeInput.addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    verifyPhoneCode();
+            showStatus('Authentication test suite ready', 'info');
+
+            // Check for existing authentication
+            const savedToken = localStorage.getItem('firebase_id_token');
+            if (savedToken) {
+                authToken = savedToken;
+                showStatus('Found saved authentication token', 'info');
+            }
+
+            // Listen for Firebase auth state changes
+            auth.onAuthStateChanged((user) => {
+                if (user && !currentUser) {
+                    // User signed in via Firebase
+                    displayUserInfo({
+                        uid: user.uid,
+                        email: user.email,
+                        name: user.displayName,
+                        phone_number: user.phoneNumber,
+                        email_verified: user.emailVerified
+                    });
                 }
             });
         });

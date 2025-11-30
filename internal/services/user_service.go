@@ -117,14 +117,16 @@ func (s *UserService) CreateUser(ctx context.Context, req *requests.SignupReques
 	// Create user model with timestamp-based ID to avoid collisions
 	user := s.createUserWithTimestampID(req.Email, req.Name, string(hashedPassword))
 
-	// Save to database with retry logic for duplicate key errors
+	// Save to NeonDB with retry logic for duplicate key errors
 	maxRetries := 3
 	var createErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Save user to NeonDB via UserRepository (which uses pgManager connected to NeonDB)
 		createErr = s.userRepo.Create(ctx, user)
 		if createErr == nil {
-			// Successfully created user, break out of retry loop
+			// Successfully created user in NeonDB, break out of retry loop
+			fmt.Printf("✅ User successfully saved to NeonDB: ID=%s, Email=%s\n", user.GetID(), req.Email)
 			break
 		}
 

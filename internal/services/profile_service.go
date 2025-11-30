@@ -51,7 +51,7 @@ func (s *ProfileService) initializeIDGenerator() {
 }
 
 // createProfileWithTimestampID creates a new profile with timestamp-based ID to avoid collisions
-func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastName string) *models.Profile {
+func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastName, email string) *models.Profile {
 	// Generate timestamp-based ID to avoid collisions
 	timestampID, err := hash.GenerateRandomIDWithPattern("PROF", hash.Small, "timestamp")
 	if err != nil {
@@ -74,11 +74,17 @@ func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastNam
 	baseModel.SetCreatedAt(now)
 	baseModel.SetUpdatedAt(now)
 
+	// Ensure email is not empty (required by DB schema)
+	if email == "" {
+		email = "user@example.com" // Fallback email
+	}
+
 	profile := &models.Profile{
 		BaseModel:            baseModel,
 		UserID:               userID,
 		FirstName:            firstName,
 		LastName:             lastName,
+		Email:                email, // Required by DB schema
 		IsActive:             true,
 		IsVerified:           false,
 		NewsletterSubscribed: false,
@@ -152,7 +158,7 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 	}
 
 	// Create profile with information using timestamp-based ID to avoid collisions
-	profile := s.createProfileWithTimestampID(userID, firstName, lastName)
+	profile := s.createProfileWithTimestampID(userID, firstName, lastName, email)
 
 	// Set additional fields if user exists
 	if err == nil {
@@ -176,7 +182,7 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
 			strings.Contains(errorStr, "profiles_pkey") {
 			// Generate a new ID and try again with timestamp-based ID
-			profile = s.createProfileWithTimestampID(userID, firstName, lastName)
+			profile = s.createProfileWithTimestampID(userID, firstName, lastName, email)
 			// Re-set additional fields if user exists
 			if err == nil {
 				// Note: Phone and Email are now only in users table, not profiles

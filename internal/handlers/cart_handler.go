@@ -17,6 +17,7 @@ import (
 ) // CartHandler handles cart operations using the cart service
 type CartHandler struct {
 	cartService services.CartServiceInterface
+	userService *services.UserService
 	logger      *zap.Logger
 	authContext *auth.AuthContext
 	deliverySvc services.DeliveryServiceInterface
@@ -28,9 +29,10 @@ func round2(f float64) float64 {
 }
 
 // NewCartHandler creates a new cart handler with cart service
-func NewCartHandler(cartService services.CartServiceInterface, logger *zap.Logger) *CartHandler {
+func NewCartHandler(cartService services.CartServiceInterface, userService *services.UserService, logger *zap.Logger) *CartHandler {
 	return &CartHandler{
 		cartService: cartService,
+		userService: userService,
 		logger:      logger,
 		authContext: auth.NewAuthContext(),
 	}
@@ -42,11 +44,33 @@ func (h *CartHandler) SetDeliveryService(svc services.DeliveryServiceInterface) 
 }
 
 // authenticateUser is a helper method to get authenticated user ID
+// It maps Firebase UIDs to internal user IDs
 func (h *CartHandler) authenticateUser(c *gin.Context) (string, bool) {
 	userID, authenticated := h.authContext.GetAuthenticatedUserID(c)
 	if !authenticated {
 		return "", false
 	}
+
+	// Check if this is a Firebase UID (they typically don't start with "USER")
+	// Internal user IDs start with "USER" prefix
+	if !strings.HasPrefix(userID, "USER") {
+		// This is likely a Firebase UID, map it to internal user ID
+		if h.userService != nil {
+			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+			if err == nil && userResponse != nil && userResponse.Data != nil {
+				// Extract the internal user ID from the response
+				if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+					if internalID, ok := userMap["id"].(string); ok {
+						return internalID, true
+					}
+				}
+			}
+			h.logger.Error("Failed to map Firebase UID to internal user ID",
+				zap.String("firebase_uid", userID),
+				zap.Error(err))
+		}
+	}
+
 	return userID, true
 }
 

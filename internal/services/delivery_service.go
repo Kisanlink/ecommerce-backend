@@ -27,6 +27,7 @@ type DeliveryServiceInterface interface {
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
 	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error)
 	GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error)
+	GetShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error)
 }
 
 // ShipmentResult contains detailed shipment creation results
@@ -176,8 +177,8 @@ func (s *DeliveryService) getPincodeInfo(ctx context.Context, pincode string) (c
 	return strings.TrimSpace(info.City), strings.TrimSpace(info.State), nil
 }
 
-// getShippingCharges gets shipping charges from Delhivery
-func (s *DeliveryService) getShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error) {
+// GetShippingCharges gets shipping charges from Delhivery API based on destination pincode and weight
+func (s *DeliveryService) GetShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error) {
 	if len(destinationPin) != 6 {
 		return 0, fmt.Errorf("destination pincode must be 6 digits, got: %s", destinationPin)
 	}
@@ -341,7 +342,7 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 	const PRODUCT_WEIGHT_GRAMS = 100
 	weight := cart.TotalItems * PRODUCT_WEIGHT_GRAMS
 
-	charges, err := s.getShippingCharges(ctx, pincode, weight, 0)
+	charges, err := s.GetShippingCharges(ctx, pincode, weight, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shipping charges from Delhivery API: %w", err)
 	}

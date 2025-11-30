@@ -32,12 +32,13 @@ type PaymentHandler struct {
 	whatsappService *services.WhatsAppService
 	userService     *services.UserService
 	productService  *services.ProductService
+	addressService  *services.AddressService
 	logger          *zap.Logger
 	authContext     *auth.AuthContext
 }
 
 // NewPaymentHandler creates a new payment handler
-func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderService services.OrderServiceInterface, deliveryService services.DeliveryServiceInterface, whatsappService *services.WhatsAppService, userService *services.UserService, productService *services.ProductService, logger *zap.Logger) *PaymentHandler {
+func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderService services.OrderServiceInterface, deliveryService services.DeliveryServiceInterface, whatsappService *services.WhatsAppService, userService *services.UserService, productService *services.ProductService, addressService *services.AddressService, logger *zap.Logger) *PaymentHandler {
 	return &PaymentHandler{
 		paymentService:  paymentService,
 		orderService:    orderService,
@@ -45,6 +46,7 @@ func NewPaymentHandler(paymentService services.PaymentServiceInterface, orderSer
 		whatsappService: whatsappService,
 		userService:     userService,
 		productService:  productService,
+		addressService:  addressService,
 		logger:          logger,
 		authContext:     auth.NewAuthContext(),
 	}
@@ -581,6 +583,29 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		return
 	}
 
+	// Map Firebase UID to internal user ID
+	internalUserID := userID
+	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
+		// This is likely a Firebase UID, map it to internal user ID
+		userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+		if err == nil && userResponse != nil && userResponse.Data != nil {
+			// Extract the internal user ID from the response
+			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+				if id, ok := userMap["id"].(string); ok {
+					internalUserID = id
+					h.logger.Info("Mapped Firebase UID to internal user ID for payment verification",
+						zap.String("firebase_uid", userID),
+						zap.String("internal_id", internalUserID))
+				}
+			}
+		} else {
+			h.logger.Error("Failed to map Firebase UID to internal user ID in VerifyPayment",
+				zap.String("firebase_uid", userID),
+				zap.Error(err))
+			// Continue with Firebase UID as fallback
+		}
+	}
+
 	var req VerifyPaymentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Error("Invalid payment verification request data",
@@ -660,6 +685,8 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("user_id", userID),
 			zap.String("razorpay_order_id", req.OrderID))
 
+		// IMPORTANT: Fetch the complete order details from Razorpay API
+		// After Magic Checkout completes, the order will contain customer_details with addresses
 		rzpOrder, getErr := h.paymentService.GetOrder(c.Request.Context(), req.OrderID)
 		if getErr != nil {
 			h.logger.Warn("Failed to fetch Razorpay order metadata - proceeding without metadata",
@@ -676,10 +703,109 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		var cartTotal float64 = 0
 		var shippingCharges float64 = 0
 		var etaMin, etaMax int = 0, 0
-		var firstName, lastName, mobile, mobileSecondary string
+		var firstName, lastName, mobile, mobileSecondary, email string
+
+		// Priority 1: Check if Razorpay order has customer_details from Magic Checkout
+		var magicCheckoutAddress map[string]interface{}
+		if rzpOrder != nil && rzpOrder.CustomerDetails != nil && rzpOrder.CustomerDetails.ShippingAddress != nil {
+			h.logger.Info("Found customer_details from Magic Checkout in Razorpay order",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.String("email", rzpOrder.CustomerDetails.Email),
+				zap.String("contact", rzpOrder.CustomerDetails.Contact),
+				zap.Any("shipping_address", rzpOrder.CustomerDetails.ShippingAddress))
+
+			// Extract customer details from Magic Checkout
+			email = rzpOrder.CustomerDetails.Email
+			mobile = rzpOrder.CustomerDetails.Contact
+
+			// Extract customer name from shipping address
+			shippingAddr := rzpOrder.CustomerDetails.ShippingAddress
+			if shippingAddr.Name != "" {
+				nameParts := strings.Fields(strings.TrimSpace(shippingAddr.Name))
+				if len(nameParts) > 0 {
+					firstName = nameParts[0]
+					if len(nameParts) > 1 {
+						lastName = strings.Join(nameParts[1:], " ")
+					}
+				}
+			}
+
+			// Convert structured address to map for processing
+			magicCheckoutAddress = map[string]interface{}{
+				"line1":    shippingAddr.Line1,
+				"line2":    shippingAddr.Line2,
+				"city":     shippingAddr.City,
+				"state":    shippingAddr.State,
+				"zipcode":  shippingAddr.Zipcode,
+				"country":  shippingAddr.Country,
+				"name":     shippingAddr.Name,
+				"contact":  shippingAddr.Contact,
+			}
+
+			h.logger.Info("Extracted Magic Checkout address from Razorpay order",
+				zap.String("request_id", requestID),
+				zap.String("customer_name", shippingAddr.Name),
+				zap.String("address_line1", shippingAddr.Line1),
+				zap.String("city", shippingAddr.City),
+				zap.String("state", shippingAddr.State),
+				zap.String("zipcode", shippingAddr.Zipcode))
+
+			// Also update shipping fee from order if available
+			if rzpOrder.ShippingFee > 0 {
+				shippingCharges = float64(rzpOrder.ShippingFee) / 100.0 // Convert from paise to rupees
+			}
+
+		// Priority 2: Check if we have stored Magic Checkout address from the callback
+		} else if storedAddressData, exists := GetMagicCheckoutAddress(req.OrderID); exists {
+			h.logger.Info("Using stored Magic Checkout address from callback (fallback)",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.Any("address_data", storedAddressData))
+
+			// Extract the shipping address from stored data
+			if shippingAddr, ok := storedAddressData["shipping_address"].(map[string]interface{}); ok {
+				magicCheckoutAddress = shippingAddr
+			}
+
+			// Extract customer details from stored data
+			if storedEmail, ok := storedAddressData["email"].(string); ok && storedEmail != "" {
+				email = storedEmail
+			}
+			if storedContact, ok := storedAddressData["contact"].(string); ok && storedContact != "" {
+				mobile = storedContact
+			}
+
+			// Extract customer details from customer_details if present
+			if custDetails, ok := storedAddressData["customer_details"].(map[string]interface{}); ok {
+				if name, ok := custDetails["name"].(string); ok && name != "" {
+					nameParts := strings.Fields(strings.TrimSpace(name))
+					if len(nameParts) > 0 {
+						firstName = nameParts[0]
+						if len(nameParts) > 1 {
+							lastName = strings.Join(nameParts[1:], " ")
+						}
+					}
+				}
+				if fn, ok := custDetails["first_name"].(string); ok && fn != "" {
+					firstName = fn
+				}
+				if ln, ok := custDetails["last_name"].(string); ok && ln != "" {
+					lastName = ln
+				}
+			}
+		}
 
 		// Extract customer details from payment entity (Magic Checkout stores them here)
 		if rzpPayment != nil {
+			// Log all payment metadata for debugging
+			h.logger.Info("Razorpay Payment Full Details",
+				zap.String("request_id", requestID),
+				zap.Any("payment_notes", rzpPayment.Notes),
+				zap.String("payment_contact", rzpPayment.Contact),
+				zap.String("payment_email", rzpPayment.Email),
+				zap.Any("payment_method", rzpPayment.Method))
+
 			if rzpPayment.Contact != "" {
 				mobile = rzpPayment.Contact
 				h.logger.Info("Using contact from payment entity",
@@ -687,22 +813,60 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					zap.String("contact", mobile))
 			}
 			if rzpPayment.Email != "" {
+				email = rzpPayment.Email
 				h.logger.Info("Email from payment entity",
 					zap.String("request_id", requestID),
 					zap.String("email", rzpPayment.Email))
 			}
-			// Extract address from payment notes (Magic Checkout stores structured address here)
+
+			// Magic Checkout stores shipping address in payment metadata
+			// Check for shipping_address in payment notes/metadata
 			if rzpPayment.Notes != nil {
-				if addrNote, ok := rzpPayment.Notes["address"].(string); ok && addrNote != "" {
+				// Log all notes to understand structure
+				for key, value := range rzpPayment.Notes {
+					h.logger.Info("Payment note field",
+						zap.String("request_id", requestID),
+						zap.String("key", key),
+						zap.Any("value", value),
+						zap.String("value_type", fmt.Sprintf("%T", value)))
+				}
+
+				// Try to extract Magic Checkout shipping address
+				if shippingAddr, ok := rzpPayment.Notes["shipping_address"].(map[string]interface{}); ok {
+					magicCheckoutAddress = shippingAddr
+					h.logger.Info("Found Magic Checkout shipping address in payment notes",
+						zap.String("request_id", requestID),
+						zap.Any("address", shippingAddr))
+				} else if addrNote, ok := rzpPayment.Notes["address"].(string); ok && addrNote != "" {
+					// Fallback to string address
 					shippingAddress = addrNote
-					h.logger.Info("Using address from payment notes",
+					h.logger.Info("Using address string from payment notes",
 						zap.String("request_id", requestID),
 						zap.String("address", shippingAddress))
+				}
+			}
+
+			// Check if Magic Checkout sent address through Method field (for card payments)
+			if rzpPayment.Method == "card" && magicCheckoutAddress == nil {
+				// Check for billing address in card details
+				if methodData, ok := rzpPayment.Notes["method"].(map[string]interface{}); ok {
+					if cardData, ok := methodData["card"].(map[string]interface{}); ok {
+						h.logger.Info("Found card data in payment method",
+							zap.String("request_id", requestID),
+							zap.Any("card_data", cardData))
+						// Extract billing address from card data
+						magicCheckoutAddress = cardData
+					}
 				}
 			}
 		}
 		if rzpOrder != nil && rzpOrder.Notes != nil {
 			notes = rzpOrder.Notes
+
+			// Log all order notes to understand structure
+			h.logger.Info("Razorpay Order Full Notes",
+				zap.String("request_id", requestID),
+				zap.Any("order_notes", notes))
 			// Note: shipping_address removed from notes to reduce field count
 			if v, ok := notes["shipping_addr_id"].(string); ok {
 				shippingAddressID = v
@@ -806,7 +970,35 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.Float64("shipping_charges", shippingCharges))
 
 		// Create normalized customer and address data for the order
-		// Provide default last name if not available
+		// If we still don't have a name, try to extract from email
+		if firstName == "" && email != "" {
+			// Use part before @ as the name
+			emailParts := strings.Split(email, "@")
+			if len(emailParts) > 0 {
+				namePart := strings.TrimSpace(emailParts[0])
+				// Replace common separators with spaces and split
+				namePart = strings.ReplaceAll(namePart, ".", " ")
+				namePart = strings.ReplaceAll(namePart, "_", " ")
+				namePart = strings.ReplaceAll(namePart, "-", " ")
+				nameParts := strings.Fields(namePart)
+				if len(nameParts) > 0 {
+					firstName = strings.Title(nameParts[0])
+					if len(nameParts) > 1 {
+						lastName = strings.Title(strings.Join(nameParts[1:], " "))
+					}
+					h.logger.Info("Extracted name from email",
+						zap.String("request_id", requestID),
+						zap.String("email", email),
+						zap.String("firstName", firstName),
+						zap.String("lastName", lastName))
+				}
+			}
+		}
+
+		// Provide default values if still missing
+		if firstName == "" {
+			firstName = "Guest" // Default value for required field
+		}
 		if lastName == "" {
 			lastName = "Customer" // Default value for required field
 		}
@@ -815,15 +1007,140 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			firstName,
 			lastName,
 			mobile,
-			"", // phoneAlt not available
-			"", // email not available
+			mobileSecondary, // phoneAlt from customer_info
+			email,           // email from payment entity
 		)
 
 		// Create normalized address data - extract structured address from Razorpay notes
 		var addressData *models.OrderAddress
+		var userAddressID string // To store saved address ID for user
 
-		// Try to extract structured address data from Razorpay notes first
-		if rzpOrder != nil && rzpOrder.Notes != nil {
+		// Priority 1: Check for Magic Checkout address data from payment
+		if magicCheckoutAddress != nil && len(magicCheckoutAddress) > 0 {
+			h.logger.Info("Processing Magic Checkout address",
+				zap.String("request_id", requestID),
+				zap.Any("magic_checkout_address", magicCheckoutAddress))
+
+			// Extract address fields from Magic Checkout data
+			addressLine1 := ""
+			addressLine2 := ""
+			city := ""
+			state := ""
+			postalCode := ""
+			country := "India"
+
+			// Try to extract customer name from Magic Checkout address (if available)
+			if name, ok := magicCheckoutAddress["name"].(string); ok && name != "" {
+				nameParts := strings.Fields(strings.TrimSpace(name))
+				if len(nameParts) > 0 && firstName == "" {
+					firstName = nameParts[0]
+					if len(nameParts) > 1 {
+						lastName = strings.Join(nameParts[1:], " ")
+					}
+					h.logger.Info("Extracted customer name from Magic Checkout address",
+						zap.String("request_id", requestID),
+						zap.String("name", name),
+						zap.String("firstName", firstName),
+						zap.String("lastName", lastName))
+				}
+			}
+
+			// Try to extract phone from Magic Checkout address (if available)
+			if phone, ok := magicCheckoutAddress["phone"].(string); ok && phone != "" && mobile == "" {
+				mobile = strings.TrimSpace(phone)
+				h.logger.Info("Extracted phone from Magic Checkout address",
+					zap.String("request_id", requestID),
+					zap.String("phone", mobile))
+			} else if contact, ok := magicCheckoutAddress["contact"].(string); ok && contact != "" && mobile == "" {
+				mobile = strings.TrimSpace(contact)
+				h.logger.Info("Extracted contact from Magic Checkout address",
+					zap.String("request_id", requestID),
+					zap.String("contact", mobile))
+			}
+
+			// Magic Checkout may send fields like: line1, line2, city, state, zipcode, country
+			if line1, ok := magicCheckoutAddress["line1"].(string); ok {
+				addressLine1 = strings.TrimSpace(line1)
+			} else if line1, ok := magicCheckoutAddress["address_line_1"].(string); ok {
+				addressLine1 = strings.TrimSpace(line1)
+			} else if line1, ok := magicCheckoutAddress["address"].(string); ok {
+				addressLine1 = strings.TrimSpace(line1)
+			}
+
+			if line2, ok := magicCheckoutAddress["line2"].(string); ok {
+				addressLine2 = strings.TrimSpace(line2)
+			} else if line2, ok := magicCheckoutAddress["address_line_2"].(string); ok {
+				addressLine2 = strings.TrimSpace(line2)
+			}
+
+			if c, ok := magicCheckoutAddress["city"].(string); ok {
+				city = strings.TrimSpace(c)
+			}
+
+			if s, ok := magicCheckoutAddress["state"].(string); ok {
+				state = strings.TrimSpace(s)
+			} else if s, ok := magicCheckoutAddress["state_code"].(string); ok {
+				state = strings.TrimSpace(s)
+			}
+
+			if zip, ok := magicCheckoutAddress["zipcode"].(string); ok {
+				postalCode = strings.TrimSpace(zip)
+			} else if zip, ok := magicCheckoutAddress["postal_code"].(string); ok {
+				postalCode = strings.TrimSpace(zip)
+			} else if zip, ok := magicCheckoutAddress["pincode"].(string); ok {
+				postalCode = strings.TrimSpace(zip)
+			}
+
+			if c, ok := magicCheckoutAddress["country"].(string); ok {
+				country = strings.TrimSpace(c)
+			}
+
+			// Create OrderAddress from Magic Checkout data
+			addressData = models.NewOrderAddress(
+				addressLine1,
+				addressLine2,
+				city,
+				state,
+				postalCode,
+				country,
+			)
+
+			// Also save this address to user's address book for future use
+			if h.addressService != nil && userID != "" {
+				// Use FindOrCreate to avoid duplicates and save to user's address book
+				savedAddr, addrErr := h.addressService.FindOrCreateAddress(
+					c.Request.Context(),
+					userID,
+					addressLine1,
+					city,
+					state,
+					postalCode,
+					country,
+				)
+
+				if addrErr == nil && savedAddr != nil {
+					userAddressID = savedAddr.ID
+					h.logger.Info("Magic Checkout address saved to user's address book",
+						zap.String("request_id", requestID),
+						zap.String("user_id", userID),
+						zap.String("address_id", userAddressID))
+				} else {
+					h.logger.Warn("Failed to save Magic Checkout address to user's address book",
+						zap.String("request_id", requestID),
+						zap.Error(addrErr))
+				}
+			}
+
+			h.logger.Info("Created OrderAddress from Magic Checkout data",
+				zap.String("request_id", requestID),
+				zap.String("address_line_1", addressLine1),
+				zap.String("city", city),
+				zap.String("state", state),
+				zap.String("postal_code", postalCode))
+		}
+
+		// Priority 2: Try to extract structured address data from Razorpay notes
+		if addressData == nil && rzpOrder != nil && rzpOrder.Notes != nil {
 			notes := rzpOrder.Notes
 			if addressStr, ok := notes["address"].(string); ok && addressStr != "" {
 				// Parse combined address field: "street|city|state|postal"
@@ -877,7 +1194,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Fallback to database lookup if structured data not available in notes
 		if addressData == nil && shippingAddressID != "" {
-			if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, shippingAddressID); err == nil && addr != nil {
+			if addr, err := h.orderService.GetAddressByID(c.Request.Context(), internalUserID, shippingAddressID); err == nil && addr != nil {
 				addressData = models.NewOrderAddress(
 					addr.AddressLine1,
 					addr.AddressLine2,
@@ -911,7 +1228,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// Create order - simplified approach, always create new order
 		order, err := h.orderService.CreateOrder(
 			c.Request.Context(),
-			userID,
+			internalUserID,
 			customerData,
 			addressData,
 			"razorpay",
@@ -1070,13 +1387,24 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID))
 		} else if len(orderItems) > 0 {
+			// Log order details before shipment creation
+			h.logger.Info("Attempting to create shipment with order details",
+				zap.String("request_id", requestID),
+				zap.String("order_id", order.ID),
+				zap.String("shipping_address", orderWithItems.ShippingAddr),
+				zap.String("shipping_address_id", orderWithItems.ShippingAddressID),
+				zap.String("customer_name", fmt.Sprintf("%s %s", orderWithItems.CustomerFirstName, orderWithItems.CustomerLastName)),
+				zap.String("customer_phone", orderWithItems.CustomerPhone),
+				zap.Int("item_count", len(orderItems)))
+
 			// Create shipment to get tracking URL
 			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
 			if shipmentErr != nil {
-				h.logger.Warn("Shipment creation failed, will be retried in background",
+				h.logger.Error("Shipment creation failed - detailed error",
 					zap.String("request_id", requestID),
 					zap.Error(shipmentErr),
-					zap.String("order_id", order.ID))
+					zap.String("order_id", order.ID),
+					zap.String("error_details", fmt.Sprintf("%+v", shipmentErr)))
 			} else if shipmentResult != nil && shipmentResult.Success && shipmentResult.Waybill != "" {
 				// Update order with shipment details
 				awbNumber := shipmentResult.Waybill
@@ -1688,8 +2016,34 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 		return
 	}
 
-	// Get cart using Firebase UID (userID is already Firebase UID from GetAuthenticatedUserID)
-	cart, err := h.orderService.GetUserCart(c.Request.Context(), userID)
+	// Map Firebase UID to internal user ID
+	internalUserID := userID
+	if authenticated && !strings.HasPrefix(userID, "USER") && h.userService != nil {
+		// This is likely a Firebase UID, map it to internal user ID
+		userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+		if err == nil && userResponse != nil && userResponse.Data != nil {
+			// Extract the internal user ID from the response
+			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+				if id, ok := userMap["id"].(string); ok {
+					internalUserID = id
+					h.logger.Info("Mapped Firebase UID to internal user ID for Magic Checkout",
+						zap.String("firebase_uid", userID),
+						zap.String("internal_id", internalUserID))
+				}
+			}
+		} else {
+			h.logger.Error("Failed to map Firebase UID to internal user ID",
+				zap.String("firebase_uid", userID),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to get user information",
+			})
+			return
+		}
+	}
+
+	// Get cart using internal user ID
+	cart, err := h.orderService.GetUserCart(c.Request.Context(), internalUserID)
 	if err != nil {
 		h.logger.Error("Failed to get user cart",
 			zap.String("request_id", requestID),
@@ -1704,7 +2058,8 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	if cart == nil || len(cart.Items) == 0 {
 		h.logger.Warn("Cart is empty or not found",
 			zap.String("request_id", requestID),
-			zap.String("user_id", userID))
+			zap.String("user_id", userID),
+			zap.String("internal_user_id", internalUserID))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Cart is empty. Please add items to cart.",
 		})
@@ -1862,11 +2217,17 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	// TODO: Add prefill data if user is authenticated
 	// For now, Magic Checkout will collect phone number during checkout
 
+	// Store order data in cache for coupon apply-promotion to retrieve cart total
+	// This is critical because Razorpay sends our receipt ID, not the Razorpay order ID
+	StoreMagicCheckoutOrder(razorpayOrder.Receipt, razorpayOrder.ID, cartTotal, userID)
+
 	h.logger.Info("Magic Checkout order created successfully",
 		zap.String("request_id", requestID),
 		zap.String("razorpay_order_id", razorpayOrder.ID),
+		zap.String("receipt", razorpayOrder.Receipt),
 		zap.String("user_id", userID),
-		zap.Float64("amount", discountedTotal),
+		zap.Float64("cart_total", cartTotal),
+		zap.Float64("discounted_total", discountedTotal),
 		zap.Int("line_items", len(lineItems)))
 
 	c.JSON(http.StatusOK, response)

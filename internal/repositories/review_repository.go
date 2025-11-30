@@ -7,28 +7,37 @@ import (
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
-	"github.com/Kisanlink/ecommerce-backend/internal/database"
+	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 // ReviewRepository provides Postgres-backed CRUD for reviews
 type ReviewRepository struct {
-	db     *gorm.DB
-	logger *zap.Logger
+	pgManager *db.PostgresManager
+	logger    *zap.Logger
 }
 
 // NewReviewRepository creates a new review repository backed by Neon/Postgres
-func NewReviewRepository(logger *zap.Logger) *ReviewRepository {
+func NewReviewRepository(pgManager *db.PostgresManager, logger *zap.Logger) *ReviewRepository {
 	return &ReviewRepository{
-		db:     database.GetDB(),
-		logger: logger,
+		pgManager: pgManager,
+		logger:    logger,
 	}
+}
+
+// getDB returns the GORM DB instance from pgManager
+func (r *ReviewRepository) getDB(ctx context.Context) (*gorm.DB, error) {
+	return r.pgManager.GetDB(ctx, false)
 }
 
 // CreateReview persists a new review
 func (r *ReviewRepository) CreateReview(ctx context.Context, review *models.Review) error {
-	if err := r.db.WithContext(ctx).Create(review).Error; err != nil {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).Create(review).Error; err != nil {
 		return fmt.Errorf("failed to create review: %w", err)
 	}
 	return nil
@@ -36,8 +45,12 @@ func (r *ReviewRepository) CreateReview(ctx context.Context, review *models.Revi
 
 // GetReviewByID fetches a review by its ID
 func (r *ReviewRepository) GetReviewByID(ctx context.Context, reviewID string) (*models.Review, error) {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
 	var review models.Review
-	err := r.db.WithContext(ctx).
+	err = db.WithContext(ctx).
 		Where("id = ? AND is_active = ?", reviewID, true).
 		First(&review).Error
 	if err != nil {
@@ -51,8 +64,12 @@ func (r *ReviewRepository) GetReviewByID(ctx context.Context, reviewID string) (
 
 // GetReviewByUserAndProduct gets an active review by user and product (for checking duplicates)
 func (r *ReviewRepository) GetReviewByUserAndProduct(ctx context.Context, userID, productID string) (*models.Review, error) {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
 	var review models.Review
-	err := r.db.WithContext(ctx).
+	err = db.WithContext(ctx).
 		Where("user_id = ? AND product_id = ? AND is_active = ?", userID, productID, true).
 		First(&review).Error
 	if err != nil {
@@ -66,7 +83,11 @@ func (r *ReviewRepository) GetReviewByUserAndProduct(ctx context.Context, userID
 
 // UpdateReview updates an existing review
 func (r *ReviewRepository) UpdateReview(ctx context.Context, review *models.Review) error {
-	if err := r.db.WithContext(ctx).Save(review).Error; err != nil {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).Save(review).Error; err != nil {
 		return fmt.Errorf("failed to update review: %w", err)
 	}
 	return nil
@@ -74,7 +95,11 @@ func (r *ReviewRepository) UpdateReview(ctx context.Context, review *models.Revi
 
 // DeleteReview soft deletes a review by setting is_active = false
 func (r *ReviewRepository) DeleteReview(ctx context.Context, reviewID string) error {
-	result := r.db.WithContext(ctx).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	result := db.WithContext(ctx).
 		Model(&models.Review{}).
 		Where("id = ?", reviewID).
 		Updates(map[string]interface{}{
@@ -92,7 +117,11 @@ func (r *ReviewRepository) DeleteReview(ctx context.Context, reviewID string) er
 
 // HardDeleteReview permanently deletes a review
 func (r *ReviewRepository) HardDeleteReview(ctx context.Context, reviewID string) error {
-	result := r.db.WithContext(ctx).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	result := db.WithContext(ctx).
 		Where("id = ?", reviewID).
 		Delete(&models.Review{})
 	if result.Error != nil {
@@ -113,7 +142,11 @@ func (r *ReviewRepository) GetProductReviews(ctx context.Context, productID stri
 		pageSize = 20
 	}
 
-	query := r.db.WithContext(ctx).Model(&models.Review{}).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	query := db.WithContext(ctx).Model(&models.Review{}).
 		Where("product_id = ? AND is_active = ?", productID, true)
 
 	// Apply rating filters
@@ -178,7 +211,11 @@ func (r *ReviewRepository) GetUserReviews(ctx context.Context, userID string, pa
 		pageSize = 20
 	}
 
-	query := r.db.WithContext(ctx).Model(&models.Review{}).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	query := db.WithContext(ctx).Model(&models.Review{}).
 		Where("user_id = ? AND is_active = ?", userID, true)
 
 	// For non-admin users, filter out flagged reviews
@@ -235,7 +272,11 @@ func (r *ReviewRepository) AdminListReviews(ctx context.Context, req *AdminListR
 		req.PageSize = 20
 	}
 
-	query := r.db.WithContext(ctx).Model(&models.Review{})
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	query := db.WithContext(ctx).Model(&models.Review{})
 
 	// Apply filters
 	if req.IsActive != nil {
@@ -319,7 +360,11 @@ func (r *ReviewRepository) GetFlaggedReviews(ctx context.Context, page, pageSize
 		pageSize = 20
 	}
 
-	query := r.db.WithContext(ctx).Model(&models.Review{}).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	query := db.WithContext(ctx).Model(&models.Review{}).
 		Where("is_flagged = ?", true)
 
 	// Get total count
@@ -343,8 +388,12 @@ func (r *ReviewRepository) GetFlaggedReviews(ctx context.Context, page, pageSize
 
 // GetAllFlaggedReviews retrieves all flagged reviews without pagination (for bulk operations)
 func (r *ReviewRepository) GetAllFlaggedReviews(ctx context.Context) ([]*models.Review, error) {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
 	var reviews []*models.Review
-	if err := r.db.WithContext(ctx).
+	if err := db.WithContext(ctx).
 		Where("is_flagged = ?", true).
 		Find(&reviews).Error; err != nil {
 		return nil, fmt.Errorf("failed to fetch flagged reviews: %w", err)

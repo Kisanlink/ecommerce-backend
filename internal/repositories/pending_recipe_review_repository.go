@@ -5,23 +5,28 @@ import (
 	"fmt"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
-	"github.com/Kisanlink/ecommerce-backend/internal/database"
+	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 // PendingRecipeReviewRepository provides Postgres-backed persistence for pending submissions
 type PendingRecipeReviewRepository struct {
-	db     *gorm.DB
-	logger *zap.Logger
+	pgManager *db.PostgresManager
+	logger    *zap.Logger
 }
 
-// NewPendingRecipeReviewRepository creates the repository using the global DB connection
-func NewPendingRecipeReviewRepository(logger *zap.Logger) *PendingRecipeReviewRepository {
+// NewPendingRecipeReviewRepository creates the repository using pgManager
+func NewPendingRecipeReviewRepository(pgManager *db.PostgresManager, logger *zap.Logger) *PendingRecipeReviewRepository {
 	return &PendingRecipeReviewRepository{
-		db:     database.GetDB(),
-		logger: logger,
+		pgManager: pgManager,
+		logger:    logger,
 	}
+}
+
+// getDB returns the GORM DB instance from pgManager
+func (r *PendingRecipeReviewRepository) getDB(ctx context.Context) (*gorm.DB, error) {
+	return r.pgManager.GetDB(ctx, false)
 }
 
 // CreatePendingReview stores a new pending recipe submission
@@ -29,7 +34,11 @@ func (r *PendingRecipeReviewRepository) CreatePendingReview(ctx context.Context,
 	if review.ReviewID == "" && review.BaseModel != nil {
 		review.ReviewID = review.GetID()
 	}
-	if err := r.db.WithContext(ctx).Create(review).Error; err != nil {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).Create(review).Error; err != nil {
 		return fmt.Errorf("failed to create pending review: %w", err)
 	}
 	return nil
@@ -44,7 +53,11 @@ func (r *PendingRecipeReviewRepository) GetPendingReviews(ctx context.Context, p
 		pageSize = 20
 	}
 
-	query := r.db.WithContext(ctx).Model(&models.PendingRecipeReview{})
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	query := db.WithContext(ctx).Model(&models.PendingRecipeReview{})
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -66,7 +79,11 @@ func (r *PendingRecipeReviewRepository) GetPendingReviews(ctx context.Context, p
 // GetPendingReviewByID fetches a pending review by its review_id or internal ID
 func (r *PendingRecipeReviewRepository) GetPendingReviewByID(ctx context.Context, id string) (*models.PendingRecipeReview, error) {
 	var review models.PendingRecipeReview
-	if err := r.db.WithContext(ctx).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).
 		Where("review_id = ? OR id = ?", id, id).
 		First(&review).Error; err != nil {
 		return nil, fmt.Errorf("failed to get pending review: %w", err)
@@ -76,7 +93,11 @@ func (r *PendingRecipeReviewRepository) GetPendingReviewByID(ctx context.Context
 
 // UpdatePendingReview persists changes to a pending review
 func (r *PendingRecipeReviewRepository) UpdatePendingReview(ctx context.Context, review *models.PendingRecipeReview) error {
-	if err := r.db.WithContext(ctx).Save(review).Error; err != nil {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).Save(review).Error; err != nil {
 		return fmt.Errorf("failed to update pending review: %w", err)
 	}
 	return nil
@@ -84,7 +105,11 @@ func (r *PendingRecipeReviewRepository) UpdatePendingReview(ctx context.Context,
 
 // DeletePendingReview removes a pending review permanently
 func (r *PendingRecipeReviewRepository) DeletePendingReview(ctx context.Context, id string) error {
-	if err := r.db.WithContext(ctx).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).
 		Where("review_id = ? OR id = ?", id, id).
 		Delete(&models.PendingRecipeReview{}).Error; err != nil {
 		return fmt.Errorf("failed to delete pending review: %w", err)

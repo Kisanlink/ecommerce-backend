@@ -5,12 +5,67 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+// Global cache for Magic Checkout data
+var (
+	magicCheckoutAddressCache = make(map[string]map[string]interface{})
+	magicCheckoutOrderCache   = make(map[string]MagicCheckoutOrderData) // receipt/order_id -> order data
+	magicCheckoutCacheMutex   sync.RWMutex
+)
+
+// MagicCheckoutOrderData stores order information for coupon calculation
+type MagicCheckoutOrderData struct {
+	RazorpayOrderID string  // The actual Razorpay order ID (order_xxx)
+	ReceiptID       string  // Our receipt ID (mc_xxx_timestamp)
+	CartTotal       float64 // Cart total in rupees
+	UserID          string  // User ID
+}
+
+// StoreMagicCheckoutOrder stores order data for later retrieval during apply-promotion
+func StoreMagicCheckoutOrder(receiptID string, razorpayOrderID string, cartTotal float64, userID string) {
+	magicCheckoutCacheMutex.Lock()
+	defer magicCheckoutCacheMutex.Unlock()
+	data := MagicCheckoutOrderData{
+		RazorpayOrderID: razorpayOrderID,
+		ReceiptID:       receiptID,
+		CartTotal:       cartTotal,
+		UserID:          userID,
+	}
+	// Store by both receipt ID and Razorpay order ID for flexible lookup
+	magicCheckoutOrderCache[receiptID] = data
+	magicCheckoutOrderCache[razorpayOrderID] = data
+}
+
+// GetMagicCheckoutOrder retrieves stored order data by receipt ID or Razorpay order ID
+func GetMagicCheckoutOrder(orderID string) (MagicCheckoutOrderData, bool) {
+	magicCheckoutCacheMutex.RLock()
+	defer magicCheckoutCacheMutex.RUnlock()
+	data, exists := magicCheckoutOrderCache[orderID]
+	return data, exists
+}
+
+// StoreMagicCheckoutAddress stores address data temporarily
+func StoreMagicCheckoutAddress(razorpayOrderID string, addressData map[string]interface{}) {
+	magicCheckoutCacheMutex.Lock()
+	defer magicCheckoutCacheMutex.Unlock()
+	magicCheckoutAddressCache[razorpayOrderID] = addressData
+}
+
+// GetMagicCheckoutAddress retrieves stored address data
+func GetMagicCheckoutAddress(razorpayOrderID string) (map[string]interface{}, bool) {
+	magicCheckoutCacheMutex.RLock()
+	defer magicCheckoutCacheMutex.RUnlock()
+	data, exists := magicCheckoutAddressCache[razorpayOrderID]
+	return data, exists
+}
 
 // MagicCheckoutHandler handles Magic Checkout API endpoints
 type MagicCheckoutHandler struct {
@@ -45,10 +100,11 @@ func NewMagicCheckoutHandler(
 // POST /api/v1/magic-checkout/get-promotions
 func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
 	var req struct {
-		OrderID         string `json:"order_id"`
-		RazorpayOrderID string `json:"razorpay_order_id"`
-		Contact         string `json:"contact"`
-		Email           string `json:"email"`
+		OrderID         string  `json:"order_id"`
+		RazorpayOrderID string  `json:"razorpay_order_id"`
+		Contact         string  `json:"contact"`
+		Email           string  `json:"email"`
+		Amount          float64 `json:"amount"` // Cart amount in paise
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -60,95 +116,56 @@ func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
 	h.logger.Info("Magic Checkout requesting promotions",
 		zap.String("order_id", req.OrderID),
 		zap.String("razorpay_order_id", req.RazorpayOrderID),
-		zap.String("contact", req.Contact))
+		zap.String("contact", req.Contact),
+		zap.Float64("amount", req.Amount))
 
-	// Get active coupons from existing service (limit to 50 for display)
-	activeCoupons, err := h.couponService.GetActiveCoupons(c.Request.Context(), 50, 0)
+	// Get active coupons with rules
+	activeCouponsResp, err := h.couponService.GetActiveCoupons(c.Request.Context(), 50, 0)
 	if err != nil {
 		h.logger.Error("Failed to get active coupons", zap.Error(err))
 		c.JSON(http.StatusOK, gin.H{"promotions": []interface{}{}})
 		return
 	}
 
-	// Format for Magic Checkout
+	// Razorpay get-promotions only needs: code, summary, description
 	promotions := []map[string]interface{}{}
 
 	// Extract coupons from response
 	var couponsData []interface{}
-	if responseData, ok := activeCoupons.Data.(map[string]interface{}); ok {
+	if responseData, ok := activeCouponsResp.Data.(map[string]interface{}); ok {
 		if coupons, ok := responseData["coupons"].([]interface{}); ok {
 			couponsData = coupons
 		}
 	}
 
-	for _, coupon := range couponsData {
-		if couponMap, ok := coupon.(map[string]interface{}); ok {
-			// Get coupon ID (handle different possible field names)
-			couponID := ""
-			if id, ok := couponMap["id"].(string); ok {
-				couponID = id
-			} else if id, ok := couponMap["ID"].(string); ok {
-				couponID = id
-			}
-
-			// Get rules (handle different possible structures)
-			var rules []interface{}
-			if rulesData, ok := couponMap["rules"].([]interface{}); ok {
-				rules = rulesData
-			} else if rulesData, ok := couponMap["Rules"].([]interface{}); ok {
-				rules = rulesData
-			}
-
-			if len(rules) == 0 {
-				continue
-			}
-
-			// Get the first rule for display
-			firstRule := rules[0]
-			var firstRuleMap map[string]interface{}
-			if ruleMap, ok := firstRule.(map[string]interface{}); ok {
-				firstRuleMap = ruleMap
-			}
-
-			if firstRuleMap == nil {
-				continue
-			}
-
-			promotion := map[string]interface{}{
-				"code":         couponMap["code"],
-				"reference_id": couponID,
-			}
-
-			// Add description if available
-			if desc, ok := couponMap["description"].(string); ok && desc != "" {
-				promotion["description"] = desc
-			} else {
-				promotion["description"] = fmt.Sprintf("Use code %s", couponMap["code"])
-			}
-
-			// Determine type and value based on rule
-			if ruleType, ok := firstRuleMap["type"].(string); ok {
-				if ruleType == "percentage" {
-					promotion["type"] = "percentage"
-					if value, ok := firstRuleMap["discount_value"].(float64); ok {
-						promotion["value"] = value
-					} else if value, ok := firstRuleMap["DiscountValue"].(float64); ok {
-						promotion["value"] = value
-					}
-				} else {
-					promotion["type"] = "cart_value"
-					// Convert to paise
-					if value, ok := firstRuleMap["discount_value"].(float64); ok {
-						promotion["value"] = int(value * 100)
-					} else if value, ok := firstRuleMap["DiscountValue"].(float64); ok {
-						promotion["value"] = int(value * 100)
-					}
-				}
-			}
-
-			promotions = append(promotions, promotion)
+	for _, couponData := range couponsData {
+		couponMap, ok := couponData.(map[string]interface{})
+		if !ok {
+			continue
 		}
+
+		code, _ := couponMap["code"].(string)
+		if code == "" {
+			continue
+		}
+
+		description, _ := couponMap["description"].(string)
+		if description == "" {
+			description = fmt.Sprintf("Apply code %s for discount", code)
+		}
+
+		// Create simple promotion for get-promotions (Razorpay only needs these 3 fields)
+		promotion := map[string]interface{}{
+			"code":        code,
+			"summary":     description,
+			"description": description,
+		}
+
+		promotions = append(promotions, promotion)
 	}
+
+	h.logger.Info("Returning promotions list",
+		zap.Int("count", len(promotions)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"promotions": promotions,
@@ -159,11 +176,14 @@ func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
 // POST /api/v1/magic-checkout/apply-promotion
 func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 	var req struct {
-		OrderID         string `json:"order_id"`
-		RazorpayOrderID string `json:"razorpay_order_id"`
-		Contact         string `json:"contact"`
-		Email           string `json:"email"`
-		Code            string `json:"code"`
+		OrderID         string  `json:"order_id"`
+		RazorpayOrderID string  `json:"razorpay_order_id"`
+		Contact         string  `json:"contact"`
+		Email           string  `json:"email"`
+		Code            string  `json:"code"`
+		Amount          float64 `json:"amount"`          // Cart amount in paise (sent by Razorpay)
+		CartAmount      float64 `json:"cart_amount"`     // Alternative field name
+		SubTotal        float64 `json:"sub_total"`       // Another alternative
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -177,39 +197,88 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Magic Checkout applying promotion",
+	// Determine which order ID to use
+	orderID := req.RazorpayOrderID
+	if orderID == "" {
+		orderID = req.OrderID
+	}
+
+	h.logger.Info("Magic Checkout applying promotion - RAW REQUEST",
 		zap.String("order_id", req.OrderID),
 		zap.String("razorpay_order_id", req.RazorpayOrderID),
+		zap.String("resolved_order_id", orderID),
 		zap.String("code", req.Code),
-		zap.String("contact", req.Contact))
+		zap.String("contact", req.Contact),
+		zap.Float64("amount", req.Amount),
+		zap.Float64("cart_amount", req.CartAmount),
+		zap.Float64("sub_total", req.SubTotal))
 
-	// Get order amount from Razorpay order
-	rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), req.RazorpayOrderID)
-	if err != nil {
-		h.logger.Error("Failed to get Razorpay order", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{
-				"code":        "INVALID_PROMOTION",
-				"description": "Order not found",
-			},
-		})
-		return
+	// Get cart total from various sources (priority order)
+	var cartTotal float64 = 0
+	var userID string = "guest_" + req.Contact
+
+	// Priority 1: Get from our order cache (stored when order was created)
+	// This is the most reliable source as we store the actual cart total
+	if orderData, found := GetMagicCheckoutOrder(orderID); found {
+		cartTotal = orderData.CartTotal
+		userID = orderData.UserID
+		h.logger.Info("Retrieved cart total from order cache",
+			zap.String("order_id", orderID),
+			zap.String("receipt", orderData.ReceiptID),
+			zap.String("razorpay_order_id", orderData.RazorpayOrderID),
+			zap.Float64("cart_total", cartTotal),
+			zap.String("user_id", userID))
 	}
 
-	// Extract cart total from order notes
-	cartTotal := float64(rzpOrder.Amount) / 100.0 // Convert from paise to rupees
-	if rzpOrder.Notes != nil {
-		if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
-			cartTotal = total
+	// Priority 2: Check if Razorpay sent amount directly in request
+	if cartTotal == 0 && req.Amount > 0 {
+		cartTotal = req.Amount / 100.0 // Convert from paise to rupees
+		h.logger.Info("Using amount from request",
+			zap.Float64("amount_paise", req.Amount),
+			zap.Float64("cart_total_rupees", cartTotal))
+	} else if cartTotal == 0 && req.CartAmount > 0 {
+		cartTotal = req.CartAmount / 100.0
+		h.logger.Info("Using cart_amount from request",
+			zap.Float64("cart_amount_paise", req.CartAmount),
+			zap.Float64("cart_total_rupees", cartTotal))
+	} else if cartTotal == 0 && req.SubTotal > 0 {
+		cartTotal = req.SubTotal / 100.0
+		h.logger.Info("Using sub_total from request",
+			zap.Float64("sub_total_paise", req.SubTotal),
+			zap.Float64("cart_total_rupees", cartTotal))
+	}
+
+	// Priority 3: Try to get from Razorpay order API
+	if cartTotal == 0 && strings.HasPrefix(orderID, "order_") {
+		rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), orderID)
+		if err == nil {
+			cartTotal = float64(rzpOrder.Amount) / 100.0
+			if rzpOrder.Notes != nil {
+				if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
+					cartTotal = total
+				}
+				if uid, ok := rzpOrder.Notes["user_id"].(string); ok && uid != "" {
+					userID = uid
+				}
+			}
+			h.logger.Info("Retrieved cart total from Razorpay API",
+				zap.String("order_id", orderID),
+				zap.Float64("cart_total", cartTotal),
+				zap.String("user_id", userID))
+		} else {
+			h.logger.Warn("Could not fetch from Razorpay API",
+				zap.String("order_id", orderID),
+				zap.Error(err))
 		}
 	}
 
-	// For guest checkout, use phone as identifier
-	userID := "guest_" + req.Contact
-	if rzpOrder.Notes != nil {
-		if uid, ok := rzpOrder.Notes["user_id"].(string); ok && uid != "" {
-			userID = uid
-		}
+	// Priority 4: Last resort - use a minimum default but warn
+	if cartTotal == 0 {
+		cartTotal = 500.0 // ₹500 minimum default
+		h.logger.Error("CRITICAL: No cart total found! Using minimum default",
+			zap.String("order_id", orderID),
+			zap.Float64("default_cart_total", cartTotal),
+			zap.String("note", "Order cache may have expired or order was not created via Magic Checkout"))
 	}
 
 	// Validate coupon using existing service
@@ -239,10 +308,11 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		return
 	}
 
-	// Extract discount from validation response
+	// Extract data from validation response
 	validationData, ok := validation.Data.(map[string]interface{})
 	if !ok {
-		h.logger.Error("Invalid validation response format")
+		h.logger.Error("Invalid validation response format",
+			zap.String("type", fmt.Sprintf("%T", validation.Data)))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
 				"code":        "INVALID_PROMOTION",
@@ -252,14 +322,29 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		return
 	}
 
-	discount := 0.0
+	// Extract coupon and rule from validation response
+	var coupon *models.Coupon
+	var bestRule *models.CouponRule
+	var calculatedDiscount float64
+
+	// Get coupon
+	if couponData, ok := validationData["coupon"].(*models.Coupon); ok {
+		coupon = couponData
+	}
+
+	// Get best rule
+	if ruleData, ok := validationData["best_rule"].(*models.CouponRule); ok {
+		bestRule = ruleData
+	}
+
+	// Get calculated discount
 	if disc, ok := validationData["discount"].(float64); ok {
-		discount = disc
+		calculatedDiscount = disc
 	}
 
-	coupon, ok := validationData["coupon"].(map[string]interface{})
-	if !ok {
-		h.logger.Error("Invalid coupon data in validation response")
+	// Validate we have the required data
+	if coupon == nil || bestRule == nil {
+		h.logger.Error("Missing coupon or rule data in validation response")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
 				"code":        "INVALID_PROMOTION",
@@ -269,58 +354,160 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		return
 	}
 
-	bestRule, ok := validationData["best_rule"].(map[string]interface{})
-	if !ok {
-		h.logger.Error("Invalid best_rule data in validation response")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{
-				"code":        "INVALID_PROMOTION",
-				"description": "Failed to process coupon",
-			},
-		})
-		return
-	}
-
-	// Format response for Magic Checkout
+	// Build Razorpay promotion response based on coupon rule type
+	// Reference: https://razorpay.com/docs/payments/magic-checkout/rto-intelligence/coupons/
 	promotion := map[string]interface{}{
-		"code": req.Code,
+		"type":         "offer",
+		"code":         req.Code,
+		"reference_id": coupon.ID,
+		"description":  coupon.Description,
 	}
 
-	// Get coupon ID
-	if couponID, ok := coupon["id"].(string); ok {
-		promotion["reference_id"] = couponID
-	} else if couponID, ok := coupon["ID"].(string); ok {
-		promotion["reference_id"] = couponID
+	if promotion["description"] == "" {
+		promotion["description"] = fmt.Sprintf("Discount with code %s", req.Code)
 	}
 
-	// Add description
-	if desc, ok := coupon["description"].(string); ok && desc != "" {
-		promotion["description"] = desc
-	} else {
-		promotion["description"] = fmt.Sprintf("Use code %s", req.Code)
+	// Always send as fixed_amount with the calculated discount amount
+	// The coupon service already calculated the correct discount based on cart total and rules
+	// This is more reliable than depending on Razorpay's percentage calculation
+
+	// Use the discount already calculated by coupon service (it respects max_discount, min_amount, etc.)
+	discountAmount := calculatedDiscount
+
+	// Ensure discount doesn't exceed cart total
+	if discountAmount > cartTotal && cartTotal > 0 {
+		discountAmount = cartTotal
 	}
 
-	// Set type and value based on rule type
-	if ruleType, ok := bestRule["type"].(string); ok {
-		if ruleType == "percentage" {
-			promotion["type"] = "percentage"
-			if value, ok := bestRule["discount_value"].(float64); ok {
-				promotion["value"] = value
-			} else if value, ok := bestRule["DiscountValue"].(float64); ok {
-				promotion["value"] = value
-			}
-		} else {
-			promotion["type"] = "cart_value"
-			promotion["value"] = int(discount * 100) // Convert to paise
-		}
-	} else {
-		// Fallback: assume cart_value if type not found
-		promotion["type"] = "cart_value"
-		promotion["value"] = int(discount * 100) // Convert to paise
-	}
+	// Always send as fixed_amount in paise - Razorpay will deduct this from total
+	promotion["value_type"] = "fixed_amount"
+	promotion["value"] = int(discountAmount * 100) // Convert rupees to paise
+
+	h.logger.Info("Coupon discount calculated",
+		zap.String("code", req.Code),
+		zap.String("rule_type", string(bestRule.RuleType)),
+		zap.Float64("cart_total_rupees", cartTotal),
+		zap.Float64("discount_value_in_rule", bestRule.DiscountValue),
+		zap.Float64("calculated_discount_rupees", calculatedDiscount),
+		zap.Float64("final_discount_rupees", discountAmount),
+		zap.Int("final_discount_paise", int(discountAmount*100)))
+
+	h.logger.Info("Coupon promotion response prepared",
+		zap.String("code", req.Code),
+		zap.String("rule_type", string(bestRule.RuleType)),
+		zap.Any("promotion", promotion))
 
 	c.JSON(http.StatusOK, gin.H{
 		"promotion": promotion,
+	})
+}
+
+// UpdateAddresses handles address updates from Magic Checkout
+// POST /api/v1/magic-checkout/addresses-callback
+func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
+	var req struct {
+		OrderID         string                 `json:"order_id"`
+		RazorpayOrderID string                 `json:"razorpay_order_id"`
+		Email           string                 `json:"email"`
+		Contact         string                 `json:"contact"`
+		ShippingAddress map[string]interface{} `json:"shipping_address"`
+		BillingAddress  map[string]interface{} `json:"billing_address"`
+		CustomerDetails map[string]interface{} `json:"customer_details"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid addresses callback request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid request",
+		})
+		return
+	}
+
+	h.logger.Info("Magic Checkout addresses callback received",
+		zap.String("order_id", req.OrderID),
+		zap.String("razorpay_order_id", req.RazorpayOrderID),
+		zap.String("contact", req.Contact),
+		zap.Any("shipping_address", req.ShippingAddress),
+		zap.Any("customer_details", req.CustomerDetails))
+
+	// Store the address information in cache/memory for later retrieval during payment verification
+	if req.RazorpayOrderID != "" && req.ShippingAddress != nil {
+		// Store the address data in a temporary cache keyed by Razorpay order ID
+		// This will be retrieved during payment verification
+		addressData := map[string]interface{}{
+			"shipping_address": req.ShippingAddress,
+			"billing_address":  req.BillingAddress,
+			"email":            req.Email,
+			"contact":          req.Contact,
+			"customer_details": req.CustomerDetails,
+		}
+
+		// Store in global cache for retrieval during payment verification
+		// This will be retrieved during VerifyPayment
+		StoreMagicCheckoutAddress(req.RazorpayOrderID, addressData)
+		h.logger.Info("Successfully stored Magic Checkout address for order",
+			zap.String("razorpay_order_id", req.RazorpayOrderID),
+			zap.Any("address_data", addressData))
+
+		// Also extract and log formatted address for debugging
+		addressLine1 := ""
+		addressLine2 := ""
+		city := ""
+		state := ""
+		postalCode := ""
+		country := "India"
+
+		// Extract fields from shipping address
+		if line1, ok := req.ShippingAddress["line1"].(string); ok {
+			addressLine1 = strings.TrimSpace(line1)
+		} else if line1, ok := req.ShippingAddress["address_line_1"].(string); ok {
+			addressLine1 = strings.TrimSpace(line1)
+		} else if line1, ok := req.ShippingAddress["address"].(string); ok {
+			addressLine1 = strings.TrimSpace(line1)
+		}
+
+		if line2, ok := req.ShippingAddress["line2"].(string); ok {
+			addressLine2 = strings.TrimSpace(line2)
+		} else if line2, ok := req.ShippingAddress["address_line_2"].(string); ok {
+			addressLine2 = strings.TrimSpace(line2)
+		}
+
+		if c, ok := req.ShippingAddress["city"].(string); ok {
+			city = strings.TrimSpace(c)
+		}
+
+		if s, ok := req.ShippingAddress["state"].(string); ok {
+			state = strings.TrimSpace(s)
+		} else if s, ok := req.ShippingAddress["state_code"].(string); ok {
+			state = strings.TrimSpace(s)
+		}
+
+		if zip, ok := req.ShippingAddress["zipcode"].(string); ok {
+			postalCode = strings.TrimSpace(zip)
+		} else if zip, ok := req.ShippingAddress["postal_code"].(string); ok {
+			postalCode = strings.TrimSpace(zip)
+		} else if zip, ok := req.ShippingAddress["pincode"].(string); ok {
+			postalCode = strings.TrimSpace(zip)
+		}
+
+		if c, ok := req.ShippingAddress["country"].(string); ok {
+			country = strings.TrimSpace(c)
+		}
+
+		h.logger.Info("Parsed Magic Checkout address",
+			zap.String("razorpay_order_id", req.RazorpayOrderID),
+			zap.String("line1", addressLine1),
+			zap.String("line2", addressLine2),
+			zap.String("city", city),
+			zap.String("state", state),
+			zap.String("postal_code", postalCode),
+			zap.String("country", country))
+	}
+
+	// Return success response
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Address updated successfully",
 	})
 }
 
@@ -464,12 +651,15 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 		}
 
 		if serviceable {
-			// Calculate shipping charges
-			charges, err := h.getShippingCharges(c.Request.Context(), zipcode, weight)
+			// Calculate shipping charges using real Delhivery API
+			charges, err := h.deliveryService.GetShippingCharges(c.Request.Context(), zipcode, weight, 0)
 			if err != nil {
-				h.logger.Error("Failed to calculate shipping", zap.Error(err))
-				// Use fallback shipping rate
-				charges = 40.0
+				h.logger.Error("Failed to get shipping charges from Delhivery API, using fallback",
+					zap.Error(err),
+					zap.String("zipcode", zipcode),
+					zap.Int("weight", weight))
+				// Use fallback shipping rate based on weight
+				charges = 40.0 + (float64(weight)/500.0)*10.0 // Base ₹40 + ₹10 per 500g
 			}
 
 			// Check for free delivery (cart total >= 500)
@@ -494,37 +684,3 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 	})
 }
 
-// getShippingCharges is a helper method to get shipping charges
-// Uses a fallback calculation since getShippingCharges is private in DeliveryService
-// TODO: Expose getShippingCharges as a public method in DeliveryService or use Estimate with user context
-func (h *MagicCheckoutHandler) getShippingCharges(ctx context.Context, zipcode string, weight int) (float64, error) {
-	// Use a simple fallback calculation based on weight and pincode
-	baseShipping := 30.0
-	weightBasedCharge := float64(weight) / 100.0 * 0.5 // 0.5 per 100g
-
-	// Check if metro pincode (simplified check)
-	isMetro := strings.HasPrefix(zipcode, "110") || // Delhi
-		strings.HasPrefix(zipcode, "400") || // Mumbai
-		strings.HasPrefix(zipcode, "560") || // Bangalore
-		strings.HasPrefix(zipcode, "600") || // Chennai
-		strings.HasPrefix(zipcode, "700") || // Kolkata
-		strings.HasPrefix(zipcode, "500") || // Hyderabad
-		strings.HasPrefix(zipcode, "411") || // Pune
-		strings.HasPrefix(zipcode, "380") // Ahmedabad
-
-	distanceMultiplier := 1.0
-	if isMetro {
-		distanceMultiplier = 0.9
-	} else {
-		distanceMultiplier = 1.1
-	}
-
-	calculatedShipping := (baseShipping + weightBasedCharge) * distanceMultiplier
-
-	// Round to 2 decimal places and ensure minimum charge
-	if calculatedShipping < 25.0 {
-		calculatedShipping = 25.0
-	}
-
-	return calculatedShipping, nil
-}

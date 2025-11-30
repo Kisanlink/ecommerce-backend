@@ -5,23 +5,28 @@ import (
 	"fmt"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
-	"github.com/Kisanlink/ecommerce-backend/internal/database"
+	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 // RecipesRepository provides Postgres-backed CRUD for recipes
 type RecipesRepository struct {
-	db     *gorm.DB
-	logger *zap.Logger
+	pgManager *db.PostgresManager
+	logger    *zap.Logger
 }
 
 // NewRecipesRepository creates a new recipes repository backed by Neon/Postgres
-func NewRecipesRepository(logger *zap.Logger) *RecipesRepository {
+func NewRecipesRepository(pgManager *db.PostgresManager, logger *zap.Logger) *RecipesRepository {
 	return &RecipesRepository{
-		db:     database.GetDB(),
-		logger: logger,
+		pgManager: pgManager,
+		logger:    logger,
 	}
+}
+
+// getDB returns the GORM DB instance from pgManager
+func (r *RecipesRepository) getDB(ctx context.Context) (*gorm.DB, error) {
+	return r.pgManager.GetDB(ctx, false)
 }
 
 // GetAllRecipes retrieves recipes with optional filters and pagination
@@ -33,7 +38,11 @@ func (r *RecipesRepository) GetAllRecipes(ctx context.Context, page, pageSize in
 		pageSize = 20
 	}
 
-	query := r.db.WithContext(ctx).Model(&models.Recipe{})
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	query := db.WithContext(ctx).Model(&models.Recipe{})
 
 	if category != "" {
 		query = query.Where("category = ?", category)
@@ -63,7 +72,11 @@ func (r *RecipesRepository) GetAllRecipes(ctx context.Context, page, pageSize in
 // GetRecipeByID fetches a recipe by its public recipe ID or internal ID
 func (r *RecipesRepository) GetRecipeByID(ctx context.Context, id string) (*models.Recipe, error) {
 	var recipe models.Recipe
-	err := r.db.WithContext(ctx).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	err = db.WithContext(ctx).
 		Where("recipe_id = ? OR id = ?", id, id).
 		First(&recipe).Error
 	if err != nil {
@@ -77,7 +90,11 @@ func (r *RecipesRepository) CreateRecipe(ctx context.Context, recipe *models.Rec
 	if recipe.RecipeID == "" && recipe.BaseModel != nil {
 		recipe.RecipeID = recipe.GetID()
 	}
-	if err := r.db.WithContext(ctx).Create(recipe).Error; err != nil {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).Create(recipe).Error; err != nil {
 		return fmt.Errorf("failed to create recipe: %w", err)
 	}
 	return nil
@@ -88,7 +105,11 @@ func (r *RecipesRepository) UpdateRecipe(ctx context.Context, recipe *models.Rec
 	if recipe.RecipeID == "" && recipe.BaseModel != nil {
 		recipe.RecipeID = recipe.GetID()
 	}
-	if err := r.db.WithContext(ctx).Save(recipe).Error; err != nil {
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).Save(recipe).Error; err != nil {
 		return fmt.Errorf("failed to update recipe: %w", err)
 	}
 	return nil
@@ -96,7 +117,11 @@ func (r *RecipesRepository) UpdateRecipe(ctx context.Context, recipe *models.Rec
 
 // DeleteRecipe hard deletes a recipe by ID
 func (r *RecipesRepository) DeleteRecipe(ctx context.Context, id string) error {
-	if err := r.db.WithContext(ctx).
+	db, err := r.getDB(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	if err := db.WithContext(ctx).
 		Where("recipe_id = ? OR id = ?", id, id).
 		Delete(&models.Recipe{}).Error; err != nil {
 		return fmt.Errorf("failed to delete recipe: %w", err)

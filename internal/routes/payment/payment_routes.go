@@ -16,7 +16,11 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 
 	// Create payment service and handler
 	paymentService := services.NewPaymentService(logger)
-	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, serviceManager.WhatsAppService, serviceManager.UserService, serviceManager.ProductService, logger) // Payment routes (requires authentication)
+
+	// Create address service for payment handler
+	addressService := services.NewAddressService(repoManager, logger)
+
+	paymentHandler := handlers.NewPaymentHandler(paymentService, serviceManager.OrderService, serviceManager.DeliveryService, serviceManager.WhatsAppService, serviceManager.UserService, serviceManager.ProductService, addressService, logger) // Payment routes (requires authentication)
 	payments := r.Group("/payments")
 	payments.Use(middleware.FirebaseAuthMiddleware())
 	{
@@ -57,6 +61,7 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 		magicCheckout.POST("/get-promotions", magicCheckoutHandler.GetPromotions)
 		magicCheckout.POST("/apply-promotion", magicCheckoutHandler.ApplyPromotion)
 		magicCheckout.POST("/shipping-info", magicCheckoutHandler.GetShippingInfo)
+		magicCheckout.POST("/addresses-callback", magicCheckoutHandler.UpdateAddresses) // Address updates from Magic Checkout
 	}
 
 	// Magic Checkout order creation endpoint (supports both authenticated and guest)

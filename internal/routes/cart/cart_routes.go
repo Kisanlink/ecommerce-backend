@@ -23,19 +23,19 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 
 	// Create session cart handler
 	var sessionCartHandler *handlers.SessionCartHandler
-	if serviceManager != nil && serviceManager.CartService != nil && serviceManager.SessionCartService != nil {
-		sessionCartHandler = handlers.NewSessionCartHandler(serviceManager.CartService, serviceManager.SessionCartService, logger)
+	if serviceManager != nil && serviceManager.CartService != nil && serviceManager.SessionCartService != nil && serviceManager.UserService != nil {
+		sessionCartHandler = handlers.NewSessionCartHandler(serviceManager.CartService, serviceManager.SessionCartService, serviceManager.UserService, logger)
 	}
 
 	// Create original cart handler for authenticated-only operations
 	var cartHandler *handlers.CartHandler
-	if serviceManager != nil && serviceManager.CartService != nil {
-		cartHandler = handlers.NewCartHandler(serviceManager.CartService, logger)
+	if serviceManager != nil && serviceManager.CartService != nil && serviceManager.UserService != nil {
+		cartHandler = handlers.NewCartHandler(serviceManager.CartService, serviceManager.UserService, logger)
 		if serviceManager.DeliveryService != nil {
 			cartHandler.SetDeliveryService(serviceManager.DeliveryService)
 		}
 	} else {
-		logger.Error("Cart service not available in service manager")
+		logger.Error("Cart service or user service not available in service manager")
 	}
 
 	// Public cart routes (no authentication required, but can detect auth if present)

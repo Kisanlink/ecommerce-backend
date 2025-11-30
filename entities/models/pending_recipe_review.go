@@ -1,6 +1,8 @@
 package models
 
 import (
+	"time"
+
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"github.com/lib/pq"
@@ -21,8 +23,8 @@ type PendingRecipeReview struct {
 	ReviewID        string                    `json:"review_id" gorm:"type:varchar(64);uniqueIndex"` // Primary key
 	UserID          string                    `json:"user_id" gorm:"type:varchar(64);index"`         // User who submitted the recipe
 	Status          PendingRecipeReviewStatus `json:"status" gorm:"type:varchar(32);index"`          // pending, approved, rejected
-	SubmittedAt     string                    `json:"submitted_at"`
-	ReviewedAt      string                    `json:"reviewed_at,omitempty"`
+	SubmittedAt     time.Time                 `json:"submitted_at" gorm:"not null"`
+	ReviewedAt      *time.Time                `json:"reviewed_at,omitempty"` // Nullable timestamp
 	ReviewedBy      string                    `json:"reviewed_by,omitempty"` // Admin who reviewed
 	RejectionReason string                    `json:"rejection_reason,omitempty"`
 
@@ -49,7 +51,7 @@ func NewPendingRecipeReview(userID string, recipe *Recipe) *PendingRecipeReview 
 		ReviewID:        baseModel.GetID(),
 		UserID:          userID,
 		Status:          StatusPending,
-		SubmittedAt:     baseModel.GetCreatedAt().Format("2006-01-02T15:04:05Z07:00"),
+		SubmittedAt:     baseModel.GetCreatedAt(),
 		Name:            recipe.Name,
 		Category:        recipe.Category,
 		Description:     recipe.Description,
@@ -90,17 +92,19 @@ func (prr *PendingRecipeReview) ToRecipe() *Recipe {
 
 // Approve marks the recipe review as approved
 func (prr *PendingRecipeReview) Approve(reviewedBy string) {
+	now := time.Now()
 	prr.Status = StatusApproved
 	prr.ReviewedBy = reviewedBy
-	prr.ReviewedAt = base.NewBaseModel("", hash.Small).GetCreatedAt().Format("2006-01-02T15:04:05Z07:00")
+	prr.ReviewedAt = &now
 }
 
 // Reject marks the recipe review as rejected with a reason
 func (prr *PendingRecipeReview) Reject(reviewedBy, reason string) {
+	now := time.Now()
 	prr.Status = StatusRejected
 	prr.ReviewedBy = reviewedBy
 	prr.RejectionReason = reason
-	prr.ReviewedAt = base.NewBaseModel("", hash.Small).GetCreatedAt().Format("2006-01-02T15:04:05Z07:00")
+	prr.ReviewedAt = &now
 }
 
 // TableName returns the table name for GORM

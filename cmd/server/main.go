@@ -61,6 +61,9 @@ func executeSQLMigrations(db *gorm.DB) error {
 		"add_multiple_images_columns.sql",
 		"add_delhivery_columns.sql",
 		"add_discount_columns_to_orders.sql",
+		"create_reviews_table.sql",                // Create reviews table in NeonDB
+		"create_recipes_table.sql",                // Create recipes table in NeonDB
+		"create_pending_recipe_reviews_table.sql", // Create pending recipe reviews table in NeonDB
 	}
 
 	for _, filename := range migrationFiles {
@@ -145,10 +148,24 @@ func main() {
 	}
 
 	ctx = context.Background()
+
+	// Log the NeonDB configuration being used (from .env file)
+	logger.Info("NeonDB Configuration (from .env)",
+		zap.String("host", pgConfig.PostgresHost),
+		zap.String("port", pgConfig.PostgresPort),
+		zap.String("dbname", pgConfig.PostgresDBName),
+		zap.String("user", pgConfig.PostgresUser),
+		zap.String("sslmode", pgConfig.PostgresSSLMode),
+		zap.Bool("is_neondb", strings.Contains(pgConfig.PostgresHost, "neon.tech")),
+	)
+
+	// Connect to NeonDB using single connection via kisanlink-db package
+	// This single connection will be used by ALL repositories (User, Product, Order, Cart, etc.)
 	pgManager := db.NewPostgresManager(pgConfig, logger)
 	if err := pgManager.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect to Postgres via plugin: %v", err)
+		log.Fatalf("Failed to connect to NeonDB: %v", err)
 	}
+	logger.Info("✅ Successfully connected to NeonDB - ALL repositories (signin, signup, products, orders, etc.) will use this connection")
 	defer func() {
 		logger.Info("Closing database connections...")
 		if err := pgManager.Close(); err != nil {
@@ -248,8 +265,14 @@ func main() {
 	dbConn.Raw("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").Scan(&tables)
 	fmt.Println("Postgres tables:", tables)
 
-	// Create repository manager with database manager
-	repoManager := repositories.NewRepositoryManager(pgManager, logger)
+	// Create repository manager with NeonDB connection
+	// pgManager (connected to NeonDB) is passed as dbManager to ALL repositories:
+	// - UserRepository (signin/signup) → uses NeonDB
+	// - ProductRepository (products) → uses NeonDB
+	// - OrderRepository, CartRepository, AddressRepository, etc. → all use NeonDB
+	// Note: pgManager implements db.DBManager interface, so we pass it for both parameters
+	repoManager := repositories.NewRepositoryManager(pgManager, pgManager, logger)
+	logger.Info("✅ All repositories initialized and connected to NeonDB")
 
 	// Create service manager with repository manager and S3Manager (following the development rules)
 	serviceManager := services.NewServiceManager(repoManager, s3Manager)
@@ -273,15 +296,26 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		logger.Info("Starting server", zap.String("port", port))
+		logger.Info("Starting HTTP server", zap.String("port", port))
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Server failed to start", zap.Error(err))
 		}
 	}()
 
-	// Wait for interrupt signal
-	<-sigChan
-	logger.Info("Shutdown signal received, initiating graceful shutdown...")
+	// Give server a moment to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Log that server is ready
+	logger.Info("✅ Server is running and ready to accept connections",
+		zap.String("url", fmt.Sprintf("http://localhost:%s", port)),
+		zap.String("api_docs", fmt.Sprintf("http://localhost:%s/docs", port)),
+	)
+	logger.Info("Press Ctrl+C to stop the server")
+
+	// Wait for interrupt signal (this will block until SIGINT or SIGTERM is received)
+	sig := <-sigChan
+	logger.Info("Shutdown signal received", zap.String("signal", sig.String()))
+	logger.Info("Initiating graceful shutdown...")
 
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

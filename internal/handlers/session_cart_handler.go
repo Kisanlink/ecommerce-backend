@@ -19,15 +19,17 @@ import (
 type SessionCartHandler struct {
 	cartService        services.CartServiceInterface
 	sessionCartService services.SessionCartServiceInterface
+	userService        *services.UserService
 	logger             *zap.Logger
 	authContext        *auth.AuthContext
 }
 
 // NewSessionCartHandler creates a new session cart handler
-func NewSessionCartHandler(cartService services.CartServiceInterface, sessionCartService services.SessionCartServiceInterface, logger *zap.Logger) *SessionCartHandler {
+func NewSessionCartHandler(cartService services.CartServiceInterface, sessionCartService services.SessionCartServiceInterface, userService *services.UserService, logger *zap.Logger) *SessionCartHandler {
 	return &SessionCartHandler{
 		cartService:        cartService,
 		sessionCartService: sessionCartService,
+		userService:        userService,
 		logger:             logger,
 		authContext:        auth.NewAuthContext(),
 	}
@@ -37,6 +39,27 @@ func NewSessionCartHandler(cartService services.CartServiceInterface, sessionCar
 func (h *SessionCartHandler) getCartIdentifier(c *gin.Context) (string, bool, error) {
 	// Try to get authenticated user ID first
 	if userID, authenticated := h.authContext.GetAuthenticatedUserID(c); authenticated {
+		// Check if this is a Firebase UID (they typically don't start with "USER")
+		// Internal user IDs start with "USER" prefix
+		if !strings.HasPrefix(userID, "USER") && h.userService != nil {
+			// This is likely a Firebase UID, map it to internal user ID
+			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+			if err == nil && userResponse != nil && userResponse.Data != nil {
+				// Extract the internal user ID from the response
+				if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+					if internalID, ok := userMap["id"].(string); ok {
+						h.logger.Info("Mapped Firebase UID to internal user ID",
+							zap.String("firebase_uid", userID),
+							zap.String("internal_id", internalID))
+						return internalID, true, nil
+					}
+				}
+			}
+			h.logger.Error("Failed to map Firebase UID to internal user ID",
+				zap.String("firebase_uid", userID),
+				zap.Error(err))
+		}
+
 		h.logger.Info("User is authenticated", zap.String("user_id", userID))
 		return userID, true, nil
 	}

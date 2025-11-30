@@ -47,18 +47,50 @@ func NewPaymentService(logger *zap.Logger) PaymentServiceInterface {
 
 // RazorpayOrder represents Razorpay order response
 type RazorpayOrder struct {
-	ID         string                 `json:"id"`
-	Entity     string                 `json:"entity"`
-	Amount     int                    `json:"amount"`      // Amount in paisa
-	AmountPaid int                    `json:"amount_paid"` // Amount paid in paisa
-	AmountDue  int                    `json:"amount_due"`  // Amount due in paisa
-	Currency   string                 `json:"currency"`
-	Receipt    string                 `json:"receipt"`
-	OfferID    string                 `json:"offer_id,omitempty"`
-	Status     string                 `json:"status"`
-	Attempts   int                    `json:"attempts"`
-	Notes      map[string]interface{} `json:"notes"`
-	CreatedAt  int64                  `json:"created_at"`
+	ID               string                 `json:"id"`
+	Entity           string                 `json:"entity"`
+	Amount           int                    `json:"amount"`      // Amount in paisa
+	AmountPaid       int                    `json:"amount_paid"` // Amount paid in paisa
+	AmountDue        int                    `json:"amount_due"`  // Amount due in paisa
+	Currency         string                 `json:"currency"`
+	Receipt          string                 `json:"receipt"`
+	OfferID          string                 `json:"offer_id,omitempty"`
+	Status           string                 `json:"status"`
+	Attempts         int                    `json:"attempts"`
+	Notes            map[string]interface{} `json:"notes"`
+	CreatedAt        int64                  `json:"created_at"`
+	Description      string                 `json:"description,omitempty"`
+	Checkout         map[string]interface{} `json:"checkout,omitempty"`
+	Promotions       []map[string]interface{} `json:"promotions,omitempty"`
+	CODFee           int                    `json:"cod_fee,omitempty"`
+	ShippingFee      int                    `json:"shipping_fee,omitempty"`
+	LineItemsTotal   int                    `json:"line_items_total,omitempty"`
+	TaxDetails       map[string]interface{} `json:"tax_details,omitempty"`
+	// Customer details from Magic Checkout
+	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
+}
+
+// CustomerDetails represents customer details from Magic Checkout
+type CustomerDetails struct {
+	Email           string          `json:"email"`
+	Contact         string          `json:"contact"`
+	BillingAddress  *MagicAddress   `json:"billing_address,omitempty"`
+	ShippingAddress *MagicAddress   `json:"shipping_address,omitempty"`
+}
+
+// MagicAddress represents address from Magic Checkout
+type MagicAddress struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Name     string `json:"name"`
+	Contact  string `json:"contact,omitempty"`
+	Line1    string `json:"line1"`
+	Line2    string `json:"line2,omitempty"`
+	City     string `json:"city"`
+	State    string `json:"state"`
+	Country  string `json:"country"`
+	Zipcode  string `json:"zipcode"`
+	Tag      string `json:"tag,omitempty"`
 }
 
 // RazorpayPayment represents Razorpay payment response

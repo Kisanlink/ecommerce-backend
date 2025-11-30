@@ -17,6 +17,7 @@ import (
 // ProfileHandler handles profile-related HTTP requests
 type ProfileHandler struct {
 	profileService *services.ProfileService
+	userService    *services.UserService
 	s3Service      *services.S3Service
 	logger         *zap.Logger
 }
@@ -26,6 +27,7 @@ func NewProfileHandler(serviceManager *services.ServiceManager) *ProfileHandler 
 	logger, _ := zap.NewProduction()
 	return &ProfileHandler{
 		profileService: serviceManager.ProfileService,
+		userService:    serviceManager.UserService,
 		s3Service:      serviceManager.S3Service,
 		logger:         logger,
 	}
@@ -34,13 +36,29 @@ func NewProfileHandler(serviceManager *services.ServiceManager) *ProfileHandler 
 // getUserID extracts and validates user ID from context
 func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 	// Try firebase_uid first (set by FirebaseAuthMiddleware)
-	userIDValue, exists := c.Get("firebase_uid")
-	if !exists {
-		// Fallback to user_id (set by AuthMiddleware)
-		userIDValue, exists = c.Get("user_id")
-		if !exists {
-			return "", fmt.Errorf("user not authenticated")
+	firebaseUIDValue, exists := c.Get("firebase_uid")
+	if exists {
+		firebaseUID, ok := firebaseUIDValue.(string)
+		if ok && firebaseUID != "" {
+			// Look up the actual user in database by Firebase UID
+			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
+			if err != nil {
+				return "", fmt.Errorf("user not found in database")
+			}
+			if userResponse != nil && userResponse.Success {
+				userData := userResponse.Data.(map[string]interface{})
+				if userID, exists := userData["id"].(string); exists {
+					return userID, nil
+				}
+			}
+			return "", fmt.Errorf("user not found in database")
 		}
+	}
+
+	// Fallback to user_id (set by AuthMiddleware for non-Firebase auth)
+	userIDValue, exists := c.Get("user_id")
+	if !exists {
+		return "", fmt.Errorf("user not authenticated")
 	}
 
 	userID, ok := userIDValue.(string)
@@ -169,21 +187,52 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	profile, err := h.profileService.GetProfileByUserID(c.Request.Context(), userID)
 	if err != nil {
 		if err.Error() == "record not found" {
-			h.logger.Warn("Profile not found for user",
+			h.logger.Warn("Profile not found for user, attempting to create one",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
 				zap.String("error_type", "profile_not_found"))
-			c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
+
+			// Try to get user email for profile creation
+			var userEmail string
+			firebaseUIDValue, exists := c.Get("firebase_uid")
+			if exists {
+				firebaseUID, ok := firebaseUIDValue.(string)
+				if ok && firebaseUID != "" {
+					// Get user details from database
+					userResponse, _ := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
+					if userResponse != nil && userResponse.Success {
+						userData := userResponse.Data.(map[string]interface{})
+						if email, exists := userData["email"].(string); exists {
+							userEmail = email
+						}
+					}
+				}
+			}
+
+			// Attempt to create profile automatically
+			profile, err = h.profileService.CreateAutoProfile(c.Request.Context(), userID, userEmail)
+			if err != nil {
+				h.logger.Error("Failed to auto-create profile",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.Error(err))
+				c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found and could not be created"})
+				return
+			}
+
+			h.logger.Info("Profile auto-created successfully",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("profile_id", profile.ID))
+		} else {
+			h.logger.Error("Failed to retrieve profile",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Error(err),
+				zap.String("error_type", "profile_retrieval_error"))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get profile", "details": err.Error()})
 			return
 		}
-
-		h.logger.Error("Failed to retrieve profile",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.Error(err),
-			zap.String("error_type", "profile_retrieval_error"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get profile", "details": err.Error()})
-		return
 	}
 
 	h.logger.Info("Profile retrieved successfully",
