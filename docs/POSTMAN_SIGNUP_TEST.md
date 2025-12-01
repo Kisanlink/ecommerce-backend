@@ -261,3 +261,5 @@ You should see:
 
 **Note**: Profile creation happens automatically - no need to call `/profiles/auto` endpoint anymore! 🎉
 
+
+

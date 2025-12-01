@@ -756,43 +756,83 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				shippingCharges = float64(rzpOrder.ShippingFee) / 100.0 // Convert from paise to rupees
 			}
 
-		// Priority 2: Check if we have stored Magic Checkout address from the callback
-		} else if storedAddressData, exists := GetMagicCheckoutAddress(req.OrderID); exists {
-			h.logger.Info("Using stored Magic Checkout address from callback (fallback)",
-				zap.String("request_id", requestID),
-				zap.String("razorpay_order_id", req.OrderID),
-				zap.Any("address_data", storedAddressData))
-
-			// Extract the shipping address from stored data
-			if shippingAddr, ok := storedAddressData["shipping_address"].(map[string]interface{}); ok {
-				magicCheckoutAddress = shippingAddr
+		// Priority 2: Check if we have stored Magic Checkout address from shipping-info or callback
+		} else {
+			// Try multiple key variations since Razorpay may send order ID with or without prefix
+			keysToTry := []string{
+				req.OrderID,                                           // order_RmMkQm9FiEAFC1
+				strings.TrimPrefix(req.OrderID, "order_"),             // RmMkQm9FiEAFC1
+				"order_" + strings.TrimPrefix(req.OrderID, "order_"),  // ensure order_ prefix
 			}
 
-			// Extract customer details from stored data
-			if storedEmail, ok := storedAddressData["email"].(string); ok && storedEmail != "" {
-				email = storedEmail
-			}
-			if storedContact, ok := storedAddressData["contact"].(string); ok && storedContact != "" {
-				mobile = storedContact
+			var storedAddressData map[string]interface{}
+			var foundKey string
+			for _, key := range keysToTry {
+				if data, exists := GetMagicCheckoutAddress(key); exists {
+					storedAddressData = data
+					foundKey = key
+					break
+				}
 			}
 
-			// Extract customer details from customer_details if present
-			if custDetails, ok := storedAddressData["customer_details"].(map[string]interface{}); ok {
-				if name, ok := custDetails["name"].(string); ok && name != "" {
-					nameParts := strings.Fields(strings.TrimSpace(name))
-					if len(nameParts) > 0 {
-						firstName = nameParts[0]
-						if len(nameParts) > 1 {
-							lastName = strings.Join(nameParts[1:], " ")
+			if storedAddressData != nil {
+				h.logger.Info("SUCCESS: Found stored Magic Checkout address",
+					zap.String("request_id", requestID),
+					zap.String("found_key", foundKey),
+					zap.String("razorpay_order_id", req.OrderID),
+					zap.Any("address_data", storedAddressData))
+
+				// Extract the shipping address from stored data
+				if shippingAddr, ok := storedAddressData["shipping_address"].(map[string]interface{}); ok {
+					magicCheckoutAddress = shippingAddr
+
+					// IMPORTANT: Extract customer name from shipping address
+					if name, ok := shippingAddr["name"].(string); ok && name != "" {
+						nameParts := strings.Fields(strings.TrimSpace(name))
+						if len(nameParts) > 0 {
+							firstName = nameParts[0]
+							if len(nameParts) > 1 {
+								lastName = strings.Join(nameParts[1:], " ")
+							}
 						}
+						h.logger.Info("Extracted customer name from shipping address",
+							zap.String("request_id", requestID),
+							zap.String("full_name", name),
+							zap.String("firstName", firstName),
+							zap.String("lastName", lastName))
 					}
 				}
-				if fn, ok := custDetails["first_name"].(string); ok && fn != "" {
-					firstName = fn
+
+				// Extract customer details from stored data
+				if storedEmail, ok := storedAddressData["email"].(string); ok && storedEmail != "" {
+					email = storedEmail
 				}
-				if ln, ok := custDetails["last_name"].(string); ok && ln != "" {
-					lastName = ln
+				if storedContact, ok := storedAddressData["contact"].(string); ok && storedContact != "" {
+					mobile = storedContact
 				}
+
+				// Extract customer details from customer_details if present
+				if custDetails, ok := storedAddressData["customer_details"].(map[string]interface{}); ok {
+					if name, ok := custDetails["name"].(string); ok && name != "" {
+						nameParts := strings.Fields(strings.TrimSpace(name))
+						if len(nameParts) > 0 {
+							firstName = nameParts[0]
+							if len(nameParts) > 1 {
+								lastName = strings.Join(nameParts[1:], " ")
+							}
+						}
+					}
+					if fn, ok := custDetails["first_name"].(string); ok && fn != "" {
+						firstName = fn
+					}
+					if ln, ok := custDetails["last_name"].(string); ok && ln != "" {
+						lastName = ln
+					}
+				}
+			} else {
+				h.logger.Warn("No stored Magic Checkout address found",
+					zap.String("request_id", requestID),
+					zap.Strings("keys_tried", keysToTry))
 			}
 		}
 
@@ -1246,10 +1286,23 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			return
 		}
 
-		// Update the order with Razorpay order ID and payment details
+		// Update the order with Razorpay order ID, payment details, and customer info
 		order.RazorpayOrderID = req.OrderID
 		order.PaymentStatus = "paid"
 		order.Status = models.OrderStatusConfirmed
+
+		// CRITICAL: Set customer fields on order for Delhivery shipment
+		order.CustomerFirstName = firstName
+		order.CustomerLastName = lastName
+		order.CustomerPhone = mobile
+		order.CustomerPhoneAlt = mobileSecondary
+
+		h.logger.Info("Setting customer details on order for shipment",
+			zap.String("request_id", requestID),
+			zap.String("order_id", order.ID),
+			zap.String("customer_first_name", firstName),
+			zap.String("customer_last_name", lastName),
+			zap.String("customer_phone", mobile))
 
 		if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
 			h.logger.Error("Failed to update order with Razorpay details",

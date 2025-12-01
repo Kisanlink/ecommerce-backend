@@ -509,3 +509,5 @@ CREATE TRIGGER reviews_search_trigger
 
 All tables are now ready for production use in NeonDB! 🚀
 
+
+

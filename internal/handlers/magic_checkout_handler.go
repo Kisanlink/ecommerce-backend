@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -405,6 +406,13 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 // UpdateAddresses handles address updates from Magic Checkout
 // POST /api/v1/magic-checkout/addresses-callback
 func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
+	// Read raw body for debugging
+	rawBody, _ := c.GetRawData()
+	h.logger.Info("RAW addresses-callback request body from Razorpay",
+		zap.String("raw_body", string(rawBody)),
+		zap.Int("body_length", len(rawBody)))
+
+	// Parse into struct from raw body
 	var req struct {
 		OrderID         string                 `json:"order_id"`
 		RazorpayOrderID string                 `json:"razorpay_order_id"`
@@ -415,19 +423,24 @@ func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
 		CustomerDetails map[string]interface{} `json:"customer_details"`
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("Invalid addresses callback request", zap.Error(err))
+	// Unmarshal from raw body
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		h.logger.Error("Invalid addresses callback request - failed to parse JSON",
+			zap.Error(err),
+			zap.String("raw_body", string(rawBody)))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid request",
 		})
 		return
 	}
 
-	h.logger.Info("Magic Checkout addresses callback received",
+	h.logger.Info("Magic Checkout addresses callback PARSED successfully",
 		zap.String("order_id", req.OrderID),
 		zap.String("razorpay_order_id", req.RazorpayOrderID),
 		zap.String("contact", req.Contact),
+		zap.String("email", req.Email),
 		zap.Any("shipping_address", req.ShippingAddress),
+		zap.Any("billing_address", req.BillingAddress),
 		zap.Any("customer_details", req.CustomerDetails))
 
 	// Store the address information in cache/memory for later retrieval during payment verification
@@ -514,11 +527,19 @@ func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
 // GetShippingInfo calculates shipping for given addresses
 // POST /api/v1/magic-checkout/shipping-info
 func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
+	// Read raw body first for debugging
+	rawBody, _ := c.GetRawData()
+	h.logger.Info("RAW shipping-info request body from Razorpay",
+		zap.String("raw_body", string(rawBody)),
+		zap.Int("body_length", len(rawBody)))
+
 	var req struct {
-		OrderID         string `json:"order_id"`
-		RazorpayOrderID string `json:"razorpay_order_id"`
-		Email           string `json:"email"`
-		Contact         string `json:"contact"`
+		OrderID         string  `json:"order_id"`
+		RazorpayOrderID string  `json:"razorpay_order_id"`
+		Email           string  `json:"email"`
+		Contact         string  `json:"contact"`
+		Amount          float64 `json:"amount"`      // Amount in paise from Razorpay
+		CartAmount      float64 `json:"cart_amount"` // Alternative field
 		Addresses       []struct {
 			ID           interface{} `json:"id"` // Can be string or number from Razorpay
 			Zipcode      string      `json:"zipcode"`
@@ -528,10 +549,15 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			State        string      `json:"state,omitempty"`
 			AddressLine1 string      `json:"address_line_1,omitempty"`
 			AddressLine2 string      `json:"address_line_2,omitempty"`
+			Line1        string      `json:"line1,omitempty"`
+			Line2        string      `json:"line2,omitempty"`
+			Name         string      `json:"name,omitempty"`
+			Tag          string      `json:"tag,omitempty"`
 		} `json:"addresses"`
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	// Parse from raw body
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		h.logger.Error("Invalid shipping info request", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"addresses": []interface{}{},
@@ -539,17 +565,126 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Magic Checkout requesting shipping info",
+	// Determine which order ID to use (Razorpay sends our receipt in order_id)
+	orderID := req.RazorpayOrderID
+	if orderID == "" {
+		orderID = req.OrderID
+	}
+
+	// Also try to get the actual Razorpay order ID (starts with order_)
+	razorpayOrderID := req.RazorpayOrderID
+	if !strings.HasPrefix(razorpayOrderID, "order_") {
+		razorpayOrderID = "order_" + razorpayOrderID
+	}
+
+	h.logger.Info("SHIPPING INFO REQUEST - RAW DATA",
 		zap.String("order_id", req.OrderID),
 		zap.String("razorpay_order_id", req.RazorpayOrderID),
+		zap.String("resolved_order_id", orderID),
+		zap.String("contact", req.Contact),
+		zap.String("email", req.Email),
+		zap.Float64("amount", req.Amount),
+		zap.Float64("cart_amount", req.CartAmount),
 		zap.Int("address_count", len(req.Addresses)))
+
+	// CRITICAL: Store address and customer info from shipping-info call
+	// This is often the ONLY place we receive the full address from Magic Checkout
+	if len(req.Addresses) > 0 {
+		addr := req.Addresses[0] // Use first address
+
+		// Build address line - prefer line1 over address_line_1
+		addressLine1 := addr.Line1
+		if addressLine1 == "" {
+			addressLine1 = addr.AddressLine1
+		}
+		addressLine2 := addr.Line2
+		if addressLine2 == "" {
+			addressLine2 = addr.AddressLine2
+		}
+
+		// Build state - prefer state over state_code
+		state := addr.State
+		if state == "" {
+			state = addr.StateCode
+		}
+
+		addressData := map[string]interface{}{
+			"shipping_address": map[string]interface{}{
+				"name":     addr.Name,
+				"line1":    addressLine1,
+				"line2":    addressLine2,
+				"city":     addr.City,
+				"state":    state,
+				"zipcode":  addr.Zipcode,
+				"country":  addr.Country,
+				"tag":      addr.Tag,
+			},
+			"contact": req.Contact,
+			"email":   req.Email,
+		}
+
+		// Store by multiple keys for flexible lookup later
+		// Store by receipt ID (order_id field)
+		if req.OrderID != "" {
+			StoreMagicCheckoutAddress(req.OrderID, addressData)
+			h.logger.Info("Stored Magic Checkout address by receipt",
+				zap.String("key", req.OrderID))
+		}
+		// Store by Razorpay order ID
+		if req.RazorpayOrderID != "" {
+			StoreMagicCheckoutAddress(req.RazorpayOrderID, addressData)
+			StoreMagicCheckoutAddress(razorpayOrderID, addressData) // Also with order_ prefix
+			h.logger.Info("Stored Magic Checkout address by razorpay_order_id",
+				zap.String("key", req.RazorpayOrderID),
+				zap.String("key_with_prefix", razorpayOrderID))
+		}
+
+		h.logger.Info("STORED address from shipping-info call",
+			zap.String("order_id", req.OrderID),
+			zap.String("razorpay_order_id", req.RazorpayOrderID),
+			zap.String("name", addr.Name),
+			zap.String("line1", addressLine1),
+			zap.String("city", addr.City),
+			zap.String("state", state),
+			zap.String("zipcode", addr.Zipcode),
+			zap.String("contact", req.Contact),
+			zap.String("email", req.Email))
+	}
 
 	// Get order details to determine weight and cart total
 	var weight int = 500 // Default 500g
 	var cartTotal float64 = 0
 
-	if req.RazorpayOrderID != "" {
-		rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), req.RazorpayOrderID)
+	// Priority 1: Get from our order cache (most reliable)
+	if orderData, found := GetMagicCheckoutOrder(orderID); found {
+		cartTotal = orderData.CartTotal
+		h.logger.Info("SUCCESS: Retrieved cart total from order cache",
+			zap.String("order_id", orderID),
+			zap.String("receipt", orderData.ReceiptID),
+			zap.String("razorpay_order", orderData.RazorpayOrderID),
+			zap.Float64("cart_total", cartTotal))
+	} else {
+		h.logger.Warn("CACHE MISS: Order not found in cache",
+			zap.String("order_id", orderID),
+			zap.String("note", "Order may not have been created via Magic Checkout or server was restarted"))
+	}
+
+	// Priority 2: Check if Razorpay sent amount in request
+	if cartTotal == 0 && req.Amount > 0 {
+		cartTotal = req.Amount / 100.0 // Convert paise to rupees
+		h.logger.Info("Using amount from request",
+			zap.Float64("amount_paise", req.Amount),
+			zap.Float64("cart_total_rupees", cartTotal))
+	} else if cartTotal == 0 && req.CartAmount > 0 {
+		cartTotal = req.CartAmount / 100.0
+		h.logger.Info("Using cart_amount from request",
+			zap.Float64("cart_amount_paise", req.CartAmount),
+			zap.Float64("cart_total_rupees", cartTotal))
+	}
+
+	// Priority 3: Try Razorpay API if we have a valid order ID
+	if cartTotal == 0 && strings.HasPrefix(orderID, "order_") {
+		rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), orderID)
 		if err == nil && rzpOrder.Notes != nil {
 			// Get item count from notes
 			if itemCount, ok := rzpOrder.Notes["total_items"].(float64); ok && itemCount > 0 {
@@ -559,8 +694,16 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
 				cartTotal = total
 			}
+			h.logger.Info("Retrieved cart total from Razorpay API",
+				zap.String("order_id", orderID),
+				zap.Float64("cart_total", cartTotal))
 		}
 	}
+
+	// Log final cart total decision
+	h.logger.Info("SHIPPING CALCULATION - CART TOTAL DECISION",
+		zap.Float64("final_cart_total", cartTotal),
+		zap.Bool("qualifies_for_free_delivery", cartTotal >= 500))
 
 	// Process each address
 	result := []map[string]interface{}{}
@@ -651,26 +794,37 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 		}
 
 		if serviceable {
-			// Calculate shipping charges using real Delhivery API
-			charges, err := h.deliveryService.GetShippingCharges(c.Request.Context(), zipcode, weight, 0)
-			if err != nil {
-				h.logger.Error("Failed to get shipping charges from Delhivery API, using fallback",
-					zap.Error(err),
-					zap.String("zipcode", zipcode),
-					zap.Int("weight", weight))
-				// Use fallback shipping rate based on weight
-				charges = 40.0 + (float64(weight)/500.0)*10.0 // Base ₹40 + ₹10 per 500g
-			}
-
-			// Check for free delivery (cart total >= 500)
+			// Check for FREE delivery first (cart total >= 500)
+			// This applies regardless of coupon - based on original cart value
 			if cartTotal >= 500 {
-				h.logger.Info("Free delivery applied",
-					zap.Float64("cart_total", cartTotal))
-				charges = 0
-			}
+				// FREE DELIVERY - cart is above ₹500
+				addressResult["shipping_fee"] = 0
+				h.logger.Info("FREE DELIVERY applied - cart total >= ₹500",
+					zap.String("zipcode", zipcode),
+					zap.Float64("cart_total", cartTotal),
+					zap.String("reason", "Order value above ₹500"))
+			} else {
+				// Calculate shipping charges using real Delhivery API
+				charges, err := h.deliveryService.GetShippingCharges(c.Request.Context(), zipcode, weight, 0)
+				if err != nil {
+					h.logger.Error("Failed to get shipping charges from Delhivery API, using fallback",
+						zap.Error(err),
+						zap.String("zipcode", zipcode),
+						zap.Int("weight", weight))
+					// Use fallback shipping rate based on weight
+					charges = 40.0 + (float64(weight)/500.0)*10.0 // Base ₹40 + ₹10 per 500g
+				}
 
-			// Convert to paise
-			addressResult["shipping_fee"] = int(charges * 100)
+				// Convert to paise
+				addressResult["shipping_fee"] = int(charges * 100)
+
+				h.logger.Info("Shipping charges calculated",
+					zap.String("zipcode", zipcode),
+					zap.Float64("cart_total", cartTotal),
+					zap.Float64("charges_rupees", charges),
+					zap.Int("charges_paise", int(charges*100)),
+					zap.String("note", "Add ₹500+ to cart for free delivery"))
+			}
 
 			// COD fee (₹20 if COD selected)
 			addressResult["cod_fee"] = 2000 // ₹20 in paise
@@ -681,6 +835,101 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"addresses": result,
+	})
+}
+
+// AbandonedCartWebhook handles abandoned checkout notifications from Razorpay Magic Checkout
+// POST /api/v1/magic-checkout/abandoned-cart
+func (h *MagicCheckoutHandler) AbandonedCartWebhook(c *gin.Context) {
+	var req struct {
+		Event   string `json:"event"`
+		Payload struct {
+			Order struct {
+				ID       string                 `json:"id"`
+				Receipt  string                 `json:"receipt"`
+				Amount   int                    `json:"amount"`
+				Currency string                 `json:"currency"`
+				Notes    map[string]interface{} `json:"notes"`
+			} `json:"order"`
+			Checkout struct {
+				Contact         string `json:"contact"`
+				Email           string `json:"email"`
+				ShippingAddress struct {
+					Name    string `json:"name"`
+					Line1   string `json:"line1"`
+					Line2   string `json:"line2"`
+					City    string `json:"city"`
+					State   string `json:"state"`
+					Zipcode string `json:"zipcode"`
+					Country string `json:"country"`
+				} `json:"shipping_address"`
+				Promotions []struct {
+					Code  string `json:"code"`
+					Value int    `json:"value"`
+				} `json:"promotions"`
+			} `json:"checkout"`
+			AbandonedAt int64  `json:"abandoned_at"`
+			Reason      string `json:"reason"` // "timeout", "user_exit", "payment_failed"
+		} `json:"payload"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid abandoned cart webhook request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	h.logger.Info("Abandoned cart webhook received",
+		zap.String("event", req.Event),
+		zap.String("order_id", req.Payload.Order.ID),
+		zap.String("contact", req.Payload.Checkout.Contact),
+		zap.String("email", req.Payload.Checkout.Email),
+		zap.Int("amount", req.Payload.Order.Amount),
+		zap.String("reason", req.Payload.Reason),
+		zap.Int64("abandoned_at", req.Payload.AbandonedAt))
+
+	// Extract user info from order notes
+	userID := ""
+	if notes := req.Payload.Order.Notes; notes != nil {
+		if uid, ok := notes["user_id"].(string); ok {
+			userID = uid
+		}
+	}
+
+	// Log detailed abandoned cart info for analytics/recovery
+	h.logger.Info("Abandoned cart details",
+		zap.String("user_id", userID),
+		zap.String("receipt", req.Payload.Order.Receipt),
+		zap.Float64("cart_value_rupees", float64(req.Payload.Order.Amount)/100),
+		zap.String("customer_phone", req.Payload.Checkout.Contact),
+		zap.String("customer_email", req.Payload.Checkout.Email),
+		zap.String("shipping_city", req.Payload.Checkout.ShippingAddress.City),
+		zap.String("shipping_pincode", req.Payload.Checkout.ShippingAddress.Zipcode))
+
+	// TODO: Implement cart recovery actions:
+	// 1. Send WhatsApp reminder after 1 hour
+	// 2. Send email with cart recovery link
+	// 3. Store in abandoned_carts table for analytics
+	// 4. Trigger retargeting campaign
+
+	// Example: Send WhatsApp notification (uncomment when ready)
+	/*
+	if req.Payload.Checkout.Contact != "" && h.whatsappService != nil {
+		go func() {
+			ctx := context.Background()
+			message := fmt.Sprintf(
+				"Hi! You left items worth ₹%.0f in your cart. Complete your purchase now!",
+				float64(req.Payload.Order.Amount)/100,
+			)
+			h.whatsappService.SendMessage(ctx, req.Payload.Checkout.Contact, message)
+		}()
+	}
+	*/
+
+	// Always return 200 to acknowledge receipt
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Abandoned cart webhook received",
 	})
 }
 

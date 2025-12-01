@@ -418,6 +418,8 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 
 // GetOrder fetches a Razorpay order by ID
 func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*RazorpayOrder, error) {
+	// Note: Razorpay Orders API only supports expand for: payments, payments.card, virtual_account, transfers, offers
+	// customer_details is NOT supported as expand parameter
 	endpoint := fmt.Sprintf("%s/orders/%s", s.config.BaseURL, orderID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -447,6 +449,12 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 	if err := json.Unmarshal(body, &order); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	s.logger.Info("Razorpay order fetched",
+		zap.String("order_id", orderID),
+		zap.String("status", order.Status),
+		zap.Int("amount", order.Amount))
+
 	return &order, nil
 }
 

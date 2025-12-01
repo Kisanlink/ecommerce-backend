@@ -62,6 +62,7 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 		magicCheckout.POST("/apply-promotion", magicCheckoutHandler.ApplyPromotion)
 		magicCheckout.POST("/shipping-info", magicCheckoutHandler.GetShippingInfo)
 		magicCheckout.POST("/addresses-callback", magicCheckoutHandler.UpdateAddresses) // Address updates from Magic Checkout
+		magicCheckout.POST("/abandoned-cart", magicCheckoutHandler.AbandonedCartWebhook) // Abandoned cart webhook from Razorpay
 	}
 
 	// Magic Checkout order creation endpoint (supports both authenticated and guest)
