@@ -119,9 +119,14 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 		log.Printf("User not found in users table, using Firebase data")
 		firstName = "User"
 		lastName = ""
-		email = firebaseEmail
-		if email == "" {
-			email = "user@example.com" // Fallback
+		// Check if firebaseEmail is actually an email (contains @) or a phone number
+		if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") {
+			email = firebaseEmail
+		} else {
+			// No email available (phone-only user) - leave empty
+			// User can add email later through profile update
+			email = ""
+			log.Printf("No email found for phone user - email will be empty, user can add it later")
 		}
 	} else {
 		// Log user data for debugging
@@ -147,10 +152,19 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 			firstName = "User"
 		}
 
-		// Use Firebase email if available, otherwise fall back to users table email
-		email = firebaseEmail
-		if email == "" && user.Email != nil {
+		// For email: Only use if user has email in database or Firebase provides valid email
+		// For phone users: Leave email empty - they can add it later in profile
+		if user.Email != nil && *user.Email != "" {
+			// User has email in database - use it
 			email = *user.Email
+		} else if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") {
+			// Firebase email is provided and looks like an email (contains @)
+			email = firebaseEmail
+		} else {
+			// No email available (phone-only user) - leave empty
+			// User can add email later through profile update
+			email = ""
+			log.Printf("No email found for phone user %s - email will be empty, user can add it later", userID)
 		}
 
 		// Log extracted names for debugging

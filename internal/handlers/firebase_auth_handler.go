@@ -1364,7 +1364,8 @@ func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
 
 		// Check if profile exists for this user, create if it doesn't
 		// This handles the case where user signed up but profile creation failed
-		profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, verifyResponse.PhoneNumber)
+		// Pass empty string for email since phone users don't have email - CreateAutoProfile will handle it
+		profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, "")
 		if profileErr != nil {
 			if !strings.Contains(profileErr.Error(), "profile already exists") {
 				fmt.Printf("⚠️ Warning: Failed to create profile during phone verification for existing user: %v\n", profileErr)
@@ -1399,7 +1400,8 @@ func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
 			localUser["firebase_uid"] = verifyResponse.LocalId
 
 			// Automatically create profile for the new phone user (dedicated profile section)
-			profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, verifyResponse.PhoneNumber)
+			// Pass empty string for email since phone users don't have email - CreateAutoProfile will handle it
+			profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, "")
 			if profileErr != nil {
 				if !strings.Contains(profileErr.Error(), "profile already exists") {
 					fmt.Printf("⚠️ Warning: Failed to create profile during phone verification: %v\n", profileErr)
@@ -1477,11 +1479,8 @@ func (h *FirebaseAuthHandler) PhoneSignup(c *gin.Context) {
 
 	// Automatically create profile for the new phone user (dedicated profile section)
 	// This happens automatically during signup - no need for separate endpoint
-	var phoneNumber string
-	if phoneNum, ok := userData["phone_number"].(string); ok {
-		phoneNumber = phoneNum
-	}
-	profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, phoneNumber)
+	// Pass empty string for email since phone users don't have email - CreateAutoProfile will handle it
+	profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, "")
 	if profileErr != nil {
 		// Log error but don't fail signup - profile can be created later
 		if !strings.Contains(profileErr.Error(), "profile already exists") {

@@ -48,24 +48,35 @@ func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (
 			firstName := strings.TrimSpace(profile.FirstName)
 			lastName := strings.TrimSpace(profile.LastName)
 
-			if firstName != "" && lastName != "" {
-				fullName := firstName + " " + lastName
-				s.logger.Info("Found user name from Profile table",
-					zap.String("user_id", userID),
-					zap.String("user_name", fullName))
-				return fullName, nil
-			} else if firstName != "" {
-				s.logger.Info("Found first name from Profile table",
-					zap.String("user_id", userID),
-					zap.String("user_name", firstName))
-				return firstName, nil
-			} else if lastName != "" {
-				s.logger.Info("Found last name from Profile table",
-					zap.String("user_id", userID),
-					zap.String("user_name", lastName))
-				return lastName, nil
+			// Check if firstName is the default "User" value - treat it as empty
+			if firstName == "User" && lastName == "" {
+				// Default value, treat as empty and check Users table
+				s.logger.Info("Profile has default 'User' name, checking Users table", zap.String("user_id", userID))
 			} else {
-				s.logger.Info("No name found in Profile table", zap.String("user_id", userID))
+				// Build name from profile: first_name + last_name (if both exist)
+				// If only first_name exists, use just first_name
+				// If only last_name exists, use just last_name
+				if firstName != "" && lastName != "" {
+					fullName := firstName + " " + lastName
+					s.logger.Info("Found user name from Profile table",
+						zap.String("user_id", userID),
+						zap.String("user_name", fullName))
+					return fullName, nil
+				} else if firstName != "" && firstName != "User" {
+					// Use first name only if it's not the default "User"
+					s.logger.Info("Found first name from Profile table",
+						zap.String("user_id", userID),
+						zap.String("user_name", firstName))
+					return firstName, nil
+				} else if lastName != "" {
+					// Use last name if first name is empty or default
+					s.logger.Info("Found last name from Profile table",
+						zap.String("user_id", userID),
+						zap.String("user_name", lastName))
+					return lastName, nil
+				} else {
+					s.logger.Info("No valid name found in Profile table", zap.String("user_id", userID))
+				}
 			}
 		} else {
 			s.logger.Warn("Failed to get profile from Profile table",
@@ -76,7 +87,7 @@ func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (
 		s.logger.Warn("Profile service not available", zap.String("user_id", userID))
 	}
 
-	// If Profile table doesn't have a name, try Users table as fallback
+	// If Profile table doesn't have a valid name, try Users table as fallback
 	userResponse, err := s.userService.GetUserByID(ctx, userID)
 	if err == nil && userResponse.Success {
 		if userData, ok := userResponse.Data.(map[string]interface{}); ok {

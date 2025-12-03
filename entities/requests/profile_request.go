@@ -13,6 +13,7 @@ type UpdateProfileRequest struct {
 	*base.BaseRequest `json:"-"`
 	FirstName         *string `json:"first_name,omitempty" validate:"omitempty,min=2,max=50"`
 	LastName          *string `json:"last_name,omitempty" validate:"omitempty,min=2,max=50"`
+	Email             *string `json:"email,omitempty" validate:"omitempty,email"`
 	Phone             *string `json:"phone,omitempty" validate:"omitempty,e164"`
 	DateOfBirth       *string `json:"date_of_birth,omitempty" validate:"omitempty,datetime=2006-01-02"`
 	Gender            *string `json:"gender,omitempty" validate:"omitempty,oneof=male female other"`
@@ -41,6 +42,15 @@ func (r *UpdateProfileRequest) ApplyToModel(profile *models.Profile) error {
 	}
 	if r.LastName != nil {
 		profile.LastName = *r.LastName
+	}
+	if r.Email != nil {
+		// Allow users to add/update email (phone users can add email later)
+		// If empty string, set to empty (don't clear existing email unless explicitly set)
+		if *r.Email == "" {
+			profile.Email = ""
+		} else {
+			profile.Email = *r.Email
+		}
 	}
 	// Note: Phone field removed from profiles - now only in users table
 	// if r.Phone != nil {
