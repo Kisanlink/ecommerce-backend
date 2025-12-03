@@ -375,12 +375,15 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			userID := localUser["id"].(string)
 
 			// Check if user has a profile, create if not
-			profile, _ := h.profileService.GetProfileByUserID(ctx, userID)
-			if profile == nil {
-				profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
-				if profileErr != nil {
-					if !strings.Contains(profileErr.Error(), "profile already exists") {
-						fmt.Printf("⚠️ Warning: Failed to create profile during login: %v\n", profileErr)
+			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+			if profile == nil || profileErr != nil {
+				// Profile doesn't exist, create it
+				profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
+				if createErr != nil {
+					if !strings.Contains(createErr.Error(), "profile already exists") {
+						fmt.Printf("⚠️ Warning: Failed to create profile during login: %v\n", createErr)
+					} else {
+						fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 					}
 				} else {
 					fmt.Printf("✅ Profile successfully created during login: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
@@ -402,12 +405,15 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 				}
 
 				// Check if user has a profile, create if not
-				profile, _ := h.profileService.GetProfileByUserID(ctx, userID)
-				if profile == nil {
-					profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
-					if profileErr != nil {
-						if !strings.Contains(profileErr.Error(), "profile already exists") {
-							fmt.Printf("⚠️ Warning: Failed to create profile during login: %v\n", profileErr)
+				profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+				if profile == nil || profileErr != nil {
+					// Profile doesn't exist, create it
+					profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
+					if createErr != nil {
+						if !strings.Contains(createErr.Error(), "profile already exists") {
+							fmt.Printf("⚠️ Warning: Failed to create profile during login: %v\n", createErr)
+						} else {
+							fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 						}
 					} else {
 						fmt.Printf("✅ Profile successfully created during login: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
@@ -463,12 +469,15 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 
 			// Check if user has a profile, create if not (fallback path)
 			userID := localUser["id"].(string)
-			profile, _ := h.profileService.GetProfileByUserID(ctx, userID)
-			if profile == nil {
-				profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, signInResp.Email)
-				if profileErr != nil {
-					if !strings.Contains(profileErr.Error(), "profile already exists") {
-						fmt.Printf("⚠️ Warning: Failed to create profile during login (fallback): %v\n", profileErr)
+			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+			if profile == nil || profileErr != nil {
+				// Profile doesn't exist, create it
+				profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, signInResp.Email)
+				if createErr != nil {
+					if !strings.Contains(createErr.Error(), "profile already exists") {
+						fmt.Printf("⚠️ Warning: Failed to create profile during login (fallback): %v\n", createErr)
+					} else {
+						fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 					}
 				} else {
 					fmt.Printf("✅ Profile successfully created during login (fallback): ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
@@ -896,10 +905,24 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 			existingUserResponse, _ := h.userService.GetUserByEmail(ctx, googleResponse.Email)
 			if existingUserResponse != nil && existingUserResponse.Success {
 				localUser = existingUserResponse.Data.(map[string]interface{})
+				userID := localUser["id"].(string)
 				// Update Firebase UID if not set
 				if localUser["firebase_uid"] == "" || localUser["firebase_uid"] == nil {
-					userID := localUser["id"].(string)
 					h.userService.UpdateUserFirebaseUID(ctx, userID, googleResponse.LocalId)
+				}
+				// Check if profile exists, create if not
+				profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+				if profile == nil || profileErr != nil {
+					profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, googleResponse.Email)
+					if createErr != nil {
+						if !strings.Contains(createErr.Error(), "profile already exists") {
+							fmt.Printf("⚠️ Warning: Failed to create profile for existing Google user: %v\n", createErr)
+						} else {
+							fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
+						}
+					} else {
+						fmt.Printf("✅ Profile successfully created for existing Google user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
+					}
 				}
 			} else {
 				utils.RespondWithError(c, http.StatusInternalServerError, "Failed to create user in database", err)
@@ -926,6 +949,22 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 		userResponse, _ := h.userService.GetUserByFirebaseUID(ctx, googleResponse.LocalId)
 		if userResponse != nil && userResponse.Success {
 			localUser = userResponse.Data.(map[string]interface{})
+			userID := localUser["id"].(string)
+
+			// Check if profile exists, create if not
+			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+			if profile == nil || profileErr != nil {
+				profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, googleResponse.Email)
+				if createErr != nil {
+					if !strings.Contains(createErr.Error(), "profile already exists") {
+						fmt.Printf("⚠️ Warning: Failed to create profile for existing Google user: %v\n", createErr)
+					} else {
+						fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
+					}
+				} else {
+					fmt.Printf("✅ Profile successfully created for existing Google user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
+				}
+			}
 		} else {
 			// Try by email
 			userByEmailResponse, _ := h.userService.GetUserByEmail(ctx, googleResponse.Email)
@@ -936,12 +975,14 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 				h.userService.UpdateUserFirebaseUID(ctx, userID, googleResponse.LocalId)
 
 				// Check if profile exists, create if not
-				profile, _ := h.profileService.GetProfileByUserID(ctx, userID)
-				if profile == nil {
-					profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, googleResponse.Email)
-					if profileErr != nil {
-						if !strings.Contains(profileErr.Error(), "profile already exists") {
-							fmt.Printf("⚠️ Warning: Failed to create profile for existing Google user: %v\n", profileErr)
+				profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+				if profile == nil || profileErr != nil {
+					profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, googleResponse.Email)
+					if createErr != nil {
+						if !strings.Contains(createErr.Error(), "profile already exists") {
+							fmt.Printf("⚠️ Warning: Failed to create profile for existing Google user: %v\n", createErr)
+						} else {
+							fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 						}
 					} else {
 						fmt.Printf("✅ Profile successfully created for existing Google user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
@@ -989,12 +1030,14 @@ func (h *FirebaseAuthHandler) handleFirebaseGoogleUser(c *gin.Context, userRecor
 		userID := localUser["id"].(string)
 
 		// Check if user has a profile, create if not
-		profile, _ := h.profileService.GetProfileByUserID(ctx, userID)
-		if profile == nil {
-			profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
-			if profileErr != nil {
-				if !strings.Contains(profileErr.Error(), "profile already exists") {
-					fmt.Printf("⚠️ Warning: Failed to create profile for Google user: %v\n", profileErr)
+		profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+		if profile == nil || profileErr != nil {
+			profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
+			if createErr != nil {
+				if !strings.Contains(createErr.Error(), "profile already exists") {
+					fmt.Printf("⚠️ Warning: Failed to create profile for Google user: %v\n", createErr)
+				} else {
+					fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 				}
 			} else {
 				fmt.Printf("✅ Profile successfully created for Google user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
@@ -1012,12 +1055,14 @@ func (h *FirebaseAuthHandler) handleFirebaseGoogleUser(c *gin.Context, userRecor
 			h.userService.UpdateUserFirebaseUID(ctx, userID, userRecord.UID)
 
 			// Check/create profile
-			profile, _ := h.profileService.GetProfileByUserID(ctx, userID)
-			if profile == nil {
-				profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
-				if profileErr != nil {
-					if !strings.Contains(profileErr.Error(), "profile already exists") {
-						fmt.Printf("⚠️ Warning: Failed to create profile for existing Google user: %v\n", profileErr)
+			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
+			if profile == nil || profileErr != nil {
+				profile, createErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
+				if createErr != nil {
+					if !strings.Contains(createErr.Error(), "profile already exists") {
+						fmt.Printf("⚠️ Warning: Failed to create profile for existing Google user: %v\n", createErr)
+					} else {
+						fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 					}
 				} else {
 					fmt.Printf("✅ Profile successfully created for existing Google user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
@@ -1306,15 +1351,28 @@ func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
 	if userResponse != nil && userResponse.Success {
 		// User exists in local database
 		localUser = userResponse.Data.(map[string]interface{})
+		userID := localUser["id"].(string)
 
 		// Update Firebase UID if not set
 		if localUser["firebase_uid"] == "" {
-			userID := localUser["id"].(string)
 			err := h.userService.UpdateUserFirebaseUID(ctx, userID, verifyResponse.LocalId)
 			if err != nil {
 				fmt.Printf("Failed to update Firebase UID for user %s: %v\n", userID, err)
 			}
 			localUser["firebase_uid"] = verifyResponse.LocalId
+		}
+
+		// Check if profile exists for this user, create if it doesn't
+		// This handles the case where user signed up but profile creation failed
+		profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, verifyResponse.PhoneNumber)
+		if profileErr != nil {
+			if !strings.Contains(profileErr.Error(), "profile already exists") {
+				fmt.Printf("⚠️ Warning: Failed to create profile during phone verification for existing user: %v\n", profileErr)
+			} else {
+				fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
+			}
+		} else {
+			fmt.Printf("✅ Profile successfully created in NeonDB during phone verification (existing user): ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
 		}
 	} else {
 		// Create new user in local database

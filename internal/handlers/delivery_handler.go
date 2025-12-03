@@ -281,3 +281,61 @@ func (h *DeliveryHandler) GetOrderShipment(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, resp)
 }
+
+// GetConfigurationStatus handles GET /delivery/debug/config
+// @Summary Get Delhivery configuration status
+// @Description Returns current Delhivery configuration for debugging
+// @Tags Delivery Debug
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Configuration status"
+// @Router /delivery/debug/config [get]
+func (h *DeliveryHandler) GetConfigurationStatus(c *gin.Context) {
+	// Type assert to get the concrete service with the method
+	if svc, ok := h.deliveryService.(*services.DeliveryService); ok {
+		config := svc.GetConfigurationStatus()
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"config":  config,
+			"hint":    "Check 'config_issues' for any problems. DELHIVERY_WAREHOUSE_NAME must EXACTLY match your pickup location name in Delhivery dashboard (case-sensitive).",
+		})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to get configuration"})
+}
+
+// ValidateWarehouse handles GET /delivery/debug/validate-warehouse
+// @Summary Validate Delhivery warehouse configuration
+// @Description Validates that the warehouse name matches a registered pickup location in Delhivery
+// @Tags Delivery Debug
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Warehouse validation result"
+// @Router /delivery/debug/validate-warehouse [get]
+func (h *DeliveryHandler) ValidateWarehouse(c *gin.Context) {
+	// Type assert to get the concrete service with the method
+	if svc, ok := h.deliveryService.(*services.DeliveryService); ok {
+		result, err := svc.ValidateWarehouse(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		response := gin.H{
+			"success":              result.IsValid,
+			"warehouse_name":       result.WarehouseName,
+			"issues":               result.Issues,
+			"available_warehouses": result.AvailableWarehouses,
+		}
+		if !result.IsValid {
+			response["fix_instructions"] = []string{
+				"1. Log in to your Delhivery dashboard",
+				"2. Go to Settings → Pickup Locations",
+				"3. Find your pickup location and copy the EXACT name (case-sensitive)",
+				"4. Set DELHIVERY_WAREHOUSE_NAME environment variable to this exact name",
+				"5. Also set DELHIVERY_ORIGIN_ADDRESS to your actual pickup address",
+				"6. Restart the server",
+			}
+		}
+		c.JSON(http.StatusOK, response)
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to validate warehouse"})
+}

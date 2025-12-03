@@ -20,6 +20,7 @@ type AddressServiceInterface interface {
 	UpdateAddress(ctx context.Context, userID string, req *models.Address) (*models.Address, error)
 	DeleteAddress(ctx context.Context, userID, addressID string) error
 	SetDefaultAddress(ctx context.Context, userID, addressID string) error
+	GetDefaultAddress(ctx context.Context, userID string) (*models.Address, error)
 	FindOrCreateAddress(ctx context.Context, userID, street, city, state, postalCode, country string) (*models.Address, error)
 }
 
@@ -149,6 +150,11 @@ func (s *AddressService) DeleteAddress(ctx context.Context, userID, addressID st
 
 func (s *AddressService) SetDefaultAddress(ctx context.Context, userID, addressID string) error {
 	return s.addressRepo.SetDefaultAddress(ctx, userID, addressID)
+}
+
+// GetDefaultAddress returns the user's default address
+func (s *AddressService) GetDefaultAddress(ctx context.Context, userID string) (*models.Address, error) {
+	return s.addressRepo.GetDefaultAddress(ctx, userID)
 }
 
 func (s *AddressService) FindOrCreateAddress(ctx context.Context, userID, street, city, state, postalCode, country string) (*models.Address, error) {

@@ -55,11 +55,12 @@ type OrderService struct {
 	addressRepo *repositories.AddressRepository
 	couponRepo  repositories.CouponRepositoryInterface
 	s3Service   *S3Service
+	r2Service   *R2Service // Cloudflare R2 storage (preferred over S3)
 	logger      *zap.Logger
 }
 
 // NewOrderService creates a new order service
-func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, s3Service *S3Service, logger *zap.Logger) OrderServiceInterface {
+func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, s3Service *S3Service, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
 	service := &OrderService{
 		orderRepo:   orderRepo,
 		cartService: cartService,
@@ -67,6 +68,7 @@ func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartSe
 		addressRepo: addressRepo,
 		couponRepo:  couponRepo,
 		s3Service:   s3Service,
+		r2Service:   r2Service,
 		logger:      logger,
 	}
 
@@ -498,15 +500,15 @@ func (s *OrderService) FormatAddress(addr *models.Address) string {
 	return fmt.Sprintf("%s, %s%s, %s, %s %s, %s%s", name, addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country, phone)
 }
 
-// GenerateAndAttachInvoice generates a PDF invoice, uploads to S3, and stores URL on the order
+// GenerateAndAttachInvoice generates a PDF invoice, uploads to R2 (preferred) or S3, and stores URL on the order
 func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error) {
 	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load order for invoice: %w", err)
 	}
 
-	// Create PDF invoice service
-	pdfInvoiceService := NewPDFInvoiceService(s.s3Service, s.logger)
+	// Create PDF invoice service with R2 support (R2 is preferred over S3)
+	pdfInvoiceService := NewPDFInvoiceServiceWithR2(s.s3Service, s.r2Service, s.logger)
 
 	// Convert items to pointers
 	itemPointers := make([]*models.OrderItem, len(items))

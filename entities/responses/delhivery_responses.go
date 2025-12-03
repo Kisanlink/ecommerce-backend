@@ -472,3 +472,156 @@ func ParseShipmentResponse(data []byte) (*DelhiveryShipmentResponse, error) {
 	}
 	return &response, nil
 }
+
+// DelhiveryTrackingResponse represents the tracking API response from Delhivery
+type DelhiveryTrackingResponse struct {
+	ShipmentData []DelhiveryShipmentTracking `json:"ShipmentData"`
+}
+
+// DelhiveryShipmentTracking represents tracking data for a single shipment
+type DelhiveryShipmentTracking struct {
+	Shipment DelhiveryShipmentDetail `json:"Shipment"`
+}
+
+// DelhiveryShipmentDetail contains detailed tracking information
+type DelhiveryShipmentDetail struct {
+	AWB               string                    `json:"AWB"`
+	Status            DelhiveryTrackingStatus   `json:"Status"`
+	Scans             []DelhiveryTrackingScan   `json:"Scans"`
+	PickUpDate        string                    `json:"PickUpDate"`
+	DeliveryDate      string                    `json:"DeliveryDate"`
+	ExpectedDelivery  string                    `json:"ExpectedDelivery"`
+	DestRecieveDate   string                    `json:"DestRecieveDate"`
+	Origin            string                    `json:"Origin"`
+	Destination       string                    `json:"Destination"`
+	Consignee         DelhiveryConsignee        `json:"Consignee"`
+	ReferenceNo       string                    `json:"ReferenceNo"`
+	OrderType         string                    `json:"OrderType"`
+	ReturnedDate      string                    `json:"ReturnedDate"`
+	SenderName        string                    `json:"SenderName"`
+	ChargedWeight     interface{}               `json:"ChargedWeight"` // Can be string or float
+}
+
+// DelhiveryTrackingStatus contains the current status of the shipment
+type DelhiveryTrackingStatus struct {
+	Status          string `json:"Status"`
+	StatusDateTime  string `json:"StatusDateTime"`
+	StatusLocation  string `json:"StatusLocation"`
+	StatusCode      string `json:"StatusCode"`
+	StatusType      string `json:"StatusType"`
+	RecievedBy      string `json:"RecievedBy"`
+	Instructions    string `json:"Instructions"`
+}
+
+// DelhiveryTrackingScan represents a single scan/event in the tracking history
+type DelhiveryTrackingScan struct {
+	ScanDetail DelhiveryScanDetail `json:"ScanDetail"`
+}
+
+// DelhiveryScanDetail contains details of a tracking scan
+type DelhiveryScanDetail struct {
+	Scan              string `json:"Scan"`
+	ScanDateTime      string `json:"ScanDateTime"`
+	ScanType          string `json:"ScanType"`
+	ScannedLocation   string `json:"ScannedLocation"`
+	StatusDateTime    string `json:"StatusDateTime"`
+	StatusCode        string `json:"StatusCode"`
+	Instructions      string `json:"Instructions"`
+}
+
+// DelhiveryConsignee contains recipient information
+type DelhiveryConsignee struct {
+	Name    string `json:"Name"`
+	City    string `json:"City"`
+	State   string `json:"State"`
+	PinCode string `json:"PinCode"`
+	Address string `json:"Address1"`
+	Phone   string `json:"Telephone1"`
+}
+
+// ParseTrackingResponse parses raw JSON response into tracking response
+func ParseTrackingResponse(data []byte) (*DelhiveryTrackingResponse, error) {
+	var response DelhiveryTrackingResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse tracking response: %w", err)
+	}
+	return &response, nil
+}
+
+// GetShipmentTracking returns the tracking data for the first (or only) shipment
+func (r *DelhiveryTrackingResponse) GetShipmentTracking() *DelhiveryShipmentDetail {
+	if len(r.ShipmentData) > 0 {
+		return &r.ShipmentData[0].Shipment
+	}
+	return nil
+}
+
+// GetCurrentStatus returns the current status of the shipment
+func (r *DelhiveryTrackingResponse) GetCurrentStatus() string {
+	shipment := r.GetShipmentTracking()
+	if shipment != nil {
+		return shipment.Status.Status
+	}
+	return ""
+}
+
+// GetStatusCode returns the current status code
+func (r *DelhiveryTrackingResponse) GetStatusCode() string {
+	shipment := r.GetShipmentTracking()
+	if shipment != nil {
+		return shipment.Status.StatusCode
+	}
+	return ""
+}
+
+// GetLastUpdate returns the last status update time
+func (r *DelhiveryTrackingResponse) GetLastUpdate() string {
+	shipment := r.GetShipmentTracking()
+	if shipment != nil {
+		return shipment.Status.StatusDateTime
+	}
+	return ""
+}
+
+// GetExpectedDelivery returns the expected delivery date
+func (r *DelhiveryTrackingResponse) GetExpectedDelivery() string {
+	shipment := r.GetShipmentTracking()
+	if shipment != nil {
+		return shipment.ExpectedDelivery
+	}
+	return ""
+}
+
+// GetTrackingHistory returns all tracking scans/events
+func (r *DelhiveryTrackingResponse) GetTrackingHistory() []DelhiveryScanDetail {
+	shipment := r.GetShipmentTracking()
+	if shipment == nil || len(shipment.Scans) == 0 {
+		return nil
+	}
+
+	history := make([]DelhiveryScanDetail, len(shipment.Scans))
+	for i, scan := range shipment.Scans {
+		history[i] = scan.ScanDetail
+	}
+	return history
+}
+
+// IsDelivered checks if the shipment has been delivered
+func (r *DelhiveryTrackingResponse) IsDelivered() bool {
+	statusCode := r.GetStatusCode()
+	// Delhivery status codes: DL = Delivered
+	return statusCode == "DL" || statusCode == "DELIVERED"
+}
+
+// IsInTransit checks if the shipment is in transit
+func (r *DelhiveryTrackingResponse) IsInTransit() bool {
+	statusCode := r.GetStatusCode()
+	// Common in-transit status codes
+	inTransitCodes := []string{"IT", "OT", "RT", "CC", "ST", "UD", "OC", "RAD", "OFD", "PP", "OP"}
+	for _, code := range inTransitCodes {
+		if statusCode == code {
+			return true
+		}
+	}
+	return false
+}

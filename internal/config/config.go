@@ -225,6 +225,39 @@ func GetWhatsAppEnvConfig() WhatsAppEnvConfig {
 	}
 }
 
+// R2Config holds Cloudflare R2 configuration from env
+type R2Config struct {
+	AccountID       string
+	AccessKeyID     string
+	SecretAccessKey string
+	BucketName      string
+	PublicDomain    string // Optional: for public URL generation (e.g., pub-xxx.r2.dev or custom domain)
+	Endpoint        string // Auto-generated from AccountID
+}
+
+// GetR2Config returns Cloudflare R2 config from environment variables
+func GetR2Config() R2Config {
+	accountID := os.Getenv("R2_ACCOUNT_ID")
+	endpoint := ""
+	if accountID != "" {
+		endpoint = "https://" + accountID + ".r2.cloudflarestorage.com"
+	}
+
+	return R2Config{
+		AccountID:       accountID,
+		AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+		BucketName:      getEnvOrDefault("R2_BUCKET_NAME", "amrti"),
+		PublicDomain:    os.Getenv("R2_PUBLIC_DOMAIN"), // e.g., "pub-xxx.r2.dev" or custom domain
+		Endpoint:        endpoint,
+	}
+}
+
+// IsR2Configured returns true if R2 is properly configured
+func (c R2Config) IsR2Configured() bool {
+	return c.AccountID != "" && c.AccessKeyID != "" && c.SecretAccessKey != "" && c.BucketName != ""
+}
+
 // getEnvOrDefault returns environment variable value or default if empty
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

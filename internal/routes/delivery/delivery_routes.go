@@ -34,6 +34,11 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 	deliveryService := services.NewDeliveryService(repoManager, logger)
 	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, serviceManager.OrderService, logger)
 
+	// Debug endpoint (no auth required) - for checking Delhivery configuration
+	// Remove this in production or add admin auth
+	r.GET("/delivery/debug/config", deliveryHandler.GetConfigurationStatus)
+	r.GET("/delivery/debug/validate-warehouse", deliveryHandler.ValidateWarehouse)
+
 	// All delivery routes require authentication
 	delivery := r.Group("/delivery")
 	delivery.Use(middleware.FirebaseAuthMiddleware())

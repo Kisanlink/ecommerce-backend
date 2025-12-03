@@ -759,11 +759,21 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// Priority 2: Check if we have stored Magic Checkout address from shipping-info or callback
 		} else {
 			// Try multiple key variations since Razorpay may send order ID with or without prefix
+			// IMPORTANT: Try all possible formats - the address might be stored under any of these
 			keysToTry := []string{
 				req.OrderID,                                           // order_RmMkQm9FiEAFC1
 				strings.TrimPrefix(req.OrderID, "order_"),             // RmMkQm9FiEAFC1
 				"order_" + strings.TrimPrefix(req.OrderID, "order_"),  // ensure order_ prefix
 			}
+
+			// Also try receipt ID if available (e.g., "mc_USER123_1234567890")
+			if rzpOrder != nil && rzpOrder.Receipt != "" {
+				keysToTry = append(keysToTry, rzpOrder.Receipt)
+			}
+
+			h.logger.Info("Attempting to retrieve stored Magic Checkout address",
+				zap.String("request_id", requestID),
+				zap.Strings("keys_to_try", keysToTry))
 
 			var storedAddressData map[string]interface{}
 			var foundKey string
@@ -844,7 +854,8 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.Any("payment_notes", rzpPayment.Notes),
 				zap.String("payment_contact", rzpPayment.Contact),
 				zap.String("payment_email", rzpPayment.Email),
-				zap.Any("payment_method", rzpPayment.Method))
+				zap.Any("payment_method", rzpPayment.Method),
+				zap.Bool("has_customer_details", rzpPayment.CustomerDetails != nil))
 
 			if rzpPayment.Contact != "" {
 				mobile = rzpPayment.Contact
@@ -859,9 +870,51 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					zap.String("email", rzpPayment.Email))
 			}
 
+			// PRIORITY: Check for customer_details in payment (Magic Checkout)
+			// This is the most reliable source for shipping address after payment
+			if rzpPayment.CustomerDetails != nil && rzpPayment.CustomerDetails.ShippingAddress != nil {
+				addr := rzpPayment.CustomerDetails.ShippingAddress
+				h.logger.Info("Found customer_details.shipping_address in payment (Magic Checkout)",
+					zap.String("request_id", requestID),
+					zap.String("name", addr.Name),
+					zap.String("line1", addr.Line1),
+					zap.String("line2", addr.Line2),
+					zap.String("city", addr.City),
+					zap.String("state", addr.State),
+					zap.String("zipcode", addr.Zipcode),
+					zap.String("country", addr.Country))
+
+				// Convert to map for consistent processing
+				magicCheckoutAddress = map[string]interface{}{
+					"name":    addr.Name,
+					"line1":   addr.Line1,
+					"line2":   addr.Line2,
+					"city":    addr.City,
+					"state":   addr.State,
+					"zipcode": addr.Zipcode,
+					"country": addr.Country,
+					"contact": addr.Contact,
+				}
+
+				// Also extract customer name if not already set
+				if firstName == "" && addr.Name != "" {
+					nameParts := strings.Fields(strings.TrimSpace(addr.Name))
+					if len(nameParts) > 0 {
+						firstName = nameParts[0]
+						if len(nameParts) > 1 {
+							lastName = strings.Join(nameParts[1:], " ")
+						}
+					}
+					h.logger.Info("Extracted customer name from payment.customer_details",
+						zap.String("request_id", requestID),
+						zap.String("firstName", firstName),
+						zap.String("lastName", lastName))
+				}
+			}
+
 			// Magic Checkout stores shipping address in payment metadata
-			// Check for shipping_address in payment notes/metadata
-			if rzpPayment.Notes != nil {
+			// Check for shipping_address in payment notes/metadata (fallback)
+			if magicCheckoutAddress == nil && rzpPayment.Notes != nil {
 				// Log all notes to understand structure
 				for key, value := range rzpPayment.Notes {
 					h.logger.Info("Payment note field",
@@ -1135,48 +1188,62 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				country = strings.TrimSpace(c)
 			}
 
-			// Create OrderAddress from Magic Checkout data
-			addressData = models.NewOrderAddress(
-				addressLine1,
-				addressLine2,
-				city,
-				state,
-				postalCode,
-				country,
-			)
+			// Validate that we have meaningful address data before creating OrderAddress
+			// At minimum we need: (addressLine1 OR city) AND postalCode
+			hasValidAddress := (addressLine1 != "" || city != "") && postalCode != ""
 
-			// Also save this address to user's address book for future use
-			if h.addressService != nil && userID != "" {
-				// Use FindOrCreate to avoid duplicates and save to user's address book
-				savedAddr, addrErr := h.addressService.FindOrCreateAddress(
-					c.Request.Context(),
-					userID,
+			if hasValidAddress {
+				// Create OrderAddress from Magic Checkout data
+				addressData = models.NewOrderAddress(
 					addressLine1,
+					addressLine2,
 					city,
 					state,
 					postalCode,
 					country,
 				)
 
-				if addrErr == nil && savedAddr != nil {
-					userAddressID = savedAddr.ID
-					h.logger.Info("Magic Checkout address saved to user's address book",
-						zap.String("request_id", requestID),
-						zap.String("user_id", userID),
-						zap.String("address_id", userAddressID))
-				} else {
-					h.logger.Warn("Failed to save Magic Checkout address to user's address book",
-						zap.String("request_id", requestID),
-						zap.Error(addrErr))
-				}
-			}
+				// Also save this address to user's address book for future use
+				if h.addressService != nil && userID != "" && addressLine1 != "" {
+					// Use FindOrCreate to avoid duplicates and save to user's address book
+					savedAddr, addrErr := h.addressService.FindOrCreateAddress(
+						c.Request.Context(),
+						userID,
+						addressLine1,
+						city,
+						state,
+						postalCode,
+						country,
+					)
 
-			h.logger.Info("Created OrderAddress from Magic Checkout data",
-				zap.String("request_id", requestID),
-				zap.String("address_line_1", addressLine1),
-				zap.String("city", city),
-				zap.String("state", state),
-				zap.String("postal_code", postalCode))
+					if addrErr == nil && savedAddr != nil {
+						userAddressID = savedAddr.ID
+						h.logger.Info("Magic Checkout address saved to user's address book",
+							zap.String("request_id", requestID),
+							zap.String("user_id", userID),
+							zap.String("address_id", userAddressID))
+					} else {
+						h.logger.Warn("Failed to save Magic Checkout address to user's address book",
+							zap.String("request_id", requestID),
+							zap.Error(addrErr))
+					}
+				}
+
+				h.logger.Info("Created OrderAddress from Magic Checkout data",
+					zap.String("request_id", requestID),
+					zap.String("address_line_1", addressLine1),
+					zap.String("city", city),
+					zap.String("state", state),
+					zap.String("postal_code", postalCode))
+			} else {
+				h.logger.Warn("Magic Checkout address data is incomplete - skipping address creation",
+					zap.String("request_id", requestID),
+					zap.String("address_line_1", addressLine1),
+					zap.String("city", city),
+					zap.String("state", state),
+					zap.String("postal_code", postalCode),
+					zap.String("note", "Address must have (line1 OR city) AND postalCode"))
+			}
 		}
 
 		// Priority 2: Try to extract structured address data from Razorpay notes
@@ -1249,6 +1316,70 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					zap.String("city", addr.City),
 					zap.String("state", addr.State),
 					zap.String("postal_code", addr.PostalCode))
+			}
+		}
+
+		// CRITICAL FALLBACK: If no valid address from Magic Checkout, try user's saved addresses
+		// This handles the case where Razorpay doesn't call addresses-callback
+		if addressData == nil && h.addressService != nil && internalUserID != "" {
+			h.logger.Warn("No Magic Checkout address available, trying user's saved addresses",
+				zap.String("request_id", requestID),
+				zap.String("user_id", internalUserID))
+
+			// First try default address
+			if defaultAddr, err := h.addressService.GetDefaultAddress(c.Request.Context(), internalUserID); err == nil && defaultAddr != nil {
+				addressData = models.NewOrderAddress(
+					defaultAddr.AddressLine1,
+					defaultAddr.AddressLine2,
+					defaultAddr.City,
+					defaultAddr.State,
+					defaultAddr.PostalCode,
+					defaultAddr.Country,
+				)
+				// Also set customer name from saved address if not already set
+				if firstName == "" && defaultAddr.FirstName != "" {
+					firstName = defaultAddr.FirstName
+					lastName = defaultAddr.LastName
+				}
+				h.logger.Info("Using user's default saved address as fallback",
+					zap.String("request_id", requestID),
+					zap.String("address_id", defaultAddr.ID),
+					zap.String("city", defaultAddr.City),
+					zap.String("state", defaultAddr.State),
+					zap.String("postal_code", defaultAddr.PostalCode),
+					zap.String("first_name", defaultAddr.FirstName))
+			} else {
+				// No default, try to get any saved address
+				h.logger.Warn("No default address, trying any saved address",
+					zap.String("request_id", requestID),
+					zap.String("user_id", internalUserID))
+
+				if addresses, err := h.addressService.GetUserAddresses(c.Request.Context(), internalUserID); err == nil && len(addresses) > 0 {
+					savedAddr := addresses[0] // Use first available address
+					addressData = models.NewOrderAddress(
+						savedAddr.AddressLine1,
+						savedAddr.AddressLine2,
+						savedAddr.City,
+						savedAddr.State,
+						savedAddr.PostalCode,
+						savedAddr.Country,
+					)
+					if firstName == "" && savedAddr.FirstName != "" {
+						firstName = savedAddr.FirstName
+						lastName = savedAddr.LastName
+					}
+					h.logger.Info("Using user's first saved address as fallback",
+						zap.String("request_id", requestID),
+						zap.String("address_id", savedAddr.ID),
+						zap.String("city", savedAddr.City),
+						zap.String("state", savedAddr.State),
+						zap.String("postal_code", savedAddr.PostalCode))
+				} else {
+					h.logger.Warn("No saved addresses found for user",
+						zap.String("request_id", requestID),
+						zap.String("user_id", internalUserID),
+						zap.Error(err))
+				}
 			}
 		}
 
@@ -1440,6 +1571,29 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID))
 		} else if len(orderItems) > 0 {
+			// CRITICAL FIX: Ensure customer data is set on orderWithItems for shipment creation
+			// The order object has the latest customer data, but orderWithItems might not
+			// because it was fetched from DB before the updates were committed
+			if orderWithItems.CustomerFirstName == "" && firstName != "" {
+				orderWithItems.CustomerFirstName = firstName
+			}
+			if orderWithItems.CustomerLastName == "" && lastName != "" {
+				orderWithItems.CustomerLastName = lastName
+			}
+			if orderWithItems.CustomerPhone == "" && mobile != "" {
+				orderWithItems.CustomerPhone = mobile
+			}
+			if orderWithItems.CustomerPhoneAlt == "" && mobileSecondary != "" {
+				orderWithItems.CustomerPhoneAlt = mobileSecondary
+			}
+			// Also ensure shipping address is set
+			if orderWithItems.ShippingAddr == "" && shippingAddress != "" {
+				orderWithItems.ShippingAddr = shippingAddress
+			}
+			if orderWithItems.ShippingAddressID == "" && shippingAddressID != "" {
+				orderWithItems.ShippingAddressID = shippingAddressID
+			}
+
 			// Log order details before shipment creation
 			h.logger.Info("Attempting to create shipment with order details",
 				zap.String("request_id", requestID),
@@ -2095,6 +2249,47 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 		}
 	}
 
+	// IMPORTANT: Check if user has a saved address (fallback for when Razorpay doesn't return address)
+	// This is critical because Magic Checkout's addresses-callback may not be called
+	var hasValidAddress bool
+	var savedAddressInfo string
+	if h.addressService != nil && internalUserID != "" {
+		// First check for default address
+		if defaultAddr, err := h.addressService.GetDefaultAddress(c.Request.Context(), internalUserID); err == nil && defaultAddr != nil {
+			hasValidAddress = true
+			savedAddressInfo = fmt.Sprintf("%s, %s, %s %s", defaultAddr.AddressLine1, defaultAddr.City, defaultAddr.State, defaultAddr.PostalCode)
+			h.logger.Info("User has default address for Magic Checkout",
+				zap.String("request_id", requestID),
+				zap.String("user_id", internalUserID),
+				zap.String("address_id", defaultAddr.ID),
+				zap.String("city", defaultAddr.City))
+		} else {
+			// Check for any saved address
+			if addresses, err := h.addressService.GetUserAddresses(c.Request.Context(), internalUserID); err == nil && len(addresses) > 0 {
+				hasValidAddress = true
+				savedAddressInfo = fmt.Sprintf("%s, %s, %s %s", addresses[0].AddressLine1, addresses[0].City, addresses[0].State, addresses[0].PostalCode)
+				h.logger.Info("User has saved address for Magic Checkout",
+					zap.String("request_id", requestID),
+					zap.String("user_id", internalUserID),
+					zap.Int("address_count", len(addresses)),
+					zap.String("city", addresses[0].City))
+			}
+		}
+	}
+
+	if !hasValidAddress {
+		h.logger.Warn("User has no saved address - Magic Checkout may fail",
+			zap.String("request_id", requestID),
+			zap.String("user_id", internalUserID))
+		// Return warning but allow checkout to proceed - Razorpay might provide address
+		// Uncomment below to block checkout without address:
+		// c.JSON(http.StatusBadRequest, gin.H{
+		// 	"error": "Please save a delivery address before checkout",
+		// 	"code":  "NO_ADDRESS",
+		// })
+		// return
+	}
+
 	// Get cart using internal user ID
 	cart, err := h.orderService.GetUserCart(c.Request.Context(), internalUserID)
 	if err != nil {
@@ -2260,15 +2455,19 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	// Prepare response
 	cfg := config.GetRazorpayConfig()
 	response := gin.H{
-		"order_id": razorpayOrder.ID,
-		"amount":   services.PaisaToRupees(razorpayOrder.Amount),
-		"currency": "INR",
-		"key_id":   cfg.KeyID,
-		"receipt":  razorpayOrder.Receipt,
+		"order_id":          razorpayOrder.ID,
+		"amount":            services.PaisaToRupees(razorpayOrder.Amount),
+		"currency":          "INR",
+		"key_id":            cfg.KeyID,
+		"receipt":           razorpayOrder.Receipt,
+		"has_saved_address": hasValidAddress,
+		"saved_address":     savedAddressInfo, // Fallback address if Magic Checkout doesn't provide one
 	}
 
-	// TODO: Add prefill data if user is authenticated
-	// For now, Magic Checkout will collect phone number during checkout
+	// Add warning if no saved address (fallback won't work)
+	if !hasValidAddress {
+		response["address_warning"] = "No saved address found. Please ensure you enter a complete address during checkout."
+	}
 
 	// Store order data in cache for coupon apply-promotion to retrieve cart total
 	// This is critical because Razorpay sends our receipt ID, not the Razorpay order ID

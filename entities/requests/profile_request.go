@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
@@ -17,8 +18,8 @@ type UpdateProfileRequest struct {
 	Gender            *string `json:"gender,omitempty" validate:"omitempty,oneof=male female other"`
 
 	// Address fields
-	AddressLine1 *string `json:"address_line1,omitempty" validate:"omitempty,max=255"`
-	AddressLine2 *string `json:"address_line2,omitempty" validate:"omitempty,max=255"`
+	AddressLine1 *string `json:"address_line_1,omitempty" validate:"omitempty,max=255"`
+	AddressLine2 *string `json:"address_line_2,omitempty" validate:"omitempty,max=255"`
 	City         *string `json:"city,omitempty" validate:"omitempty,max=100"`
 	State        *string `json:"state,omitempty" validate:"omitempty,max=100"`
 	Country      *string `json:"country,omitempty" validate:"omitempty,max=100"`
@@ -46,12 +47,17 @@ func (r *UpdateProfileRequest) ApplyToModel(profile *models.Profile) error {
 	//	profile.Phone = *r.Phone
 	// }
 	if r.DateOfBirth != nil {
-		// Parse date string to time.Time
-		parsedDate, err := time.Parse("2006-01-02", *r.DateOfBirth)
-		if err != nil {
-			return err
+		// If date_of_birth is empty string, set it to nil (clear the date)
+		if *r.DateOfBirth == "" {
+			profile.DateOfBirth = nil
+		} else {
+			// Parse date string to time.Time
+			parsedDate, err := time.Parse("2006-01-02", *r.DateOfBirth)
+			if err != nil {
+				return fmt.Errorf("invalid date format for date_of_birth: expected YYYY-MM-DD, got: %s", *r.DateOfBirth)
+			}
+			profile.DateOfBirth = &parsedDate
 		}
-		profile.DateOfBirth = &parsedDate
 	}
 	if r.Gender != nil {
 		profile.Gender = *r.Gender

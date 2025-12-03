@@ -18,6 +18,7 @@ type ServiceManager struct {
 	CartService            CartServiceInterface
 	SessionCartService     SessionCartServiceInterface
 	S3Service              *S3Service
+	R2Service              *R2Service // Cloudflare R2 storage service
 	DeliveryService        DeliveryServiceInterface
 	OrderService           OrderServiceInterface
 	ReviewService          *ReviewService
@@ -38,13 +39,25 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		s3Service = NewS3Service(nil)
 	}
 
+	// Initialize R2 service for Cloudflare R2 storage
+	var r2Service *R2Service
+	r2Svc, err := NewR2Service(logger)
+	if err != nil {
+		logger.Warn("R2 service initialization failed - R2 storage will not be available",
+			zap.Error(err))
+	} else {
+		r2Service = r2Svc
+		logger.Info("R2 service initialized successfully",
+			zap.String("bucket", r2Service.GetBucketName()))
+	}
+
 	// Create services
 	addressService := NewAddressService(repoManager, logger)
 	cartService := NewCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, repoManager.GetDBManager(), logger)
 	sessionCartService := NewSessionCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, logger)
 	sessionFavoriteService := NewSessionFavoriteService(repoManager.FavoriteRepository, repoManager.ProductRepository, repoManager.ImageRepository, repoManager.InventoryRepository, logger)
 	deliveryService := NewDeliveryService(repoManager, logger)
-	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, s3Service, logger)
+	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, s3Service, r2Service, logger)
 
 	// Create review service with PostgreSQL support
 	userService := NewUserService(repoManager.UserRepository)
@@ -68,6 +81,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager, s3Manager *d
 		CartService:            cartService,
 		SessionCartService:     sessionCartService,
 		S3Service:              s3Service,
+		R2Service:              r2Service,
 		DeliveryService:        deliveryService,
 		OrderService:           orderService,
 		ReviewService:          reviewService,

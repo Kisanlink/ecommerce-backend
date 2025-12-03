@@ -587,8 +587,9 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 		zap.Float64("cart_amount", req.CartAmount),
 		zap.Int("address_count", len(req.Addresses)))
 
-	// CRITICAL: Store address and customer info from shipping-info call
-	// This is often the ONLY place we receive the full address from Magic Checkout
+	// CRITICAL FIX: Store address and customer info from shipping-info call
+	// Razorpay may send full address here and NOT call addresses-callback
+	// We must ALWAYS store whatever address data we receive to avoid losing it
 	if len(req.Addresses) > 0 {
 		addr := req.Addresses[0] // Use first address
 
@@ -608,38 +609,10 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			state = addr.StateCode
 		}
 
-		addressData := map[string]interface{}{
-			"shipping_address": map[string]interface{}{
-				"name":     addr.Name,
-				"line1":    addressLine1,
-				"line2":    addressLine2,
-				"city":     addr.City,
-				"state":    state,
-				"zipcode":  addr.Zipcode,
-				"country":  addr.Country,
-				"tag":      addr.Tag,
-			},
-			"contact": req.Contact,
-			"email":   req.Email,
-		}
+		// Check if this is a "full" address (has line1 OR city) vs just serviceability data
+		hasFullAddress := addressLine1 != "" || addr.City != ""
 
-		// Store by multiple keys for flexible lookup later
-		// Store by receipt ID (order_id field)
-		if req.OrderID != "" {
-			StoreMagicCheckoutAddress(req.OrderID, addressData)
-			h.logger.Info("Stored Magic Checkout address by receipt",
-				zap.String("key", req.OrderID))
-		}
-		// Store by Razorpay order ID
-		if req.RazorpayOrderID != "" {
-			StoreMagicCheckoutAddress(req.RazorpayOrderID, addressData)
-			StoreMagicCheckoutAddress(razorpayOrderID, addressData) // Also with order_ prefix
-			h.logger.Info("Stored Magic Checkout address by razorpay_order_id",
-				zap.String("key", req.RazorpayOrderID),
-				zap.String("key_with_prefix", razorpayOrderID))
-		}
-
-		h.logger.Info("STORED address from shipping-info call",
+		h.logger.Info("Shipping-info address data received",
 			zap.String("order_id", req.OrderID),
 			zap.String("razorpay_order_id", req.RazorpayOrderID),
 			zap.String("name", addr.Name),
@@ -648,7 +621,60 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			zap.String("state", state),
 			zap.String("zipcode", addr.Zipcode),
 			zap.String("contact", req.Contact),
-			zap.String("email", req.Email))
+			zap.String("email", req.Email),
+			zap.Bool("has_full_address", hasFullAddress))
+
+		// ALWAYS store address data - don't discard it!
+		// Build address data with whatever we have
+		addressData := map[string]interface{}{
+			"shipping_address": map[string]interface{}{
+				"name":    addr.Name,
+				"line1":   addressLine1,
+				"line2":   addressLine2,
+				"city":    addr.City,
+				"state":   state,
+				"zipcode": addr.Zipcode,
+				"country": addr.Country,
+				"tag":     addr.Tag,
+			},
+			"contact": req.Contact,
+			"email":   req.Email,
+		}
+
+		// Store by ALL possible key formats for reliable retrieval later
+		keysStored := []string{}
+
+		// Key 1: Raw order_id from request (could be receipt ID like "mc_xxx_timestamp")
+		if req.OrderID != "" {
+			StoreMagicCheckoutAddress(req.OrderID, addressData)
+			keysStored = append(keysStored, req.OrderID)
+		}
+
+		// Key 2: Razorpay order ID without prefix (like "RmMkQm9FiEAFC1")
+		if req.RazorpayOrderID != "" {
+			StoreMagicCheckoutAddress(req.RazorpayOrderID, addressData)
+			keysStored = append(keysStored, req.RazorpayOrderID)
+		}
+
+		// Key 3: Razorpay order ID with order_ prefix (like "order_RmMkQm9FiEAFC1")
+		if razorpayOrderID != "" && razorpayOrderID != req.RazorpayOrderID {
+			StoreMagicCheckoutAddress(razorpayOrderID, addressData)
+			keysStored = append(keysStored, razorpayOrderID)
+		}
+
+		// Key 4: Also without order_ prefix if it was added
+		if strings.HasPrefix(req.RazorpayOrderID, "order_") {
+			withoutPrefix := strings.TrimPrefix(req.RazorpayOrderID, "order_")
+			StoreMagicCheckoutAddress(withoutPrefix, addressData)
+			keysStored = append(keysStored, withoutPrefix)
+		}
+
+		h.logger.Info("STORED Magic Checkout address with multiple keys",
+			zap.Strings("keys", keysStored),
+			zap.Bool("has_full_address", hasFullAddress),
+			zap.String("name", addr.Name),
+			zap.String("zipcode", addr.Zipcode),
+			zap.String("contact", req.Contact))
 	}
 
 	// Get order details to determine weight and cart total

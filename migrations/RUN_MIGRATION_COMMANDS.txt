@@ -1,0 +1,38 @@
+===========================================
+RECIPES MIGRATION - COMMANDS TO RUN
+===========================================
+
+STEP 1: Set Database Connection Variables
+------------------------------------------
+Replace the values with your actual NeonDB credentials:
+
+$env:DB_POSTGRES_HOST = "your-neon-host.aws.neon.tech"
+$env:DB_POSTGRES_USER = "your-username"
+$env:DB_POSTGRES_PASSWORD = "your-password"
+$env:DB_POSTGRES_DBNAME = "your-database-name"
+$env:DB_POSTGRES_PORT = "5432"
+$env:DB_POSTGRES_SSLMODE = "require"
+
+
+STEP 2: Run the Migration Script
+---------------------------------
+.\migrations\run_migration_direct.ps1
+
+
+ALTERNATIVE: Direct psql Commands (if script doesn't work)
+-----------------------------------------------------------
+# Set password
+$env:PGPASSWORD = "your-password"
+
+# Create table
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h $env:DB_POSTGRES_HOST -p 5432 -U $env:DB_POSTGRES_USER -d $env:DB_POSTGRES_DBNAME -f migrations\create_recipes_table.sql
+
+# Seed data
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h $env:DB_POSTGRES_HOST -p 5432 -U $env:DB_POSTGRES_USER -d $env:DB_POSTGRES_DBNAME -f migrations\seed_recipes.sql
+
+
+VERIFY: Check if recipes were created
+--------------------------------------
+$env:PGPASSWORD = "your-password"
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h $env:DB_POSTGRES_HOST -p 5432 -U $env:DB_POSTGRES_USER -d $env:DB_POSTGRES_DBNAME -c "SELECT recipe_id, name, category FROM recipes;"
+

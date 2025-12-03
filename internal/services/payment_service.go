@@ -120,6 +120,8 @@ type RazorpayPayment struct {
 	ErrorCode        string                 `json:"error_code,omitempty"`
 	ErrorDescription string                 `json:"error_description,omitempty"`
 	CreatedAt        int64                  `json:"created_at"`
+	// Magic Checkout fields - customer details with shipping address
+	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
 }
 
 // RazorpayWebhookPayload represents webhook event payload
@@ -408,9 +410,36 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Log raw response for debugging Magic Checkout customer_details
+	s.logger.Info("Razorpay GetPaymentStatus RAW response",
+		zap.String("payment_id", paymentID),
+		zap.String("raw_response", string(body)))
+
 	var payment RazorpayPayment
 	if err := json.Unmarshal(body, &payment); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Log customer details if present (Magic Checkout payments)
+	if payment.CustomerDetails != nil {
+		s.logger.Info("Payment has customer_details (Magic Checkout)",
+			zap.String("payment_id", paymentID),
+			zap.String("email", payment.CustomerDetails.Email),
+			zap.String("contact", payment.CustomerDetails.Contact),
+			zap.Bool("has_shipping_address", payment.CustomerDetails.ShippingAddress != nil))
+
+		if payment.CustomerDetails.ShippingAddress != nil {
+			addr := payment.CustomerDetails.ShippingAddress
+			s.logger.Info("Magic Checkout shipping address from payment",
+				zap.String("payment_id", paymentID),
+				zap.String("name", addr.Name),
+				zap.String("line1", addr.Line1),
+				zap.String("line2", addr.Line2),
+				zap.String("city", addr.City),
+				zap.String("state", addr.State),
+				zap.String("zipcode", addr.Zipcode),
+				zap.String("country", addr.Country))
+		}
 	}
 
 	return &payment, nil
@@ -419,7 +448,7 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 // GetOrder fetches a Razorpay order by ID
 func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*RazorpayOrder, error) {
 	// Note: Razorpay Orders API only supports expand for: payments, payments.card, virtual_account, transfers, offers
-	// customer_details is NOT supported as expand parameter
+	// customer_details is NOT supported as expand parameter but IS returned for Magic Checkout orders
 	endpoint := fmt.Sprintf("%s/orders/%s", s.config.BaseURL, orderID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -445,9 +474,40 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Log raw response for debugging Magic Checkout customer_details
+	s.logger.Info("Razorpay GetOrder RAW response",
+		zap.String("order_id", orderID),
+		zap.String("raw_response", string(body)))
+
 	var order RazorpayOrder
 	if err := json.Unmarshal(body, &order); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Log customer details if present (Magic Checkout orders)
+	if order.CustomerDetails != nil {
+		s.logger.Info("Razorpay order has customer_details (Magic Checkout)",
+			zap.String("order_id", orderID),
+			zap.String("email", order.CustomerDetails.Email),
+			zap.String("contact", order.CustomerDetails.Contact),
+			zap.Bool("has_shipping_address", order.CustomerDetails.ShippingAddress != nil))
+
+		if order.CustomerDetails.ShippingAddress != nil {
+			addr := order.CustomerDetails.ShippingAddress
+			s.logger.Info("Magic Checkout shipping address from order",
+				zap.String("order_id", orderID),
+				zap.String("name", addr.Name),
+				zap.String("line1", addr.Line1),
+				zap.String("line2", addr.Line2),
+				zap.String("city", addr.City),
+				zap.String("state", addr.State),
+				zap.String("zipcode", addr.Zipcode),
+				zap.String("country", addr.Country))
+		}
+	} else {
+		s.logger.Info("Razorpay order does NOT have customer_details",
+			zap.String("order_id", orderID),
+			zap.String("status", order.Status))
 	}
 
 	s.logger.Info("Razorpay order fetched",
