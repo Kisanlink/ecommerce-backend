@@ -242,58 +242,16 @@ func (r *OrderRepository) GetOrdersByUserWithDetails(ctx context.Context, userID
 			return nil, fmt.Errorf("failed to get order items for order %s: %w", order.ID, err)
 		}
 
-		// Collect unique product IDs for batch fetching
-		productIDSet := make(map[string]bool)
-		for _, item := range orderItems {
-			productIDSet[item.ProductID] = true
-		}
-
-		// Fetch all products in a single query for better performance
-		var productIDs []string
-		for productID := range productIDSet {
-			productIDs = append(productIDs, productID)
-		}
-
-		// Get all products at once
-		var products []models.Product
-		if len(productIDs) > 0 {
-			productFilter := &base.Filter{
-				Group: base.FilterGroup{
-					Conditions: []base.FilterCondition{
-						{Field: "id", Operator: base.OpIn, Value: productIDs},
-					},
-					Logic: base.LogicAnd,
-				},
-			}
-			if err := r.dbManager.List(ctx, productFilter, &products); err != nil {
-				// If we can't fetch products, continue with default values
-				products = []models.Product{}
-			}
-		}
-
-		// Create a map for quick product lookup
-		productMap := make(map[string]models.Product)
-		for _, product := range products {
-			productMap[product.ID] = product
-		}
-
-		// Enrich order items with product information (name and image)
+		// Enrich order items with product images (for list view)
 		for i := range orderItems {
 			item := &orderItems[i]
-			// Create product object if it doesn't exist
-			if item.Product == nil {
-				item.Product = &models.Product{}
-			}
-
-			// Get product details from the map
-			if product, exists := productMap[item.ProductID]; exists {
-				item.Product.Name = product.Name
-				item.Product.ID = product.ID
-			}
-
 			// Get primary image for the product
 			primaryImage, err := r.getPrimaryImageForProduct(ctx, item.ProductID)
 			if err == nil && primaryImage != nil {
+				// Create minimal product object with image
+				if item.Product == nil {
+					item.Product = &models.Product{}
+				}
 				item.Product.ImageURL = primaryImage.ImageURL
 			}
 		}
