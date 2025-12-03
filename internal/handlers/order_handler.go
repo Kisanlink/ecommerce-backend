@@ -320,27 +320,54 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 		return
 	}
 
+	// Map Firebase UID to internal user ID if needed
+	// Orders are stored with database user ID (USER...), not Firebase UID
+	internalUserID := userID
+	if !strings.HasPrefix(userID, "USER") {
+		// This is likely a Firebase UID, map it to internal user ID
+		if h.userService != nil {
+			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+			if err == nil && userResponse != nil && userResponse.Success {
+				if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+					if id, ok := userData["id"].(string); ok {
+						internalUserID = id
+						h.logger.Info("Mapped Firebase UID to internal user ID for order details",
+							zap.String("request_id", requestID),
+							zap.String("firebase_uid", userID),
+							zap.String("internal_id", internalUserID))
+					}
+				}
+			} else {
+				h.logger.Error("Failed to map Firebase UID to internal user ID in GetOrderDetails",
+					zap.String("request_id", requestID),
+					zap.String("firebase_uid", userID),
+					zap.Error(err))
+				// Continue with Firebase UID as fallback (will likely fail ownership check)
+			}
+		}
+	}
+
 	if orderID == "" {
 		h.logger.Error("Order ID missing in request",
 			zap.String("request_id", requestID),
-			zap.String("user_id", userID))
+			zap.String("user_id", internalUserID))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
 		return
 	}
 
 	h.logger.Info("Fetching order details from service",
 		zap.String("request_id", requestID),
-		zap.String("user_id", userID),
+		zap.String("user_id", internalUserID),
 		zap.String("order_id", orderID))
 
-	// Get order with details
-	order, err := h.orderService.GetOrderDetails(c.Request.Context(), orderID)
+	// Get order with details and enriched items (for product images)
+	order, enrichedItems, err := h.orderService.GetOrderDetails(c.Request.Context(), orderID)
 	if err != nil {
 		h.logger.Error("Failed to get order details from service",
 			zap.String("request_id", requestID),
 			zap.Error(err),
 			zap.String("order_id", orderID),
-			zap.String("user_id", userID),
+			zap.String("user_id", internalUserID),
 			zap.String("error_type", "service_error"))
 
 		// Check if it's a "not found" error
@@ -348,7 +375,7 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 			h.logger.Warn("Order not found in database",
 				zap.String("request_id", requestID),
 				zap.String("order_id", orderID),
-				zap.String("user_id", userID))
+				zap.String("user_id", internalUserID))
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Order not found. Please check the order ID and try again.",
 				"code":  "ORDER_NOT_FOUND"})
@@ -361,10 +388,10 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 	}
 
 	// Verify the order belongs to the authenticated user
-	if order.UserID != userID {
+	if order.UserID != internalUserID {
 		h.logger.Warn("User attempted to access order that doesn't belong to them",
 			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
+			zap.String("user_id", internalUserID),
 			zap.String("order_id", orderID),
 			zap.String("order_owner_id", order.UserID),
 			zap.String("security_event", "unauthorized_access_attempt"))
@@ -374,13 +401,14 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 
 	h.logger.Info("Order details retrieved successfully",
 		zap.String("request_id", requestID),
-		zap.String("user_id", userID),
+		zap.String("user_id", internalUserID),
 		zap.String("order_id", orderID),
 		zap.String("order_status", string(order.Status)),
 		zap.Float64("total_amount", order.TotalAmount),
 		zap.Int("item_count", len(order.OrderItems)))
 
-	response := responses.NewGetOrderDetailsResponse(order)
+	// Build enhanced response with all product images and details
+	response := responses.NewGetOrderDetailsResponseEnhanced(order, enrichedItems)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -579,12 +607,12 @@ func (h *OrderHandler) GetOrderDetailsAdmin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
 		return
 	}
-	order, err := h.orderService.GetOrderDetails(c.Request.Context(), orderID)
+	order, enrichedItems, err := h.orderService.GetOrderDetails(c.Request.Context(), orderID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
 		return
 	}
-	c.JSON(http.StatusOK, responses.NewGetOrderDetailsResponse(order))
+	c.JSON(http.StatusOK, responses.NewGetOrderDetailsResponseEnhanced(order, enrichedItems))
 }
 
 // UpdateOrderStatus updates order status by admin

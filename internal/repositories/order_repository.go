@@ -241,6 +241,63 @@ func (r *OrderRepository) GetOrdersByUserWithDetails(ctx context.Context, userID
 		if err := r.dbManager.List(ctx, itemFilter, &orderItems); err != nil {
 			return nil, fmt.Errorf("failed to get order items for order %s: %w", order.ID, err)
 		}
+
+		// Collect unique product IDs for batch fetching
+		productIDSet := make(map[string]bool)
+		for _, item := range orderItems {
+			productIDSet[item.ProductID] = true
+		}
+
+		// Fetch all products in a single query for better performance
+		var productIDs []string
+		for productID := range productIDSet {
+			productIDs = append(productIDs, productID)
+		}
+
+		// Get all products at once
+		var products []models.Product
+		if len(productIDs) > 0 {
+			productFilter := &base.Filter{
+				Group: base.FilterGroup{
+					Conditions: []base.FilterCondition{
+						{Field: "id", Operator: base.OpIn, Value: productIDs},
+					},
+					Logic: base.LogicAnd,
+				},
+			}
+			if err := r.dbManager.List(ctx, productFilter, &products); err != nil {
+				// If we can't fetch products, continue with default values
+				products = []models.Product{}
+			}
+		}
+
+		// Create a map for quick product lookup
+		productMap := make(map[string]models.Product)
+		for _, product := range products {
+			productMap[product.ID] = product
+		}
+
+		// Enrich order items with product information (name and image)
+		for i := range orderItems {
+			item := &orderItems[i]
+			// Create product object if it doesn't exist
+			if item.Product == nil {
+				item.Product = &models.Product{}
+			}
+
+			// Get product details from the map
+			if product, exists := productMap[item.ProductID]; exists {
+				item.Product.Name = product.Name
+				item.Product.ID = product.ID
+			}
+
+			// Get primary image for the product
+			primaryImage, err := r.getPrimaryImageForProduct(ctx, item.ProductID)
+			if err == nil && primaryImage != nil {
+				item.Product.ImageURL = primaryImage.ImageURL
+			}
+		}
+
 		order.OrderItems = orderItems
 	}
 
@@ -250,8 +307,10 @@ func (r *OrderRepository) GetOrdersByUserWithDetails(ctx context.Context, userID
 // OrderItemWithProduct represents an order item with product details
 type OrderItemWithProduct struct {
 	models.OrderItem
-	ProductName     string `json:"product_name"`
-	ProductImageURL string `json:"product_image_url"`
+	ProductName        string   `json:"product_name"`
+	ProductImageURL    string   `json:"product_image_url"`  // Primary image
+	ProductImageURLs   []string `json:"product_image_urls"` // All images
+	ProductDescription string   `json:"product_description,omitempty"`
 }
 
 // GetOrderWithItemsAndProducts retrieves an order with its items including product details
@@ -322,20 +381,34 @@ func (r *OrderRepository) GetOrderWithItemsAndProducts(ctx context.Context, orde
 		// Get product details from the map
 		if product, exists := productMap[item.ProductID]; exists {
 			enrichedItem.ProductName = product.Name
+			enrichedItem.ProductDescription = product.Description
 
-			// Get primary image for the product
-			// Note: This is a simplified approach. In a production system, you might want to
-			// batch fetch all images at once for better performance
-			primaryImage, err := r.getPrimaryImageForProduct(ctx, item.ProductID)
-			if err == nil && primaryImage != nil {
-				enrichedItem.ProductImageURL = primaryImage.ImageURL
+			// Get all images for the product (batch fetch for better performance)
+			images, err := r.getAllImagesForProduct(ctx, item.ProductID)
+			if err == nil && len(images) > 0 {
+				// Primary image is the first one (or marked as primary)
+				enrichedItem.ProductImageURL = images[0].ImageURL
+				// Store all image URLs
+				enrichedItem.ProductImageURLs = make([]string, 0, len(images))
+				for _, img := range images {
+					enrichedItem.ProductImageURLs = append(enrichedItem.ProductImageURLs, img.ImageURL)
+				}
 			} else {
-				enrichedItem.ProductImageURL = ""
+				// Fallback to primary image only
+				primaryImage, err := r.getPrimaryImageForProduct(ctx, item.ProductID)
+				if err == nil && primaryImage != nil {
+					enrichedItem.ProductImageURL = primaryImage.ImageURL
+					enrichedItem.ProductImageURLs = []string{primaryImage.ImageURL}
+				} else {
+					enrichedItem.ProductImageURL = ""
+					enrichedItem.ProductImageURLs = []string{}
+				}
 			}
 		} else {
 			// If product not found, set default values
 			enrichedItem.ProductName = "Product Not Found"
 			enrichedItem.ProductImageURL = ""
+			enrichedItem.ProductImageURLs = []string{}
 		}
 
 		enrichedItems = append(enrichedItems, enrichedItem)
@@ -370,6 +443,42 @@ func (r *OrderRepository) getPrimaryImageForProduct(ctx context.Context, product
 	}
 
 	return &images[0], nil
+}
+
+// getAllImagesForProduct gets all active images for a product (ordered by is_primary, then sort_order)
+func (r *OrderRepository) getAllImagesForProduct(ctx context.Context, productID string) ([]models.Image, error) {
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "product_id", Operator: base.OpEqual, Value: productID},
+				{Field: "is_active", Operator: base.OpEqual, Value: true},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var images []models.Image
+	if err := r.dbManager.List(ctx, filter, &images); err != nil {
+		return nil, err
+	}
+
+	// Sort images: primary first, then by sort_order
+	// Primary images (is_primary=true) come first, then sorted by sort_order
+	for i := 0; i < len(images)-1; i++ {
+		for j := i + 1; j < len(images); j++ {
+			// Primary images first
+			if !images[i].IsPrimary && images[j].IsPrimary {
+				images[i], images[j] = images[j], images[i]
+			} else if images[i].IsPrimary == images[j].IsPrimary {
+				// If both have same primary status, sort by sort_order
+				if images[i].SortOrder > images[j].SortOrder {
+					images[i], images[j] = images[j], images[i]
+				}
+			}
+		}
+	}
+
+	return images, nil
 }
 
 // GetOrdersByUserID retrieves all orders for a specific user

@@ -24,7 +24,7 @@ type OrderServiceInterface interface {
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetUserOrders(ctx context.Context, userID string) ([]models.Order, error)
-	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error)
+	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
 	UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error
 	UpdatePaymentStatusAndOrderStatus(ctx context.Context, orderID string, paymentStatus, paymentID string, orderStatus models.OrderStatus) error
@@ -964,11 +964,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 }
 
 // GetOrderDetails retrieves an order with customer, address, and items data including product information
-func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error) {
+// Returns order and enriched items separately so response builder can use all image URLs
+func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error) {
 	// Get order with enhanced product information
 	order, enrichedItems, err := s.orderRepo.GetOrderWithItemsAndProducts(ctx, orderID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get order details: %w", err)
+		return nil, nil, fmt.Errorf("failed to get order details: %w", err)
 	}
 
 	// Get customer data if customer_id exists
@@ -991,28 +992,25 @@ func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*mo
 		}
 	}
 
-	// Convert enriched items back to regular order items for the response
+	// Convert enriched items back to regular order items for basic order structure
 	var orderItems []models.OrderItem
 	for _, enrichedItem := range enrichedItems {
-		// Create a regular order item with minimal product information
 		orderItem := enrichedItem.OrderItem
-
-		// Create a minimal product object with only name and primary image
 		if enrichedItem.ProductName != "" || enrichedItem.ProductImageURL != "" {
 			product := &models.Product{
 				Name:     enrichedItem.ProductName,
-				ImageURL: enrichedItem.ProductImageURL, // Primary image only
+				ImageURL: enrichedItem.ProductImageURL, // Primary image
 			}
 			orderItem.Product = product
 		}
-
 		orderItems = append(orderItems, orderItem)
 	}
 
 	// Set the enriched order items
 	order.OrderItems = orderItems
 
-	return order, nil
+	// Return enriched items separately so response builder can access all image URLs
+	return order, enrichedItems, nil
 }
 
 // createOrderCustomerWithRetry creates an order customer with retry logic for duplicate key errors
