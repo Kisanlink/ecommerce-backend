@@ -17,14 +17,16 @@ import (
 // OrderHandler handles order-related HTTP requests
 type OrderHandler struct {
 	orderService services.OrderServiceInterface
+	userService  *services.UserService
 	authContext  *auth.AuthContext
 	logger       *zap.Logger
 }
 
 // NewOrderHandler creates a new order handler
-func NewOrderHandler(orderService services.OrderServiceInterface, logger *zap.Logger) *OrderHandler {
+func NewOrderHandler(orderService services.OrderServiceInterface, userService *services.UserService, logger *zap.Logger) *OrderHandler {
 	return &OrderHandler{
 		orderService: orderService,
+		userService:  userService,
 		authContext:  auth.NewAuthContext(),
 		logger:       logger,
 	}
@@ -196,6 +198,33 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 		return
 	}
 
+	// Map Firebase UID to internal user ID if needed
+	// Orders are stored with database user ID (USER...), not Firebase UID
+	internalUserID := userID
+	if !strings.HasPrefix(userID, "USER") {
+		// This is likely a Firebase UID, map it to internal user ID
+		if h.userService != nil {
+			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+			if err == nil && userResponse != nil && userResponse.Success {
+				if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+					if id, ok := userData["id"].(string); ok {
+						internalUserID = id
+						h.logger.Info("Mapped Firebase UID to internal user ID for orders retrieval",
+							zap.String("request_id", requestID),
+							zap.String("firebase_uid", userID),
+							zap.String("internal_id", internalUserID))
+					}
+				}
+			} else {
+				h.logger.Error("Failed to map Firebase UID to internal user ID in GetUserOrders",
+					zap.String("request_id", requestID),
+					zap.String("firebase_uid", userID),
+					zap.Error(err))
+				// Continue with Firebase UID as fallback (will likely return no results)
+			}
+		}
+	}
+
 	// Parse query parameters
 	page := 1
 	limit := 10
@@ -212,11 +241,11 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 
 	h.logger.Info("Parsed pagination parameters",
 		zap.String("request_id", requestID),
-		zap.String("user_id", userID),
+		zap.String("user_id", internalUserID),
 		zap.Int("page", page),
 		zap.Int("limit", limit))
 
-	orders, err := h.orderService.GetUserOrders(c.Request.Context(), userID)
+	orders, err := h.orderService.GetUserOrders(c.Request.Context(), internalUserID)
 	if err != nil {
 		h.logger.Error("Failed to retrieve user orders from service",
 			zap.String("request_id", requestID),
@@ -229,7 +258,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 
 	h.logger.Info("Orders retrieved from database",
 		zap.String("request_id", requestID),
-		zap.String("user_id", userID),
+		zap.String("user_id", internalUserID),
 		zap.Int("total_orders", len(orders)))
 
 	// Simple pagination (in production, you'd want to do this at the database level)

@@ -12,7 +12,7 @@ import (
 // RegisterOrderRoutes registers all order related routes
 func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
 	// Create order handler with dependencies
-	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, logger)
+	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, serviceManager.UserService, logger)
 
 	// Protected order routes (requires authentication)
 	orders := r.Group("/orders")
