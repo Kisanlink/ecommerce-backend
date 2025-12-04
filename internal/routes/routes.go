@@ -26,7 +26,7 @@ import (
 
 // RegisterRoutes registers all application routes by delegating to specific route modules
 func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
-	// Health check endpoint
+	// Health check endpoint (CORS is handled by global middleware)
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":  "ok",

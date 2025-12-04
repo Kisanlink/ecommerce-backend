@@ -62,6 +62,19 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 					)
 				}
 			}
+
+			// Allow Razorpay domains for Magic Checkout callbacks
+			if !originAllowed && strings.Contains(origin, "razorpay.com") {
+				originAllowed = true
+				allowedOrigin = origin
+				if config.Debug && logger != nil {
+					logger.Info("CORS: Allowing Razorpay domain",
+						zap.String("origin", origin),
+						zap.String("host", c.Request.Host),
+						zap.String("path", c.Request.URL.Path),
+					)
+				}
+			}
 		}
 
 		// Set CORS headers
@@ -226,6 +239,10 @@ func GetCORSOriginsFromEnv() []string {
 			"http://127.0.0.1:5173",
 			"https://amrti.com",
 			"https://www.amrti.com",
+			// Razorpay Magic Checkout domains - required for callbacks
+			"https://api.razorpay.com",
+			"https://checkout.razorpay.com",
+			"https://razorpay.com",
 		}
 	}
 
@@ -261,6 +278,7 @@ func GetCORSHeadersFromEnv() []string {
 			"Cache-Control",
 			"X-Requested-With",
 			"X-API-Key",
+			"ngrok-skip-browser-warning",
 		}
 	}
 	return strings.Split(headers, ",")

@@ -1,13 +1,11 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -75,6 +73,7 @@ type MagicCheckoutHandler struct {
 	deliveryService services.DeliveryServiceInterface
 	cartService     services.CartServiceInterface
 	orderService    services.OrderServiceInterface
+	addressService  services.AddressServiceInterface
 	logger          *zap.Logger
 }
 
@@ -85,6 +84,7 @@ func NewMagicCheckoutHandler(
 	deliveryService services.DeliveryServiceInterface,
 	cartService services.CartServiceInterface,
 	orderService services.OrderServiceInterface,
+	addressService services.AddressServiceInterface,
 	logger *zap.Logger,
 ) *MagicCheckoutHandler {
 	return &MagicCheckoutHandler{
@@ -93,6 +93,7 @@ func NewMagicCheckoutHandler(
 		deliveryService: deliveryService,
 		cartService:     cartService,
 		orderService:    orderService,
+		addressService:  addressService,
 		logger:          logger,
 	}
 }
@@ -515,6 +516,42 @@ func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
 			zap.String("state", state),
 			zap.String("postal_code", postalCode),
 			zap.String("country", country))
+
+		// Try to save address to database if we have valid data and user ID
+		// Get user ID from the order cache
+		orderID := req.RazorpayOrderID
+		if orderID == "" {
+			orderID = req.OrderID
+		}
+
+		if orderData, found := GetMagicCheckoutOrder(orderID); found && orderData.UserID != "" {
+			// We have a valid user ID from the order, save the address to database
+			if h.addressService != nil && addressLine1 != "" && postalCode != "" {
+				savedAddr, err := h.addressService.FindOrCreateAddress(
+					c.Request.Context(),
+					orderData.UserID,
+					addressLine1,
+					city,
+					state,
+					postalCode,
+					country,
+				)
+				if err == nil && savedAddr != nil {
+					h.logger.Info("Successfully saved Magic Checkout address to database",
+						zap.String("razorpay_order_id", req.RazorpayOrderID),
+						zap.String("user_id", orderData.UserID),
+						zap.String("address_id", savedAddr.ID))
+				} else {
+					h.logger.Warn("Failed to save Magic Checkout address to database",
+						zap.String("razorpay_order_id", req.RazorpayOrderID),
+						zap.String("user_id", orderData.UserID),
+						zap.Error(err))
+				}
+			}
+		} else {
+			h.logger.Info("No user ID found in order cache, address will be saved during payment verification",
+				zap.String("order_id", orderID))
+		}
 	}
 
 	// Return success response
@@ -675,6 +712,43 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			zap.String("name", addr.Name),
 			zap.String("zipcode", addr.Zipcode),
 			zap.String("contact", req.Contact))
+
+		// Also save full address to database if we have valid data and user ID
+		if hasFullAddress && h.addressService != nil && addressLine1 != "" && addr.Zipcode != "" {
+			// Try to get user ID from order cache
+			lookupOrderID := orderID
+			if lookupOrderID == "" {
+				lookupOrderID = req.RazorpayOrderID
+			}
+			if lookupOrderID == "" {
+				lookupOrderID = req.OrderID
+			}
+
+			if orderData, found := GetMagicCheckoutOrder(lookupOrderID); found && orderData.UserID != "" {
+				savedAddr, err := h.addressService.FindOrCreateAddress(
+					c.Request.Context(),
+					orderData.UserID,
+					addressLine1,
+					addr.City,
+					state,
+					addr.Zipcode,
+					addr.Country,
+				)
+				if err == nil && savedAddr != nil {
+					h.logger.Info("Successfully saved shipping-info address to database",
+						zap.String("order_id", lookupOrderID),
+						zap.String("user_id", orderData.UserID),
+						zap.String("address_id", savedAddr.ID),
+						zap.String("city", addr.City),
+						zap.String("zipcode", addr.Zipcode))
+				} else {
+					h.logger.Warn("Failed to save shipping-info address to database",
+						zap.String("order_id", lookupOrderID),
+						zap.String("user_id", orderData.UserID),
+						zap.Error(err))
+				}
+			}
+		}
 	}
 
 	// Get order details to determine weight and cart total
@@ -770,46 +844,14 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			continue
 		}
 
-		// Check serviceability via Delhivery with timeout
-		// Use a context with timeout to prevent hanging (max 2 seconds)
-		serviceabilityCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
+		// For Magic Checkout, we default to serviceable for all valid Indian pincodes
+		// This ensures a smooth checkout experience - actual delivery constraints
+		// can be handled during order fulfillment if needed
+		serviceable := true
 
-		serviceable := false
-
-		// Check serviceability in a goroutine to avoid blocking
-		serviceabilityChan := make(chan bool, 1)
-		errorChan := make(chan error, 1)
-
-		go func() {
-			result, err := h.deliveryService.CheckServiceability(serviceabilityCtx, zipcode)
-			if err != nil {
-				errorChan <- err
-				return
-			}
-			serviceabilityChan <- result
-		}()
-
-		// Wait for result with timeout
-		select {
-		case result := <-serviceabilityChan:
-			// Serviceability check completed successfully
-			serviceable = result
-			h.logger.Info("Serviceability check completed",
-				zap.String("zipcode", zipcode),
-				zap.Bool("serviceable", serviceable))
-		case err := <-errorChan:
-			// Serviceability check failed - default to serviceable to allow checkout
-			h.logger.Warn("Serviceability check failed, defaulting to serviceable",
-				zap.String("zipcode", zipcode),
-				zap.Error(err))
-			serviceable = true
-		case <-serviceabilityCtx.Done():
-			// Timeout - default to serviceable to allow checkout
-			h.logger.Warn("Serviceability check timeout, defaulting to serviceable",
-				zap.String("zipcode", zipcode))
-			serviceable = true
-		}
+		h.logger.Info("Magic Checkout serviceability - defaulting to serviceable for all pincodes",
+			zap.String("zipcode", zipcode),
+			zap.Bool("serviceable", serviceable))
 
 		addressResult := map[string]interface{}{
 			"id":           addressID,

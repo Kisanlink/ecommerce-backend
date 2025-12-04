@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -183,4 +187,93 @@ func (s *R2Service) FileExists(ctx context.Context, key string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// UploadRecipeImage uploads a recipe image to R2 in the review_recipe directory and returns the R2 key
+func (s *R2Service) UploadRecipeImage(ctx context.Context, userID string, file multipart.File, header *multipart.FileHeader) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("R2 service not configured")
+	}
+
+	// Generate R2 key for recipe image in review_recipe directory
+	fileExt := filepath.Ext(header.Filename)
+	timestamp := time.Now().Unix()
+	r2Key := fmt.Sprintf("review_recipe/%s/recipe_%d%s", userID, timestamp, fileExt)
+
+	s.logger.Info("Uploading recipe image to R2",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key),
+		zap.String("user_id", userID),
+		zap.String("content_type", header.Header.Get("Content-Type")),
+		zap.Int64("size_bytes", header.Size))
+
+	// Read file data
+	data, err := io.ReadAll(file)
+	if err != nil {
+		s.logger.Error("Failed to read recipe image file",
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to read file data: %w", err)
+	}
+
+	// Upload to R2
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(r2Key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String(header.Header.Get("Content-Type")),
+	})
+	if err != nil {
+		s.logger.Error("Failed to upload recipe image to R2",
+			zap.String("bucket", s.bucketName),
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to upload recipe image to R2: %w", err)
+	}
+
+	s.logger.Info("Recipe image uploaded to R2 successfully",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key),
+		zap.String("url", s.GetPublicURL(r2Key)))
+
+	return r2Key, nil
+}
+
+// GetRecipeImageURL returns the public URL for a recipe image in R2
+func (s *R2Service) GetRecipeImageURL(ctx context.Context, r2Key string, expiration time.Duration) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("R2 service not configured")
+	}
+
+	// Return public URL (R2 public domain URLs don't expire, but we keep the signature for consistency)
+	return s.GetPublicURL(r2Key), nil
+}
+
+// DeleteRecipeImage deletes a recipe image from R2
+func (s *R2Service) DeleteRecipeImage(ctx context.Context, r2Key string) error {
+	if !s.IsConfigured() {
+		return fmt.Errorf("R2 service not configured")
+	}
+
+	s.logger.Info("Deleting recipe image from R2",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key))
+
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(r2Key),
+	})
+	if err != nil {
+		s.logger.Error("Failed to delete recipe image from R2",
+			zap.String("bucket", s.bucketName),
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return fmt.Errorf("failed to delete recipe image from R2: %w", err)
+	}
+
+	s.logger.Info("Recipe image deleted from R2 successfully",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key))
+
+	return nil
 }

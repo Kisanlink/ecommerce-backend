@@ -20,6 +20,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gorm.io/gorm"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
@@ -49,6 +50,67 @@ import (
 // @in header
 // @name Authorization
 // @description Firebase ID token for authentication
+
+// filteredCore filters out verbose database introspection logs
+type filteredCore struct {
+	zapcore.Core
+	baseLogger *zap.Logger
+}
+
+func (c *filteredCore) Enabled(level zapcore.Level) bool {
+	return c.Core.Enabled(level)
+}
+
+func (c *filteredCore) With(fields []zapcore.Field) zapcore.Core {
+	return &filteredCore{
+		Core:       c.Core.With(fields),
+		baseLogger: c.baseLogger,
+	}
+}
+
+func (c *filteredCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	// Always check with the underlying core first
+	return c.Core.Check(entry, checked)
+}
+
+func (c *filteredCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
+	// Filter out verbose database introspection logs
+	msg := entry.Message
+
+	// Skip logs from database introspection queries
+	if entry.Caller.Defined {
+		callerFile := entry.Caller.File
+		// Check if it's from the database package doing schema introspection
+		if strings.Contains(callerFile, "kisanlink-db") || strings.Contains(callerFile, "postgres.go") {
+			// Check if it's a schema introspection query
+			if strings.Contains(msg, "information_schema") ||
+				strings.Contains(msg, "pg_catalog") ||
+				strings.Contains(msg, "pg_type") ||
+				strings.Contains(msg, "pg_description") ||
+				strings.Contains(msg, "pg_indexes") ||
+				strings.Contains(msg, "table_constraints") ||
+				strings.Contains(msg, "SELECT * FROM") ||
+				strings.Contains(msg, "LIMIT 1") ||
+				strings.Contains(msg, "SELECT count(*) FROM INFORMATION_SCHEMA") ||
+				strings.Contains(msg, "SELECT count(*) FROM pg_indexes") ||
+				strings.Contains(msg, "SELECT constraint_name FROM information_schema") ||
+				strings.Contains(msg, "SELECT c.column_name") ||
+				strings.Contains(msg, "SELECT a.attname") ||
+				strings.Contains(msg, "SELECT description FROM pg_catalog") ||
+				strings.Contains(msg, "format_type(a.atttypid") ||
+				strings.Contains(msg, "FROM pg_attribute") {
+				// Suppress these verbose logs by not writing them
+				return nil
+			}
+		}
+	}
+
+	return c.Core.Write(entry, fields)
+}
+
+func (c *filteredCore) Sync() error {
+	return c.Core.Sync()
+}
 
 // executeSQLMigrations executes SQL migration files
 func executeSQLMigrations(db *gorm.DB) error {
@@ -119,9 +181,19 @@ func main() {
 		log.Println("Firebase authentication will not be available")
 	}
 
-	// Initialize zap logger
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
+	// Initialize zap logger with filter to suppress verbose database introspection logs
+	baseLogger, _ := zap.NewProduction()
+	defer baseLogger.Sync()
+
+	// Create filtered logger that suppresses verbose database schema introspection logs
+	logger := baseLogger.WithOptions(
+		zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+			return &filteredCore{
+				Core:       core,
+				baseLogger: baseLogger,
+			}
+		}),
+	)
 
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

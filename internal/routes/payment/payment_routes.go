@@ -39,13 +39,16 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 	}
 
 	// Magic Checkout routes (public endpoints called by Razorpay)
+	// CORS is handled by global middleware, but we ensure it's explicitly allowed
 	magicCheckout := r.Group("/magic-checkout")
+	magicCheckout.Use(middleware.CORSMiddlewareWithConfig(middleware.APICORSConfig())) // Ensure CORS for Magic Checkout callbacks
 	{
 		// Initialize services for Magic Checkout handler
 		paymentServiceForMC := services.NewPaymentService(logger)
 		couponRepo := repositories.NewCouponRepository(repoManager.GetDBManager(), logger)
 		couponRuleRepo := repositories.NewCouponRuleRepository(repoManager.GetDBManager(), logger)
 		couponService := services.NewCouponService(couponRepo, couponRuleRepo, logger)
+		addressServiceForMC := services.NewAddressService(repoManager, logger)
 
 		magicCheckoutHandler := handlers.NewMagicCheckoutHandler(
 			paymentServiceForMC,
@@ -53,6 +56,7 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 			serviceManager.DeliveryService,
 			serviceManager.CartService,
 			serviceManager.OrderService,
+			addressServiceForMC,
 			logger,
 		)
 
@@ -61,14 +65,23 @@ func RegisterPaymentRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 		magicCheckout.POST("/get-promotions", magicCheckoutHandler.GetPromotions)
 		magicCheckout.POST("/apply-promotion", magicCheckoutHandler.ApplyPromotion)
 		magicCheckout.POST("/shipping-info", magicCheckoutHandler.GetShippingInfo)
-		magicCheckout.POST("/addresses-callback", magicCheckoutHandler.UpdateAddresses) // Address updates from Magic Checkout
+		magicCheckout.POST("/addresses-callback", magicCheckoutHandler.UpdateAddresses)  // Address updates from Magic Checkout
 		magicCheckout.POST("/abandoned-cart", magicCheckoutHandler.AbandonedCartWebhook) // Abandoned cart webhook from Razorpay
 	}
 
+	// Magic Checkout order creation - available at /api/v1/magic-checkout/create-order
+	// Uses optional auth so it works with or without token
+	magicCheckoutAuth := r.Group("/magic-checkout")
+	magicCheckoutAuth.Use(middleware.CORSMiddlewareWithConfig(middleware.APICORSConfig()))
+	magicCheckoutAuth.Use(middleware.OptionalFirebaseAuth())
+	magicCheckoutAuth.POST("/create-order", paymentHandler.CreateMagicCheckoutOrder)
+
 	// Magic Checkout order creation endpoint (supports both authenticated and guest)
 	// Note: This endpoint is in /payments group but doesn't require auth (optional auth)
+	// CORS is handled by global middleware, but we ensure it's explicitly allowed
 	magicPayments := r.Group("/payments")
-	magicPayments.Use(middleware.OptionalFirebaseAuth()) // Optional auth - verifies token if provided
+	magicPayments.Use(middleware.CORSMiddlewareWithConfig(middleware.APICORSConfig())) // Ensure CORS for Magic Checkout
+	magicPayments.Use(middleware.OptionalFirebaseAuth())                               // Optional auth - verifies token if provided
 	magicPayments.POST("/magic-checkout/create-order", paymentHandler.CreateMagicCheckoutOrder)
 
 	// Legacy routes for compatibility (deprecated)
