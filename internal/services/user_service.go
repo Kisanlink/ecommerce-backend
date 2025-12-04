@@ -229,6 +229,7 @@ func (s *UserService) GetUserByEmail(ctx context.Context, email string) (*base.B
 		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"is_verified":  user.IsVerified,
 		"is_active":    user.IsActive,
+		"role":         user.Role,
 		"created_at":   user.GetCreatedAt(),
 		"updated_at":   user.GetUpdatedAt(),
 	}
@@ -262,6 +263,7 @@ func (s *UserService) GetUserByFirebaseUID(ctx context.Context, firebaseUID stri
 		"phone_number": getPhoneNumberString(user.PhoneNumber),
 		"is_verified":  user.IsVerified,
 		"is_active":    user.IsActive,
+		"role":         user.Role,
 		"created_at":   user.GetCreatedAt(),
 		"updated_at":   user.GetUpdatedAt(),
 	}

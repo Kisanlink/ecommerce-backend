@@ -392,6 +392,14 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 					userData["id"] = localUser["id"]
 					userData["is_verified"] = localUser["is_verified"]
 					userData["is_active"] = localUser["is_active"]
+					// Add role for frontend routing
+					if role, ok := localUser["role"].(string); ok && role != "" {
+						userData["role"] = role
+					} else {
+						userData["role"] = "user"
+					}
+				} else {
+					userData["role"] = "user"
 				}
 
 				utils.RespondWithSuccess(c, gin.H{
@@ -487,6 +495,14 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			userData["is_verified"] = localUser["is_verified"]
 			userData["is_active"] = localUser["is_active"]
 			userData["phone_number"] = localUser["phone_number"]
+			// Add role for frontend routing
+			if role, ok := localUser["role"].(string); ok && role != "" {
+				userData["role"] = role
+			} else {
+				userData["role"] = "user" // Default role
+			}
+		} else {
+			userData["role"] = "user" // Default role if no local user
 		}
 
 		// Return successful authentication response with real Firebase tokens
@@ -507,6 +523,7 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			"uid":   signInResp.LocalId,
 			"email": signInResp.Email,
 			"name":  signInResp.DisplayName,
+			"role":  "user", // Default role
 		}
 
 		if userResponse != nil && userResponse.Success {
@@ -515,6 +532,10 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			userData["is_verified"] = localUser["is_verified"]
 			userData["is_active"] = localUser["is_active"]
 			userData["phone_number"] = localUser["phone_number"]
+			// Add role for frontend routing
+			if role, ok := localUser["role"].(string); ok && role != "" {
+				userData["role"] = role
+			}
 
 			// Check if user has a profile, create if not (fallback path)
 			userID := localUser["id"].(string)
