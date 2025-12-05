@@ -33,6 +33,13 @@ type CreateImageRequest struct {
 	ImageType string `json:"image_type" binding:"required"`
 	AltText   string `json:"alt_text"`
 	Caption   string `json:"caption"`
+	SortOrder int    `json:"sort_order"`
+	IsPrimary bool   `json:"is_primary"`
+	IsActive  *bool  `json:"is_active"`
+	MimeType  string `json:"mime_type"`
+	FileSize  int64  `json:"file_size"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
 }
 
 // UpdateImageRequest represents the request to update an image
@@ -114,6 +121,47 @@ func (h *ImageHandler) CreateImage(c *gin.Context) {
 			zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create image"})
 		return
+	}
+
+	// Apply additional fields if provided
+	needsUpdate := false
+	if req.SortOrder != 0 {
+		image.SortOrder = req.SortOrder
+		needsUpdate = true
+	}
+	if req.IsPrimary {
+		image.IsPrimary = req.IsPrimary
+		needsUpdate = true
+	}
+	if req.IsActive != nil {
+		image.IsActive = *req.IsActive
+		needsUpdate = true
+	}
+	if req.MimeType != "" {
+		image.MimeType = req.MimeType
+		needsUpdate = true
+	}
+	if req.FileSize != 0 {
+		image.FileSize = req.FileSize
+		needsUpdate = true
+	}
+	if req.Width != 0 {
+		image.Width = req.Width
+		needsUpdate = true
+	}
+	if req.Height != 0 {
+		image.Height = req.Height
+		needsUpdate = true
+	}
+
+	// Update if any additional fields were provided
+	if needsUpdate {
+		if err := h.imageService.UpdateImage(c.Request.Context(), image); err != nil {
+			h.logger.Warn("Failed to update image with additional fields",
+				zap.String("request_id", requestID),
+				zap.String("image_id", image.ID),
+				zap.Error(err))
+		}
 	}
 
 	h.logger.Info("Image created successfully",

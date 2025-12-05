@@ -8,7 +8,8 @@
       "Bash(go get:*)",
       "WebSearch",
       "Bash(go run:*)",
-      "Bash(del test-build.exe)"
+      "Bash(del test-build.exe)",
+      "Bash(cat:*)"
     ]
   }
 }

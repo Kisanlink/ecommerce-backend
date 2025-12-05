@@ -88,18 +88,33 @@ func (c *filteredCore) Write(entry zapcore.Entry, fields []zapcore.Field) error 
 				strings.Contains(msg, "pg_type") ||
 				strings.Contains(msg, "pg_description") ||
 				strings.Contains(msg, "pg_indexes") ||
+				strings.Contains(msg, "pg_attribute") ||
+				strings.Contains(msg, "pg_class") ||
+				strings.Contains(msg, "pg_namespace") ||
+				strings.Contains(msg, "pg_tables") ||
 				strings.Contains(msg, "table_constraints") ||
 				strings.Contains(msg, "SELECT * FROM") ||
 				strings.Contains(msg, "LIMIT 1") ||
-				strings.Contains(msg, "SELECT count(*) FROM INFORMATION_SCHEMA") ||
-				strings.Contains(msg, "SELECT count(*) FROM pg_indexes") ||
-				strings.Contains(msg, "SELECT constraint_name FROM information_schema") ||
+				strings.Contains(msg, "SELECT count(*)") ||
+				strings.Contains(msg, "SELECT constraint_name") ||
 				strings.Contains(msg, "SELECT c.column_name") ||
 				strings.Contains(msg, "SELECT a.attname") ||
-				strings.Contains(msg, "SELECT description FROM pg_catalog") ||
+				strings.Contains(msg, "SELECT description") ||
 				strings.Contains(msg, "format_type(a.atttypid") ||
-				strings.Contains(msg, "FROM pg_attribute") {
-				// Suppress these verbose logs by not writing them
+				strings.Contains(msg, "FROM pg_attribute") ||
+				strings.Contains(msg, "CURRENT_DATABASE()") ||
+				strings.Contains(msg, "CURRENT_SCHEMA()") ||
+				strings.Contains(msg, "ordinal_position") ||
+				strings.Contains(msg, "character_maximum_length") ||
+				strings.Contains(msg, "numeric_precision") ||
+				strings.Contains(msg, "udt_name") ||
+				strings.Contains(msg, "is_nullable") ||
+				strings.Contains(msg, "column_default") ||
+				strings.Contains(msg, "identity_increment") ||
+				strings.Contains(msg, "[rows:0]") ||
+				strings.Contains(msg, "[rows:1]") ||
+				strings.Contains(msg, "[rows:-]") {
+				// Suppress these verbose GORM schema introspection logs
 				return nil
 			}
 		}
@@ -126,6 +141,7 @@ func executeSQLMigrations(db *gorm.DB) error {
 		"create_reviews_table.sql",                // Create reviews table in NeonDB
 		"create_recipes_table.sql",                // Create recipes table in NeonDB
 		"create_pending_recipe_reviews_table.sql", // Create pending recipe reviews table in NeonDB
+		"add_product_videos.sql",                  // Add video records for products
 	}
 
 	for _, filename := range migrationFiles {

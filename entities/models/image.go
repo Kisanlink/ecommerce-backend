@@ -14,6 +14,7 @@ const (
 	ImageTypeGallery   ImageType = "gallery"
 	ImageTypeBanner    ImageType = "banner"
 	ImageTypeCategory  ImageType = "category"
+	ImageTypeVideo     ImageType = "video"
 )
 
 // Image represents an image in the system
@@ -65,7 +66,7 @@ func (i *Image) TableName() string {
 // IsValidImageType checks if the image type is valid
 func (it ImageType) IsValidImageType() bool {
 	switch it {
-	case ImageTypeProduct, ImageTypeThumbnail, ImageTypeGallery, ImageTypeBanner, ImageTypeCategory:
+	case ImageTypeProduct, ImageTypeThumbnail, ImageTypeGallery, ImageTypeBanner, ImageTypeCategory, ImageTypeVideo:
 		return true
 	default:
 		return false
