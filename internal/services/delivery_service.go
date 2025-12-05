@@ -426,9 +426,18 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	var pincode, destCity, destState string
 	var shippingAddressString string
 
+	// Log address IDs for debugging
+	s.logger.Info("CreateShipment: Starting address resolution",
+		zap.String("order_id", order.ID),
+		zap.String("shipping_address_id", order.ShippingAddressID),
+		zap.String("shipping_addr_id_legacy", order.ShippingAddrID),
+		zap.String("shipping_addr_string", order.ShippingAddr))
+
 	// PRIORITY 1: Try to use OrderAddress (normalized address from order)
 	// This is used for Magic Checkout and new orders
-	if order.ShippingAddressID != "" && s.repoManager != nil && s.repoManager.OrderRepository != nil {
+	// IMPORTANT: Only use this if ShippingAddressID has OADR prefix (order_addresses table)
+	// Legacy ADDR prefix belongs to the 'addresses' table and should use Priority 2
+	if order.ShippingAddressID != "" && strings.HasPrefix(order.ShippingAddressID, "OADR") && s.repoManager != nil && s.repoManager.OrderRepository != nil {
 		orderAddr, addrErr := s.repoManager.OrderRepository.GetOrderAddress(ctx, order.ShippingAddressID)
 		if addrErr == nil && orderAddr != nil {
 			pincode = orderAddr.PostalCode
@@ -454,6 +463,12 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 				zap.String("address_id", order.ShippingAddressID),
 				zap.Error(addrErr))
 		}
+	} else if order.ShippingAddressID != "" && !strings.HasPrefix(order.ShippingAddressID, "OADR") {
+		// ShippingAddressID has wrong prefix - log this as it indicates a bug
+		s.logger.Warn("ShippingAddressID has incorrect prefix (expected OADR), skipping to legacy lookup",
+			zap.String("order_id", order.ID),
+			zap.String("shipping_address_id", order.ShippingAddressID),
+			zap.String("expected_prefix", "OADR"))
 	}
 
 	// PRIORITY 2: Try to use legacy Address table (for backward compatibility)
@@ -522,9 +537,10 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	// Fetch customer data from order_customers table (PRIORITY 1)
 	// Falls back to legacy order-level fields if not available
+	// IMPORTANT: Only lookup if CustomerID has OCUS prefix (order_customers table)
 	var custName, custPhone string
 
-	if order.CustomerID != "" && s.repoManager != nil && s.repoManager.OrderRepository != nil {
+	if order.CustomerID != "" && strings.HasPrefix(order.CustomerID, "OCUS") && s.repoManager != nil && s.repoManager.OrderRepository != nil {
 		orderCustomer, custErr := s.repoManager.OrderRepository.GetOrderCustomer(ctx, order.CustomerID)
 		if custErr == nil && orderCustomer != nil {
 			custName = strings.TrimSpace(orderCustomer.FirstName + " " + orderCustomer.LastName)
@@ -541,6 +557,12 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 				zap.String("customer_id", order.CustomerID),
 				zap.Error(custErr))
 		}
+	} else if order.CustomerID != "" && !strings.HasPrefix(order.CustomerID, "OCUS") {
+		// CustomerID has wrong prefix - log warning
+		s.logger.Warn("CustomerID has incorrect prefix (expected OCUS), using legacy fields",
+			zap.String("order_id", order.ID),
+			zap.String("customer_id", order.CustomerID),
+			zap.String("expected_prefix", "OCUS"))
 	}
 
 	// Fallback to legacy order-level customer fields

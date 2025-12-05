@@ -1753,9 +1753,20 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("order_id", order.ID),
 				zap.String("user_id", userID))
 		} else if len(orderItems) > 0 {
-			// CRITICAL FIX: Ensure customer data is set on orderWithItems for shipment creation
-			// The order object has the latest customer data, but orderWithItems might not
+			// CRITICAL FIX: Ensure customer and address data is set on orderWithItems for shipment creation
+			// The order object has the latest data, but orderWithItems might not
 			// because it was fetched from DB before the updates were committed
+
+			// Set CustomerID from customerData if empty (ensures Priority 1 lookup in CreateShipment works)
+			if orderWithItems.CustomerID == "" && customerData != nil && customerData.ID != "" {
+				orderWithItems.CustomerID = customerData.ID
+				h.logger.Info("Set CustomerID from customerData for shipment creation",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("customer_id", customerData.ID))
+			}
+
+			// Set legacy customer fields as fallback
 			if orderWithItems.CustomerFirstName == "" && firstName != "" {
 				orderWithItems.CustomerFirstName = firstName
 			}
@@ -1768,12 +1779,29 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			if orderWithItems.CustomerPhoneAlt == "" && mobileSecondary != "" {
 				orderWithItems.CustomerPhoneAlt = mobileSecondary
 			}
-			// Also ensure shipping address is set
+
+			// Set ShippingAddressID from addressData if empty (ensures Priority 1 lookup in CreateShipment works)
+			// IMPORTANT: Use addressData.ID (OADR prefix), NOT the legacy shippingAddressID (ADDR prefix)
+			// The legacy shippingAddressID comes from notes["shipping_addr_id"] and points to the old 'addresses' table
+			// The new ShippingAddressID should point to 'order_addresses' table with OADR prefix
+			if orderWithItems.ShippingAddressID == "" && addressData != nil && addressData.ID != "" {
+				orderWithItems.ShippingAddressID = addressData.ID
+				h.logger.Info("Set ShippingAddressID from addressData for shipment creation",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("shipping_address_id", addressData.ID))
+			} else if orderWithItems.ShippingAddressID == "" {
+				// Log warning if we couldn't set ShippingAddressID - this will cause Priority 1 in CreateShipment to be skipped
+				h.logger.Warn("ShippingAddressID is empty and no addressData available - shipment will use fallback address resolution",
+					zap.String("request_id", requestID),
+					zap.String("order_id", order.ID),
+					zap.String("legacy_shipping_addr_id", shippingAddressID),
+					zap.Bool("has_address_data", addressData != nil))
+			}
+
+			// Set legacy shipping address string as fallback
 			if orderWithItems.ShippingAddr == "" && shippingAddress != "" {
 				orderWithItems.ShippingAddr = shippingAddress
-			}
-			if orderWithItems.ShippingAddressID == "" && shippingAddressID != "" {
-				orderWithItems.ShippingAddressID = shippingAddressID
 			}
 
 			// Log order details before shipment creation
