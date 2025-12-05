@@ -520,13 +520,42 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		}
 	}
 
-	// Use only order-level customer fields (no fallbacks)
-	custName := strings.TrimSpace(strings.TrimSpace(order.CustomerFirstName + " " + order.CustomerLastName))
-	custPhone := strings.TrimSpace(order.CustomerPhone)
+	// Fetch customer data from order_customers table (PRIORITY 1)
+	// Falls back to legacy order-level fields if not available
+	var custName, custPhone string
+
+	if order.CustomerID != "" && s.repoManager != nil && s.repoManager.OrderRepository != nil {
+		orderCustomer, custErr := s.repoManager.OrderRepository.GetOrderCustomer(ctx, order.CustomerID)
+		if custErr == nil && orderCustomer != nil {
+			custName = strings.TrimSpace(orderCustomer.FirstName + " " + orderCustomer.LastName)
+			custPhone = strings.TrimSpace(orderCustomer.Phone)
+
+			s.logger.Info("Using OrderCustomer for shipment",
+				zap.String("order_id", order.ID),
+				zap.String("customer_id", order.CustomerID),
+				zap.String("customer_name", custName),
+				zap.String("customer_phone", custPhone))
+		} else {
+			s.logger.Warn("Failed to fetch OrderCustomer, falling back to legacy fields",
+				zap.String("order_id", order.ID),
+				zap.String("customer_id", order.CustomerID),
+				zap.Error(custErr))
+		}
+	}
+
+	// Fallback to legacy order-level customer fields
+	if custName == "" {
+		custName = strings.TrimSpace(order.CustomerFirstName + " " + order.CustomerLastName)
+	}
+	if custPhone == "" {
+		custPhone = strings.TrimSpace(order.CustomerPhone)
+	}
+
 	if custName == "" || custPhone == "" {
 		return &ShipmentResult{Success: false, Message: "Customer name and phone are required on the order"}, fmt.Errorf("missing customer name/phone on order")
 	}
-	// Normalize phone to last 10 digits
+
+	// Normalize primary phone to last 10 digits
 	{
 		var digits strings.Builder
 		digits.Grow(len(custPhone))

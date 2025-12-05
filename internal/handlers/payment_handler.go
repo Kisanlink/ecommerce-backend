@@ -695,6 +695,53 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.Error(getErr))
 		}
 
+		// DEBUG: Log the FULL Razorpay order response to understand what's being returned
+		if rzpOrder != nil {
+			h.logger.Info("DEBUG: Full Razorpay Order Response",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", rzpOrder.ID),
+				zap.String("status", rzpOrder.Status),
+				zap.Int("amount", rzpOrder.Amount),
+				zap.String("receipt", rzpOrder.Receipt),
+				zap.Bool("has_customer_details", rzpOrder.CustomerDetails != nil),
+				zap.Bool("has_checkout", rzpOrder.Checkout != nil),
+				zap.Any("checkout_data", rzpOrder.Checkout),
+				zap.Any("notes", rzpOrder.Notes))
+
+			if rzpOrder.CustomerDetails != nil {
+				h.logger.Info("DEBUG: Razorpay CustomerDetails found",
+					zap.String("request_id", requestID),
+					zap.String("email", rzpOrder.CustomerDetails.Email),
+					zap.String("contact", rzpOrder.CustomerDetails.Contact),
+					zap.Bool("has_shipping_address", rzpOrder.CustomerDetails.ShippingAddress != nil),
+					zap.Bool("has_billing_address", rzpOrder.CustomerDetails.BillingAddress != nil))
+
+				if rzpOrder.CustomerDetails.ShippingAddress != nil {
+					addr := rzpOrder.CustomerDetails.ShippingAddress
+					h.logger.Info("DEBUG: Razorpay ShippingAddress found",
+						zap.String("request_id", requestID),
+						zap.String("name", addr.Name),
+						zap.String("line1", addr.Line1),
+						zap.String("line2", addr.Line2),
+						zap.String("city", addr.City),
+						zap.String("state", addr.State),
+						zap.String("zipcode", addr.Zipcode),
+						zap.String("country", addr.Country))
+				} else {
+					h.logger.Warn("DEBUG: CustomerDetails exists but ShippingAddress is NULL",
+						zap.String("request_id", requestID))
+				}
+			} else {
+				h.logger.Warn("DEBUG: Razorpay order has NO customer_details - Magic Checkout may not be enabled or address not selected",
+					zap.String("request_id", requestID),
+					zap.String("razorpay_order_id", rzpOrder.ID))
+			}
+		} else {
+			h.logger.Error("DEBUG: Razorpay order is NULL",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", req.OrderID))
+		}
+
 		// Derive shipping values from notes
 		notes := map[string]interface{}{}
 		var shippingAddress string = ""

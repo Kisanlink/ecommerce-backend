@@ -37,12 +37,58 @@ func NewReviewService(reviewRepo *repositories.ReviewRepository, userService *Us
 }
 
 // getUserDisplayName gets user's display name with proper fallback logic
+// The userID parameter could be either Firebase UID or internal user ID
 func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (string, error) {
 	s.logger.Info("Getting user display name", zap.String("user_id", userID))
 
-	// First, try to get the name from Profile table (most up-to-date)
+	// First, resolve the internal user ID and get user data
+	// The userID passed could be Firebase UID, so we need to check both
+	var internalUserID string
+	var userName string
+
+	// Try to get user by Firebase UID first (most common case from auth context)
+	userResponse, err := s.userService.GetUserByFirebaseUID(ctx, userID)
+	if err == nil && userResponse.Success {
+		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+			if id, ok := userData["id"].(string); ok {
+				internalUserID = id
+			}
+			if name, ok := userData["name"].(string); ok {
+				userName = strings.TrimSpace(name)
+			}
+			s.logger.Info("Found user by Firebase UID",
+				zap.String("firebase_uid", userID),
+				zap.String("internal_user_id", internalUserID),
+				zap.String("user_name", userName))
+		}
+	} else {
+		// Fallback: try as internal user ID
+		userResponse, err = s.userService.GetUserByID(ctx, userID)
+		if err == nil && userResponse.Success {
+			if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+				if id, ok := userData["id"].(string); ok {
+					internalUserID = id
+				}
+				if name, ok := userData["name"].(string); ok {
+					userName = strings.TrimSpace(name)
+				}
+				s.logger.Info("Found user by internal ID",
+					zap.String("user_id", userID),
+					zap.String("user_name", userName))
+			}
+		}
+	}
+
+	// If we couldn't find the user at all, return fallback
+	if internalUserID == "" {
+		s.logger.Warn("Could not find user by Firebase UID or internal ID",
+			zap.String("user_id", userID))
+		return "User", nil
+	}
+
+	// Now try to get the name from Profile table using the internal user ID
 	if s.profileService != nil {
-		profile, err := s.profileService.GetProfileByUserID(ctx, userID)
+		profile, err := s.profileService.GetProfileByUserID(ctx, internalUserID)
 		if err == nil && profile != nil {
 			// Construct name from FirstName and LastName
 			firstName := strings.TrimSpace(profile.FirstName)
@@ -50,64 +96,45 @@ func (s *ReviewService) getUserDisplayName(ctx context.Context, userID string) (
 
 			// Check if firstName is the default "User" value - treat it as empty
 			if firstName == "User" && lastName == "" {
-				// Default value, treat as empty and check Users table
-				s.logger.Info("Profile has default 'User' name, checking Users table", zap.String("user_id", userID))
+				// Default value, treat as empty and use Users table name
+				s.logger.Info("Profile has default 'User' name, using Users table name",
+					zap.String("internal_user_id", internalUserID))
 			} else {
 				// Build name from profile: first_name + last_name (if both exist)
-				// If only first_name exists, use just first_name
-				// If only last_name exists, use just last_name
 				if firstName != "" && lastName != "" {
 					fullName := firstName + " " + lastName
 					s.logger.Info("Found user name from Profile table",
-						zap.String("user_id", userID),
+						zap.String("internal_user_id", internalUserID),
 						zap.String("user_name", fullName))
 					return fullName, nil
 				} else if firstName != "" && firstName != "User" {
-					// Use first name only if it's not the default "User"
 					s.logger.Info("Found first name from Profile table",
-						zap.String("user_id", userID),
+						zap.String("internal_user_id", internalUserID),
 						zap.String("user_name", firstName))
 					return firstName, nil
 				} else if lastName != "" {
-					// Use last name if first name is empty or default
 					s.logger.Info("Found last name from Profile table",
-						zap.String("user_id", userID),
+						zap.String("internal_user_id", internalUserID),
 						zap.String("user_name", lastName))
 					return lastName, nil
-				} else {
-					s.logger.Info("No valid name found in Profile table", zap.String("user_id", userID))
 				}
 			}
 		} else {
 			s.logger.Warn("Failed to get profile from Profile table",
-				zap.String("user_id", userID),
+				zap.String("internal_user_id", internalUserID),
 				zap.Error(err))
 		}
-	} else {
-		s.logger.Warn("Profile service not available", zap.String("user_id", userID))
 	}
 
-	// If Profile table doesn't have a valid name, try Users table as fallback
-	userResponse, err := s.userService.GetUserByID(ctx, userID)
-	if err == nil && userResponse.Success {
-		if userData, ok := userResponse.Data.(map[string]interface{}); ok {
-			if userName, ok := userData["name"].(string); ok && strings.TrimSpace(userName) != "" {
-				s.logger.Info("Found user name from Users table (fallback)",
-					zap.String("user_id", userID),
-					zap.String("user_name", userName))
-				return userName, nil
-			} else {
-				s.logger.Info("No name found in Users table", zap.String("user_id", userID))
-			}
-		}
-	} else {
-		s.logger.Warn("Failed to get user from Users table",
-			zap.String("user_id", userID),
-			zap.Error(err))
+	// Use the name from Users table if Profile didn't have a valid name
+	if userName != "" && userName != "User" {
+		s.logger.Info("Using name from Users table",
+			zap.String("internal_user_id", internalUserID),
+			zap.String("user_name", userName))
+		return userName, nil
 	}
 
 	// If both fail, return a fallback name instead of error
-	// This allows reviews to be created even if user hasn't set up their profile
 	s.logger.Info("Using fallback name 'User'", zap.String("user_id", userID))
 	return "User", nil
 }

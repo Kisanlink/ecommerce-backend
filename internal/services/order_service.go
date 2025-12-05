@@ -502,15 +502,40 @@ func (s *OrderService) FormatAddress(addr *models.Address) string {
 
 // GenerateAndAttachInvoice generates a PDF invoice, uploads to R2 (preferred) or S3, and stores URL on the order
 func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error) {
-	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
+	// Get order with full details including shipping address from order_addresses table
+	order, err := s.orderRepo.GetOrderWithDetails(ctx, orderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load order for invoice: %w", err)
+	}
+
+	// Populate ShippingAddr from OrderAddress if available (for invoice generation)
+	if order.ShippingAddress != nil {
+		addr := order.ShippingAddress
+		line2 := ""
+		if addr.AddressLine2 != "" {
+			line2 = ", " + addr.AddressLine2
+		}
+		order.ShippingAddr = fmt.Sprintf("%s%s, %s, %s %s, %s",
+			addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country)
+
+		s.logger.Info("Using order_addresses for invoice",
+			zap.String("order_id", orderID),
+			zap.String("address_id", order.ShippingAddressID),
+			zap.String("formatted_address", order.ShippingAddr))
+	}
+
+	// Populate customer name from OrderCustomer if available
+	if order.Customer != nil {
+		order.CustomerFirstName = order.Customer.FirstName
+		order.CustomerLastName = order.Customer.LastName
+		order.CustomerPhone = order.Customer.Phone
 	}
 
 	// Create PDF invoice service with R2 support (R2 is preferred over S3)
 	pdfInvoiceService := NewPDFInvoiceServiceWithR2(s.s3Service, s.r2Service, s.logger)
 
 	// Convert items to pointers
+	items := order.OrderItems
 	itemPointers := make([]*models.OrderItem, len(items))
 	for i := range items {
 		itemPointers[i] = &items[i]
