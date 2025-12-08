@@ -28,7 +28,7 @@ type ProfileResponse struct {
 
 	// Profile Image
 	ProfilePictureURL   string `json:"profile_picture_url"`
-	ProfilePictureS3Key string `json:"profile_picture_s3_key"`
+	ProfilePictureR2Key string `json:"profile_picture_r2_key"`
 	Bio                 string `json:"bio"`
 
 	// Preferences
@@ -88,7 +88,7 @@ func ToProfileResponse(profile *models.Profile) ProfileResponse {
 		FullAddress:          profile.GetFullAddress(),
 		IsAddressComplete:    profile.IsAddressComplete(),
 		ProfilePictureURL:    profile.ProfilePictureURL,
-		ProfilePictureS3Key:  profile.ProfilePictureS3Key,
+		ProfilePictureR2Key:  profile.ProfilePictureR2Key,
 		Bio:                  profile.Bio,
 		NewsletterSubscribed: profile.NewsletterSubscribed,
 		PreferredLanguage:    profile.PreferredLanguage,

@@ -25,10 +25,10 @@ type Profile struct {
 	Country      string `json:"country" gorm:"size:100"`
 	Pincode      string `json:"pincode" gorm:"size:20"`
 
-	// Profile Image (S3 Integration)
-	ProfilePictureURL   string `json:"profile_picture_url" gorm:"type:text"`   // Full URL for access
-	ProfilePictureS3Key string `json:"profile_picture_s3_key" gorm:"size:500"` // S3 key for storage
-	Bio                 string `json:"bio" gorm:"type:text"`                   // User bio
+	// Profile Image (R2 Integration)
+	ProfilePictureURL   string `json:"profile_picture_url" gorm:"type:text"`                              // Full URL for access
+	ProfilePictureR2Key string `json:"profile_picture_r2_key" gorm:"column:profile_picture_s3_key;size:500"` // R2 key for storage (column kept as profile_picture_s3_key for backward compatibility)
+	Bio                 string `json:"bio" gorm:"type:text"`                                              // User bio
 
 	// Preferences
 	NewsletterSubscribed bool   `json:"newsletter_subscribed" gorm:"default:false"`

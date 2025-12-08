@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"mime/multipart"
-	"os"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
@@ -357,8 +356,8 @@ func (s *ProductService) DeleteProduct(ctx context.Context, req *requests.Delete
 	return base.NewSuccessResponse("Product deleted successfully", productResp), nil
 }
 
-// UploadProductImage uploads a product image to S3 and creates image record
-func (s *ProductService) UploadProductImage(ctx context.Context, req *requests.UploadProductImageRequest, file multipart.File, header *multipart.FileHeader, s3Service *S3Service) (*base.BaseResponse, error) {
+// UploadProductImage uploads a product image to R2 and creates image record
+func (s *ProductService) UploadProductImage(ctx context.Context, req *requests.UploadProductImageRequest, file multipart.File, header *multipart.FileHeader, r2Service *R2Service) (*base.BaseResponse, error) {
 	// Check if product exists and is not soft deleted
 	filter := base.NewFilterBuilder().
 		Where("id", base.OpEqual, req.ProductID).
@@ -372,22 +371,24 @@ func (s *ProductService) UploadProductImage(ctx context.Context, req *requests.U
 			base.NewNotFoundError("Product", req.ProductID)), nil
 	}
 
-	// Upload image to S3
-	s3Key, err := s3Service.UploadProductImage(ctx, req.ProductID, file, header)
-	if err != nil {
-		return base.NewErrorResponse("Failed to upload image",
-			base.NewInternalServerError("S3 upload error", err.Error())), nil
+	// Check if R2 service is available
+	if r2Service == nil || !r2Service.IsConfigured() {
+		return base.NewErrorResponse("Storage service not available",
+			base.NewInternalServerError("R2 service error", "R2 service is not configured")), nil
 	}
 
-	// Create direct S3 URL (not presigned) for storage
-	// This will be consistent with existing images
-	imageURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s",
-		os.Getenv("DB_S3_BUCKET"),
-		os.Getenv("DB_S3_REGION"),
-		s3Key)
+	// Upload image to R2
+	r2Key, err := r2Service.UploadProductImage(ctx, req.ProductID, file, header)
+	if err != nil {
+		return base.NewErrorResponse("Failed to upload image",
+			base.NewInternalServerError("R2 upload error", err.Error())), nil
+	}
+
+	// Get the public URL from R2 service
+	imageURL := r2Service.GetProductImageURL(r2Key)
 
 	// Create image record
-	image := models.NewImage(req.ProductID, imageURL, s3Key, models.ImageTypeProduct)
+	image := models.NewImage(req.ProductID, imageURL, r2Key, models.ImageTypeProduct)
 	image.AltText = req.AltText
 	image.Caption = req.Caption
 	image.FileSize = header.Size
@@ -411,21 +412,21 @@ func (s *ProductService) UploadProductImage(ctx context.Context, req *requests.U
 
 	// Save image to database
 	if err := s.repoManager.ImageRepository.Create(ctx, image); err != nil {
-		// If database save fails, try to delete from S3
-		if deleteErr := s3Service.DeleteProductImage(ctx, s3Key); deleteErr != nil {
-			fmt.Printf("Warning: Failed to delete uploaded image from S3: %v\n", deleteErr)
+		// If database save fails, try to delete from R2
+		if deleteErr := r2Service.DeleteProductImage(ctx, r2Key); deleteErr != nil {
+			fmt.Printf("Warning: Failed to delete uploaded image from R2: %v\n", deleteErr)
 		}
 		return base.NewErrorResponse("Failed to save image record",
 			base.NewInternalServerError("Database error", err.Error())), nil
 	}
 
-	// Create response
-	imageResp := responses.NewImageUploadResponse(image, s3Key)
+	// Create response (r2Key stored in s3_key field for backward compatibility)
+	imageResp := responses.NewImageUploadResponse(image, r2Key)
 	return base.NewSuccessResponse("Image uploaded successfully", imageResp), nil
 }
 
-// DeleteProductImage deletes a product image from both database and S3
-func (s *ProductService) DeleteProductImage(ctx context.Context, req *requests.DeleteProductImageRequest, s3Service *S3Service) (*base.BaseResponse, error) {
+// DeleteProductImage deletes a product image from both database and R2
+func (s *ProductService) DeleteProductImage(ctx context.Context, req *requests.DeleteProductImageRequest, r2Service *R2Service) (*base.BaseResponse, error) {
 	// Get image record
 	var image models.Image
 	imagePtr, err := s.repoManager.ImageRepository.GetByID(ctx, req.ImageID, &image)
@@ -441,16 +442,18 @@ func (s *ProductService) DeleteProductImage(ctx context.Context, req *requests.D
 			base.NewValidationError("Product mismatch", "Image product ID does not match")), nil
 	}
 
-	// Use the stored S3 key, fallback to image URL for backward compatibility
-	s3Key := image.S3Key
-	if s3Key == "" {
-		s3Key = image.ImageURL
+	// Use the stored R2 key, fallback to image URL for backward compatibility
+	r2Key := image.R2Key
+	if r2Key == "" {
+		r2Key = image.ImageURL
 	}
 
-	// Delete from S3
-	if err := s3Service.DeleteProductImage(ctx, s3Key); err != nil {
-		fmt.Printf("Warning: Failed to delete image from S3: %v\n", err)
-		// Continue with database deletion even if S3 deletion fails
+	// Delete from R2
+	if r2Service != nil && r2Service.IsConfigured() {
+		if err := r2Service.DeleteProductImage(ctx, r2Key); err != nil {
+			fmt.Printf("Warning: Failed to delete image from R2: %v\n", err)
+			// Continue with database deletion even if R2 deletion fails
+		}
 	}
 
 	// Delete from database

@@ -10,25 +10,14 @@ import (
 
 // PDFInvoiceService handles PDF invoice generation
 type PDFInvoiceService struct {
-	s3Service       *S3Service
-	r2Service       *R2Service // Cloudflare R2 storage (preferred)
+	r2Service       *R2Service // Cloudflare R2 storage
 	templateService *PDFTemplateService
 	logger          *zap.Logger
 }
 
-// NewPDFInvoiceService creates a new PDF invoice service
-func NewPDFInvoiceService(s3Service *S3Service, logger *zap.Logger) *PDFInvoiceService {
+// NewPDFInvoiceService creates a new PDF invoice service with R2 storage
+func NewPDFInvoiceService(r2Service *R2Service, logger *zap.Logger) *PDFInvoiceService {
 	return &PDFInvoiceService{
-		s3Service:       s3Service,
-		templateService: NewPDFTemplateService(),
-		logger:          logger,
-	}
-}
-
-// NewPDFInvoiceServiceWithR2 creates a new PDF invoice service with R2 support
-func NewPDFInvoiceServiceWithR2(s3Service *S3Service, r2Service *R2Service, logger *zap.Logger) *PDFInvoiceService {
-	return &PDFInvoiceService{
-		s3Service:       s3Service,
 		r2Service:       r2Service,
 		templateService: NewPDFTemplateService(),
 		logger:          logger,
@@ -39,18 +28,17 @@ func NewPDFInvoiceServiceWithR2(s3Service *S3Service, r2Service *R2Service, logg
 
 // Note: InvoiceItem struct is now defined in pdf_template_service.go
 
-// GeneratePDFInvoice creates a PDF invoice and uploads it to R2 (preferred) or S3
+// GeneratePDFInvoice creates a PDF invoice and uploads it to R2
 func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *models.Order, items []*models.OrderItem, productRepo ProductRepositoryInterface) (string, error) {
-	// Check if any storage service is available
-	if s.r2Service == nil && s.s3Service == nil {
-		s.logger.Error("No storage service available (neither R2 nor S3)", zap.String("order_id", order.ID))
+	// Check if R2 storage service is available
+	if s.r2Service == nil || !s.r2Service.IsConfigured() {
+		s.logger.Error("R2 storage service not available", zap.String("order_id", order.ID))
 		return "", fmt.Errorf("storage service unavailable")
 	}
 
 	s.logger.Info("Starting PDF invoice generation",
 		zap.String("order_id", order.ID),
-		zap.Int("items_count", len(items)),
-		zap.Bool("using_r2", s.r2Service != nil))
+		zap.Int("items_count", len(items)))
 
 	// Prepare invoice data
 	invoiceData := s.prepareInvoiceData(order, items, productRepo, ctx)
@@ -68,39 +56,20 @@ func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *model
 		zap.String("order_id", order.ID),
 		zap.Int("pdf_size_bytes", len(pdfBytes)))
 
-	// Upload to R2 (preferred) or fallback to S3
-	var url string
+	// Upload to R2
 	key := fmt.Sprintf("invoices/%s.pdf", order.ID)
-
-	if s.r2Service != nil && s.r2Service.IsConfigured() {
-		// Use Cloudflare R2
-		url, err = s.r2Service.UploadFile(ctx, key, pdfBytes, "application/pdf")
-		if err != nil {
-			s.logger.Error("Failed to upload PDF to R2",
-				zap.String("order_id", order.ID),
-				zap.String("r2_key", key),
-				zap.Error(err))
-			return "", fmt.Errorf("failed to upload PDF invoice to R2: %w", err)
-		}
-		s.logger.Info("PDF invoice uploaded to R2 successfully",
+	url, err := s.r2Service.UploadFile(ctx, key, pdfBytes, "application/pdf")
+	if err != nil {
+		s.logger.Error("Failed to upload PDF to R2",
 			zap.String("order_id", order.ID),
 			zap.String("r2_key", key),
-			zap.String("invoice_url", url))
-	} else if s.s3Service != nil {
-		// Fallback to S3
-		url, err = s.s3Service.UploadFile(ctx, key, pdfBytes, "application/pdf")
-		if err != nil {
-			s.logger.Error("Failed to upload PDF to S3",
-				zap.String("order_id", order.ID),
-				zap.String("s3_key", key),
-				zap.Error(err))
-			return "", fmt.Errorf("failed to upload PDF invoice to S3: %w", err)
-		}
-		s.logger.Info("PDF invoice uploaded to S3 successfully",
-			zap.String("order_id", order.ID),
-			zap.String("s3_key", key),
-			zap.String("invoice_url", url))
+			zap.Error(err))
+		return "", fmt.Errorf("failed to upload PDF invoice to R2: %w", err)
 	}
+	s.logger.Info("PDF invoice uploaded to R2 successfully",
+		zap.String("order_id", order.ID),
+		zap.String("r2_key", key),
+		zap.String("invoice_url", url))
 
 	return url, nil
 }

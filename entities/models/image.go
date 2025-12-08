@@ -22,7 +22,7 @@ type Image struct {
 	*base.BaseModel `gorm:"embedded"`
 	ProductID       string    `json:"product_id" gorm:"not null;index"`
 	ImageURL        string    `json:"image_url" gorm:"not null"`
-	S3Key           string    `json:"s3_key"` // S3 object key for direct access (nullable for migration)
+	R2Key           string    `json:"r2_key" gorm:"column:s3_key"` // R2 object key for direct access (column kept as s3_key for backward compatibility)
 	ImageType       ImageType `json:"image_type" gorm:"default:'product'"`
 	AltText         string    `json:"alt_text" gorm:"size:255"`
 	Caption         string    `json:"caption" gorm:"size:500"`
@@ -36,13 +36,13 @@ type Image struct {
 }
 
 // NewImage creates a new image with base model
-func NewImage(productID, imageURL, s3Key string, imageType ImageType) *Image {
+func NewImage(productID, imageURL, r2Key string, imageType ImageType) *Image {
 	baseModel := base.NewBaseModel("IMG", hash.Large)
 	return &Image{
 		BaseModel: baseModel,
 		ProductID: productID,
 		ImageURL:  imageURL,
-		S3Key:     s3Key,
+		R2Key:     r2Key,
 		ImageType: imageType,
 		IsActive:  true,
 		IsPrimary: false,
@@ -51,8 +51,8 @@ func NewImage(productID, imageURL, s3Key string, imageType ImageType) *Image {
 }
 
 // NewPrimaryImage creates a new primary image
-func NewPrimaryImage(productID, imageURL, s3Key string) *Image {
-	image := NewImage(productID, imageURL, s3Key, ImageTypeProduct)
+func NewPrimaryImage(productID, imageURL, r2Key string) *Image {
+	image := NewImage(productID, imageURL, r2Key, ImageTypeProduct)
 	image.IsPrimary = true
 	image.SortOrder = 0
 	return image

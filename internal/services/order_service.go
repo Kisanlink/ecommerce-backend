@@ -54,20 +54,18 @@ type OrderService struct {
 	productRepo repositories.ProductRepositoryInterface
 	addressRepo *repositories.AddressRepository
 	couponRepo  repositories.CouponRepositoryInterface
-	s3Service   *S3Service
-	r2Service   *R2Service // Cloudflare R2 storage (preferred over S3)
+	r2Service   *R2Service // Cloudflare R2 storage
 	logger      *zap.Logger
 }
 
 // NewOrderService creates a new order service
-func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, s3Service *S3Service, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
+func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
 	service := &OrderService{
 		orderRepo:   orderRepo,
 		cartService: cartService,
 		productRepo: productRepo,
 		addressRepo: addressRepo,
 		couponRepo:  couponRepo,
-		s3Service:   s3Service,
 		r2Service:   r2Service,
 		logger:      logger,
 	}
@@ -531,8 +529,8 @@ func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID str
 		order.CustomerPhone = order.Customer.Phone
 	}
 
-	// Create PDF invoice service with R2 support (R2 is preferred over S3)
-	pdfInvoiceService := NewPDFInvoiceServiceWithR2(s.s3Service, s.r2Service, s.logger)
+	// Create PDF invoice service with R2 storage
+	pdfInvoiceService := NewPDFInvoiceService(s.r2Service, s.logger)
 
 	// Convert items to pointers
 	items := order.OrderItems

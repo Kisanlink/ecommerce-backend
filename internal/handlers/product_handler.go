@@ -13,14 +13,14 @@ import (
 // ProductHandler handles product-related HTTP requests
 type ProductHandler struct {
 	productService *services.ProductService
-	s3Service      *services.S3Service
+	r2Service      *services.R2Service
 }
 
 // NewProductHandler creates a new product handler
-func NewProductHandler(productService *services.ProductService, s3Service *services.S3Service) *ProductHandler {
+func NewProductHandler(productService *services.ProductService, r2Service *services.R2Service) *ProductHandler {
 	return &ProductHandler{
 		productService: productService,
-		s3Service:      s3Service,
+		r2Service:      r2Service,
 	}
 }
 
@@ -340,8 +340,8 @@ func (h *ProductHandler) UploadProductImage(c *gin.Context) {
 	}
 	req.SetUserID(utils.GetUserFromContext(c))
 
-	// Use the S3 service from the handler
-	response, err := h.productService.UploadProductImage(c.Request.Context(), req, file, header, h.s3Service)
+	// Use the R2 service from the handler
+	response, err := h.productService.UploadProductImage(c.Request.Context(), req, file, header, h.r2Service)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
 			base.NewInternalServerError("Service error", err.Error())))
@@ -387,7 +387,7 @@ func (h *ProductHandler) DeleteProductImage(c *gin.Context) {
 	}
 	req.SetUserID(utils.GetUserFromContext(c))
 
-	response, err := h.productService.DeleteProductImage(c.Request.Context(), req, h.s3Service)
+	response, err := h.productService.DeleteProductImage(c.Request.Context(), req, h.r2Service)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, base.NewErrorResponse("Internal server error",
 			base.NewInternalServerError("Service error", err.Error())))

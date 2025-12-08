@@ -18,7 +18,7 @@ import (
 type ProfileHandler struct {
 	profileService *services.ProfileService
 	userService    *services.UserService
-	s3Service      *services.S3Service
+	r2Service      *services.R2Service
 	logger         *zap.Logger
 }
 
@@ -28,7 +28,7 @@ func NewProfileHandler(serviceManager *services.ServiceManager) *ProfileHandler 
 	return &ProfileHandler{
 		profileService: serviceManager.ProfileService,
 		userService:    serviceManager.UserService,
-		s3Service:      serviceManager.S3Service,
+		r2Service:      serviceManager.R2Service,
 		logger:         logger,
 	}
 }
@@ -239,7 +239,7 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("profile_id", profile.ID),
-		zap.Bool("has_profile_picture", profile.ProfilePictureS3Key != ""),
+		zap.Bool("has_profile_picture", profile.ProfilePictureR2Key != ""),
 		zap.Bool("has_full_name", profile.FirstName != "" && profile.LastName != ""))
 
 	// Convert to response structure
@@ -343,9 +343,9 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	})
 }
 
-// UploadProfileImage uploads a profile image file to S3
+// UploadProfileImage uploads a profile image file to R2
 // @Summary Upload profile image
-// @Description Upload a profile image file to S3 and update the profile
+// @Description Upload a profile image file to R2 and update the profile
 // @Tags Profile
 // @Accept multipart/form-data
 // @Produce json
@@ -397,58 +397,68 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 		zap.Int64("file_size", header.Size),
 		zap.String("content_type", header.Header.Get("Content-Type")))
 
-	// Upload image to S3
-	h.logger.Info("Uploading profile image to S3",
+	// Check if R2 service is available
+	if h.r2Service == nil || !h.r2Service.IsConfigured() {
+		h.logger.Error("R2 service not configured for profile image upload",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("error_type", "r2_service_error"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage service not available"})
+		return
+	}
+
+	// Upload image to R2
+	h.logger.Info("Uploading profile image to R2",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID))
 
-	s3Key, err := h.s3Service.UploadProfileImage(c.Request.Context(), userID, file, header)
+	r2Key, err := h.r2Service.UploadProfileImage(c.Request.Context(), userID, file, header)
 	if err != nil {
-		h.logger.Error("Failed to upload profile image to S3",
+		h.logger.Error("Failed to upload profile image to R2",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("filename", header.Filename),
 			zap.Error(err),
-			zap.String("error_type", "s3_upload_error"))
+			zap.String("error_type", "r2_upload_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image", "details": err.Error()})
 		return
 	}
 
-	h.logger.Info("Profile image uploaded to S3 successfully",
+	h.logger.Info("Profile image uploaded to R2 successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("s3_key", s3Key))
+		zap.String("r2_key", r2Key))
 
-	// Generate presigned URL for immediate access
-	h.logger.Info("Generating presigned URL for uploaded image",
+	// Get public URL for the uploaded image
+	h.logger.Info("Getting public URL for uploaded image",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("s3_key", s3Key))
+		zap.String("r2_key", r2Key))
 
-	imageURL, err := h.s3Service.GetProfileImageURL(c.Request.Context(), s3Key, 24*time.Hour)
+	imageURL, err := h.r2Service.GetProfileImageURL(c.Request.Context(), r2Key, 24*time.Hour)
 	if err != nil {
-		h.logger.Error("Failed to generate presigned URL for profile image",
+		h.logger.Error("Failed to get public URL for profile image",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("s3_key", s3Key),
+			zap.String("r2_key", r2Key),
 			zap.Error(err),
-			zap.String("error_type", "presigned_url_error"))
+			zap.String("error_type", "url_generation_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image URL", "details": err.Error()})
 		return
 	}
 
-	// Update profile with S3 key and URL
+	// Update profile with R2 key and URL (using S3 field names for backward compatibility)
 	h.logger.Info("Updating profile with uploaded image details",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("s3_key", s3Key))
+		zap.String("r2_key", r2Key))
 
-	profile, err := h.profileService.UpdateProfilePictureWithS3(c.Request.Context(), userID, imageURL, s3Key)
+	profile, err := h.profileService.UpdateProfilePictureWithS3(c.Request.Context(), userID, imageURL, r2Key)
 	if err != nil {
 		h.logger.Error("Failed to update profile with image details",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("s3_key", s3Key),
+			zap.String("r2_key", r2Key),
 			zap.Error(err),
 			zap.String("error_type", "profile_update_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile with image", "details": err.Error()})
@@ -459,7 +469,7 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("profile_id", profile.ID),
-		zap.String("s3_key", s3Key),
+		zap.String("r2_key", r2Key),
 		zap.String("filename", header.Filename),
 		zap.Int64("file_size", header.Size))
 
@@ -470,17 +480,17 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 		"message":   "Profile image uploaded successfully",
 		"data":      profileResponse,
 		"image_url": imageURL,
-		"s3_key":    s3Key,
+		"r2_key":    r2Key,
 	})
 }
 
-// GetProfileImageURL generates a presigned URL for the profile image
+// GetProfileImageURL generates a public URL for the profile image
 // @Summary Get profile image URL
-// @Description Generate a presigned URL for the profile image
+// @Description Generate a public URL for the profile image (R2 URLs don't expire)
 // @Tags Profile
 // @Produce json
 // @Security FirebaseAuth
-// @Param expires_in_hours query int false "Expiry in hours" default(1)
+// @Param expires_in_hours query int false "Expiry in hours (ignored for R2)" default(1)
 // @Success 200 {object} map[string]interface{} "Image URL generated"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 404 {object} map[string]interface{} "No profile image"
@@ -506,7 +516,7 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		return
 	}
 
-	// Parse expiry duration from query parameter (default 1 hour)
+	// Parse expiry duration from query parameter (kept for API compatibility, but R2 URLs don't expire)
 	expiryHours := 1
 	if expiryParam := c.Query("expires_in_hours"); expiryParam != "" {
 		if hours, parseErr := strconv.Atoi(expiryParam); parseErr == nil && hours > 0 {
@@ -531,7 +541,7 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		return
 	}
 
-	if profile.ProfilePictureS3Key == "" {
+	if profile.ProfilePictureR2Key == "" {
 		h.logger.Warn("No profile image found for URL generation",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
@@ -541,26 +551,35 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Generating presigned URL for profile image",
+	// Check if R2 service is available
+	if h.r2Service == nil || !h.r2Service.IsConfigured() {
+		h.logger.Error("R2 service not configured for profile image URL generation",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("error_type", "r2_service_error"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage service not available"})
+		return
+	}
+
+	h.logger.Info("Generating public URL for profile image",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("profile_id", profile.ID),
-		zap.String("s3_key", profile.ProfilePictureS3Key),
-		zap.Int("expiry_hours", expiryHours))
+		zap.String("r2_key", profile.ProfilePictureR2Key))
 
-	// Generate presigned URL
-	imageURL, err := h.s3Service.GetProfileImageURL(
+	// Generate public URL (R2 public URLs don't expire)
+	imageURL, err := h.r2Service.GetProfileImageURL(
 		c.Request.Context(),
-		profile.ProfilePictureS3Key,
+		profile.ProfilePictureR2Key,
 		time.Duration(expiryHours)*time.Hour,
 	)
 	if err != nil {
-		h.logger.Error("Failed to generate presigned URL for profile image",
+		h.logger.Error("Failed to generate public URL for profile image",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("s3_key", profile.ProfilePictureS3Key),
+			zap.String("r2_key", profile.ProfilePictureR2Key),
 			zap.Error(err),
-			zap.String("error_type", "presigned_url_generation_error"))
+			zap.String("error_type", "url_generation_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image URL", "details": err.Error()})
 		return
 	}
@@ -569,12 +588,11 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
 		zap.String("profile_id", profile.ID),
-		zap.String("s3_key", profile.ProfilePictureS3Key),
-		zap.Int("expiry_hours", expiryHours))
+		zap.String("r2_key", profile.ProfilePictureR2Key))
 
 	c.JSON(http.StatusOK, gin.H{
 		"image_url":  imageURL,
-		"expires_in": fmt.Sprintf("%d hours", expiryHours),
-		"s3_key":     profile.ProfilePictureS3Key,
+		"expires_in": "never (R2 public URL)",
+		"r2_key":     profile.ProfilePictureR2Key,
 	})
 }

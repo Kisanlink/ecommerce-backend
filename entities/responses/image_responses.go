@@ -11,7 +11,7 @@ type ImageResponse struct {
 	ID        string           `json:"id"`
 	ProductID string           `json:"product_id"`
 	ImageURL  string           `json:"image_url"`
-	S3Key     string           `json:"s3_key"`
+	R2Key     string           `json:"r2_key"`
 	ImageType models.ImageType `json:"image_type"`
 	AltText   string           `json:"alt_text"`
 	Caption   string           `json:"caption"`
@@ -38,7 +38,7 @@ type ImageUploadResponse struct {
 	ImageID   string `json:"image_id"`
 	ProductID string `json:"product_id"`
 	ImageURL  string `json:"image_url"`
-	S3Key     string `json:"s3_key"`
+	R2Key     string `json:"r2_key"`
 	IsPrimary bool   `json:"is_primary"`
 }
 
@@ -48,7 +48,7 @@ func NewImageResponse(image *models.Image) ImageResponse {
 		ID:        image.ID,
 		ProductID: image.ProductID,
 		ImageURL:  image.ImageURL,
-		S3Key:     image.S3Key,
+		R2Key:     image.R2Key,
 		ImageType: image.ImageType,
 		AltText:   image.AltText,
 		Caption:   image.Caption,
@@ -79,12 +79,12 @@ func NewProductImagesResponse(productID string, images []*models.Image) ProductI
 }
 
 // NewImageUploadResponse creates a new image upload response
-func NewImageUploadResponse(image *models.Image, s3Key string) ImageUploadResponse {
+func NewImageUploadResponse(image *models.Image, r2Key string) ImageUploadResponse {
 	return ImageUploadResponse{
 		ImageID:   image.ID,
 		ProductID: image.ProductID,
 		ImageURL:  image.ImageURL,
-		S3Key:     s3Key,
+		R2Key:     r2Key,
 		IsPrimary: image.IsPrimary,
 	}
 }

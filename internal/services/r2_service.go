@@ -277,3 +277,214 @@ func (s *R2Service) DeleteRecipeImage(ctx context.Context, r2Key string) error {
 
 	return nil
 }
+
+// UploadProductImage uploads a product image to R2 and returns the R2 key
+func (s *R2Service) UploadProductImage(ctx context.Context, productID string, file multipart.File, header *multipart.FileHeader) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("R2 service not configured")
+	}
+
+	// Generate R2 key for product image
+	fileExt := filepath.Ext(header.Filename)
+	timestamp := time.Now().Unix()
+	r2Key := fmt.Sprintf("images/product-images/%s/product_%d%s", productID, timestamp, fileExt)
+
+	s.logger.Info("Uploading product image to R2",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key),
+		zap.String("product_id", productID),
+		zap.String("content_type", header.Header.Get("Content-Type")),
+		zap.Int64("size_bytes", header.Size))
+
+	// Read file data
+	data, err := io.ReadAll(file)
+	if err != nil {
+		s.logger.Error("Failed to read product image file",
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to read file data: %w", err)
+	}
+
+	// Upload to R2
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(r2Key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String(header.Header.Get("Content-Type")),
+	})
+	if err != nil {
+		s.logger.Error("Failed to upload product image to R2",
+			zap.String("bucket", s.bucketName),
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to upload product image to R2: %w", err)
+	}
+
+	s.logger.Info("Product image uploaded to R2 successfully",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key),
+		zap.String("url", s.GetPublicURL(r2Key)))
+
+	return r2Key, nil
+}
+
+// DeleteProductImage deletes a product image from R2
+func (s *R2Service) DeleteProductImage(ctx context.Context, r2Key string) error {
+	if !s.IsConfigured() {
+		return fmt.Errorf("R2 service not configured")
+	}
+
+	// Handle case where r2Key might be a full URL
+	if strings.HasPrefix(r2Key, "http://") || strings.HasPrefix(r2Key, "https://") {
+		// Extract the key from the URL
+		// URL format: https://pub-xxx.r2.dev/images/product-images/...
+		// or https://bucket.r2.cloudflarestorage.com/images/product-images/...
+		if s.publicDomain != "" {
+			domain := strings.TrimPrefix(s.publicDomain, "https://")
+			domain = strings.TrimPrefix(domain, "http://")
+			domain = strings.TrimSuffix(domain, "/")
+			prefix := fmt.Sprintf("https://%s/", domain)
+			if strings.HasPrefix(r2Key, prefix) {
+				r2Key = strings.TrimPrefix(r2Key, prefix)
+			}
+		}
+		// Also try the fallback URL format
+		fallbackPrefix := fmt.Sprintf("https://%s.r2.cloudflarestorage.com/", s.bucketName)
+		if strings.HasPrefix(r2Key, fallbackPrefix) {
+			r2Key = strings.TrimPrefix(r2Key, fallbackPrefix)
+		}
+	}
+
+	s.logger.Info("Deleting product image from R2",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key))
+
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(r2Key),
+	})
+	if err != nil {
+		s.logger.Error("Failed to delete product image from R2",
+			zap.String("bucket", s.bucketName),
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return fmt.Errorf("failed to delete product image from R2: %w", err)
+	}
+
+	s.logger.Info("Product image deleted from R2 successfully",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key))
+
+	return nil
+}
+
+// GetProductImageURL returns the public URL for a product image in R2
+func (s *R2Service) GetProductImageURL(r2Key string) string {
+	return s.GetPublicURL(r2Key)
+}
+
+// UploadProfileImage uploads a profile image to R2 and returns the R2 key
+func (s *R2Service) UploadProfileImage(ctx context.Context, userID string, file multipart.File, header *multipart.FileHeader) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("R2 service not configured")
+	}
+
+	// Generate R2 key for profile image
+	fileExt := filepath.Ext(header.Filename)
+	r2Key := fmt.Sprintf("images/profile-images/%s/profile_image%s", userID, fileExt)
+
+	s.logger.Info("Uploading profile image to R2",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key),
+		zap.String("user_id", userID),
+		zap.String("content_type", header.Header.Get("Content-Type")),
+		zap.Int64("size_bytes", header.Size))
+
+	// Read file data
+	data, err := io.ReadAll(file)
+	if err != nil {
+		s.logger.Error("Failed to read profile image file",
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to read file data: %w", err)
+	}
+
+	// Upload to R2
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(r2Key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String(header.Header.Get("Content-Type")),
+	})
+	if err != nil {
+		s.logger.Error("Failed to upload profile image to R2",
+			zap.String("bucket", s.bucketName),
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to upload profile image to R2: %w", err)
+	}
+
+	s.logger.Info("Profile image uploaded to R2 successfully",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key),
+		zap.String("url", s.GetPublicURL(r2Key)))
+
+	return r2Key, nil
+}
+
+// GetProfileImageURL returns the public URL for a profile image in R2
+// Note: R2 public URLs don't expire, so expiration parameter is ignored but kept for API compatibility
+func (s *R2Service) GetProfileImageURL(ctx context.Context, r2Key string, expiration time.Duration) (string, error) {
+	if !s.IsConfigured() {
+		return "", fmt.Errorf("R2 service not configured")
+	}
+
+	// Return public URL (R2 public domain URLs don't expire)
+	return s.GetPublicURL(r2Key), nil
+}
+
+// DeleteProfileImage deletes a profile image from R2
+func (s *R2Service) DeleteProfileImage(ctx context.Context, r2Key string) error {
+	if !s.IsConfigured() {
+		return fmt.Errorf("R2 service not configured")
+	}
+
+	// Handle case where r2Key might be a full URL
+	if strings.HasPrefix(r2Key, "http://") || strings.HasPrefix(r2Key, "https://") {
+		if s.publicDomain != "" {
+			domain := strings.TrimPrefix(s.publicDomain, "https://")
+			domain = strings.TrimPrefix(domain, "http://")
+			domain = strings.TrimSuffix(domain, "/")
+			prefix := fmt.Sprintf("https://%s/", domain)
+			if strings.HasPrefix(r2Key, prefix) {
+				r2Key = strings.TrimPrefix(r2Key, prefix)
+			}
+		}
+		fallbackPrefix := fmt.Sprintf("https://%s.r2.cloudflarestorage.com/", s.bucketName)
+		if strings.HasPrefix(r2Key, fallbackPrefix) {
+			r2Key = strings.TrimPrefix(r2Key, fallbackPrefix)
+		}
+	}
+
+	s.logger.Info("Deleting profile image from R2",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key))
+
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(r2Key),
+	})
+	if err != nil {
+		s.logger.Error("Failed to delete profile image from R2",
+			zap.String("bucket", s.bucketName),
+			zap.String("key", r2Key),
+			zap.Error(err))
+		return fmt.Errorf("failed to delete profile image from R2: %w", err)
+	}
+
+	s.logger.Info("Profile image deleted from R2 successfully",
+		zap.String("bucket", s.bucketName),
+		zap.String("key", r2Key))
+
+	return nil
+}

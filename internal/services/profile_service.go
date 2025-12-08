@@ -255,8 +255,8 @@ func (s *ProfileService) UpdateProfile(ctx context.Context, req *requests.Update
 	return profile, nil
 }
 
-// UpdateProfilePictureWithS3 updates profile with S3 image details
-func (s *ProfileService) UpdateProfilePictureWithS3(ctx context.Context, userID, imageURL, s3Key string) (*models.Profile, error) {
+// UpdateProfilePictureWithS3 updates profile with R2 image details (kept method name for backward compatibility)
+func (s *ProfileService) UpdateProfilePictureWithS3(ctx context.Context, userID, imageURL, r2Key string) (*models.Profile, error) {
 	log.Printf("Updating profile picture for user ID: %s", userID)
 
 	// Get existing profile
@@ -265,9 +265,9 @@ func (s *ProfileService) UpdateProfilePictureWithS3(ctx context.Context, userID,
 		return nil, fmt.Errorf("failed to get existing profile: %w", err)
 	}
 
-	// Update S3 fields
+	// Update R2 fields
 	profile.ProfilePictureURL = imageURL
-	profile.ProfilePictureS3Key = s3Key
+	profile.ProfilePictureR2Key = r2Key
 
 	// Save updated profile
 	if err := s.repoManager.ProfileRepository.UpdateProfile(ctx, profile); err != nil {

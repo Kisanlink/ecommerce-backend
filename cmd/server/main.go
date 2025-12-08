@@ -230,9 +230,6 @@ func main() {
 		PostgresSSLMode:   pgEnv.SSLMode,
 		PostgresMaxConns:  pgEnv.MaxConns,
 		PostgresIdleConns: pgEnv.IdleConns,
-		// Add S3 configuration
-		S3Region: os.Getenv("DB_S3_REGION"),
-		S3Bucket: os.Getenv("DB_S3_BUCKET"),
 	}
 
 	ctx = context.Background()
@@ -262,26 +259,6 @@ func main() {
 			logger.Info("Database connections closed successfully")
 		}
 	}()
-
-	// Initialize S3Manager
-	var s3Manager *db.S3Manager
-	if pgConfig.S3Bucket != "" {
-		s3Manager = db.NewS3Manager(pgConfig, logger)
-		if err := s3Manager.Connect(ctx); err != nil {
-			log.Printf("Warning: Failed to connect to S3: %v", err)
-			log.Println("S3 image upload will not be available")
-		} else {
-			log.Println("Successfully connected to S3")
-			defer func() {
-				logger.Info("Closing S3 connections...")
-				if err := s3Manager.Close(); err != nil {
-					logger.Error("Failed to close S3 connection", zap.Error(err))
-				} else {
-					logger.Info("S3 connections closed successfully")
-				}
-			}()
-		}
-	}
 
 	// Ensure users.id is VARCHAR to support string IDs like "USER..."
 	// This guards against older schemas where id might be BIGINT.
@@ -362,8 +339,8 @@ func main() {
 	repoManager := repositories.NewRepositoryManager(pgManager, pgManager, logger)
 	logger.Info("✅ All repositories initialized and connected to NeonDB")
 
-	// Create service manager with repository manager and S3Manager (following the development rules)
-	serviceManager := services.NewServiceManager(repoManager, s3Manager)
+	// Create service manager with repository manager (uses Cloudflare R2 for storage)
+	serviceManager := services.NewServiceManager(repoManager)
 
 	// Start the main server with both repository and service managers
 	srv, err := server.NewServer(repoManager, serviceManager)
