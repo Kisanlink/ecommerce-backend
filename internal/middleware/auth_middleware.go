@@ -17,6 +17,12 @@ import (
 // AuthMiddleware checks JWT and sets user info in context
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip OPTIONS preflight requests - CORS middleware handles these
+		if c.Request.Method == "OPTIONS" {
+			c.Next()
+			return
+		}
+
 		header := c.GetHeader("Authorization")
 		if header == "" || !strings.HasPrefix(header, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Missing or invalid token"})
@@ -37,6 +43,12 @@ func AuthMiddleware() gin.HandlerFunc {
 // FirebaseAuthMiddleware verifies Firebase ID tokens
 func FirebaseAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip OPTIONS preflight requests - CORS middleware handles these
+		if c.Request.Method == "OPTIONS" {
+			c.Next()
+			return
+		}
+
 		header := c.GetHeader("Authorization")
 		if header == "" || !strings.HasPrefix(header, "Bearer ") {
 			utils.RespondWithError(c, http.StatusUnauthorized, "Missing or invalid Authorization header", nil)
