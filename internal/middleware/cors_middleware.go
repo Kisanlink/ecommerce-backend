@@ -279,6 +279,7 @@ func GetCORSHeadersFromEnv() []string {
 			"X-Requested-With",
 			"X-API-Key",
 			"ngrok-skip-browser-warning",
+			"X-Session-ID",
 		}
 	}
 	return strings.Split(headers, ",")
