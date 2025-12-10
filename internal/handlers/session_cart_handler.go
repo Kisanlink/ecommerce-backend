@@ -579,6 +579,30 @@ func (h *SessionCartHandler) MigrateCart(c *gin.Context) {
 		return
 	}
 
+	// Map Firebase UID to internal user ID if needed
+	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
+		userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+		if err == nil && userResponse != nil && userResponse.Data != nil {
+			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+				if internalID, ok := userMap["id"].(string); ok {
+					h.logger.Info("MigrateCart: Mapped Firebase UID to internal user ID",
+						zap.String("firebase_uid", userID),
+						zap.String("internal_id", internalID))
+					userID = internalID
+				}
+			}
+		} else {
+			h.logger.Error("MigrateCart: Failed to map Firebase UID to internal user ID",
+				zap.String("firebase_uid", userID),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"error":   "Failed to resolve user ID",
+			})
+			return
+		}
+	}
+
 	// Get session ID from header
 	sessionID := c.GetHeader("X-Session-ID")
 	if sessionID == "" {
@@ -645,6 +669,30 @@ func (h *SessionCartHandler) MergeCart(c *gin.Context) {
 			"error":   "Authentication required for cart merge",
 		})
 		return
+	}
+
+	// Map Firebase UID to internal user ID if needed
+	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
+		userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+		if err == nil && userResponse != nil && userResponse.Data != nil {
+			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+				if internalID, ok := userMap["id"].(string); ok {
+					h.logger.Info("MergeCart: Mapped Firebase UID to internal user ID",
+						zap.String("firebase_uid", userID),
+						zap.String("internal_id", internalID))
+					userID = internalID
+				}
+			}
+		} else {
+			h.logger.Error("MergeCart: Failed to map Firebase UID to internal user ID",
+				zap.String("firebase_uid", userID),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"error":   "Failed to resolve user ID",
+			})
+			return
+		}
 	}
 
 	// Get session ID from header

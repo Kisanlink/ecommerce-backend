@@ -20,7 +20,7 @@ func NewServer(repoManager *repositories.RepositoryManager, serviceManager *serv
 	r.Use(middleware.CORSMiddlewareWithConfig(middleware.APICORSConfig()))
 
 	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(200, gin.H{"message": "pong"})
+		c.String(200, "Backend alive")
 	})
 
 	// Create logger for routes (we can reuse the main logger)
