@@ -137,7 +137,7 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 	h.logger.Info("Auto profile created successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
+		zap.String("profile_id", profile.GetID()),
 		zap.String("firebase_email", firebaseEmail))
 
 	// Convert to response structure
@@ -223,7 +223,7 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 			h.logger.Info("Profile auto-created successfully",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
-				zap.String("profile_id", profile.ID))
+				zap.String("profile_id", profile.GetID()))
 		} else {
 			h.logger.Error("Failed to retrieve profile",
 				zap.String("request_id", requestID),
@@ -238,7 +238,7 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	h.logger.Info("Profile retrieved successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
+		zap.String("profile_id", profile.GetID()),
 		zap.Bool("has_profile_picture", profile.ProfilePictureR2Key != ""),
 		zap.Bool("has_full_name", profile.FirstName != "" && profile.LastName != ""))
 
@@ -332,7 +332,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	h.logger.Info("Profile updated successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID))
+		zap.String("profile_id", profile.GetID()))
 
 	// Convert to response structure
 	profileResponse := responses.ToProfileResponse(profile)
@@ -468,7 +468,7 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 	h.logger.Info("Profile image upload completed successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
+		zap.String("profile_id", profile.GetID()),
 		zap.String("r2_key", r2Key),
 		zap.String("filename", header.Filename),
 		zap.Int64("file_size", header.Size))
@@ -545,7 +545,7 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		h.logger.Warn("No profile image found for URL generation",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("profile_id", profile.ID),
+			zap.String("profile_id", profile.GetID()),
 			zap.String("error_type", "no_profile_image"))
 		c.JSON(http.StatusNotFound, gin.H{"error": "No profile image found"})
 		return
@@ -564,7 +564,7 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 	h.logger.Info("Generating public URL for profile image",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
+		zap.String("profile_id", profile.GetID()),
 		zap.String("r2_key", profile.ProfilePictureR2Key))
 
 	// Generate public URL (R2 public URLs don't expire)
@@ -587,7 +587,7 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 	h.logger.Info("Profile image URL generated successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
+		zap.String("profile_id", profile.GetID()),
 		zap.String("r2_key", profile.ProfilePictureR2Key))
 
 	c.JSON(http.StatusOK, gin.H{
