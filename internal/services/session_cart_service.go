@@ -360,16 +360,6 @@ func (s *SessionCartService) MigrateSessionCartToUser(ctx context.Context, sessi
 		return nil, fmt.Errorf("user ID is required")
 	}
 
-	// Normalize userID: if it's a Firebase UID, map it to internal USER... ID.
-	// This makes migration consistent even if handlers accidentally pass a UID.
-	normalizedUserID := userID
-	if !strings.HasPrefix(userID, "USER") {
-		if user, err := s.userRepo.GetUserByFirebaseUID(ctx, userID); err == nil && user != nil {
-			normalizedUserID = user.GetID()
-		}
-	}
-	userID = normalizedUserID
-
 	// Get session cart
 	sessionCart, err := s.GetSessionCart(ctx, sessionID)
 	if err != nil {
