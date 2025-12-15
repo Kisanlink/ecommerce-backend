@@ -2636,27 +2636,81 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 				}
 
 				if createErr != nil || createResponse == nil || !createResponse.Success {
-					h.logger.Error("Failed to auto-create user in local database",
+					// If user already exists (duplicate), try to fetch instead of failing.
+					// We don't have concrete error types here, so use a best-effort heuristic:
+					// - No low-level error AND
+					// - createResponse present but Success == false
+					//   => likely a validation/duplicate error.
+					alreadyExists := (createErr == nil && createResponse != nil && !createResponse.Success)
+
+					if alreadyExists {
+						h.logger.Info("User already exists when auto-creating for Magic Checkout, fetching existing user instead",
+							zap.String("firebase_uid", userID),
+							zap.String("email", firebaseUser.Email),
+							zap.String("phone", firebaseUser.PhoneNumber))
+
+						// Try by email first
+						if firebaseUser.Email != "" {
+							if emailResp, err := h.userService.GetUserByEmail(c.Request.Context(), firebaseUser.Email); err == nil && emailResp != nil && emailResp.Success && emailResp.Data != nil {
+								if data, ok := emailResp.Data.(map[string]interface{}); ok {
+									if id, ok := data["id"].(string); ok && id != "" {
+										internalUserID = id
+										h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalUserID, userID)
+									}
+								}
+							}
+						}
+						// Then by phone if still empty
+						if internalUserID == "" && firebaseUser.PhoneNumber != "" {
+							if phoneResp, err := h.userService.GetUserByPhoneNumber(c.Request.Context(), firebaseUser.PhoneNumber); err == nil && phoneResp != nil && phoneResp.Success && phoneResp.Data != nil {
+								if data, ok := phoneResp.Data.(map[string]interface{}); ok {
+									if id, ok := data["id"].(string); ok && id != "" {
+										internalUserID = id
+										h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalUserID, userID)
+									}
+								}
+							}
+						}
+
+						if internalUserID == "" {
+							h.logger.Error("Failed to resolve existing user after duplicate error during auto-create",
+								zap.String("firebase_uid", userID),
+								zap.String("email", firebaseUser.Email),
+								zap.String("phone", firebaseUser.PhoneNumber))
+							c.JSON(http.StatusInternalServerError, gin.H{
+								"error": "Failed to resolve user account",
+							})
+							return
+						}
+
+						h.logger.Info("Resolved existing user after duplicate error during auto-create",
+							zap.String("firebase_uid", userID),
+							zap.String("email", firebaseUser.Email),
+							zap.String("phone", firebaseUser.PhoneNumber),
+							zap.String("internal_id", internalUserID))
+					} else {
+						h.logger.Error("Failed to auto-create user in local database",
+							zap.String("firebase_uid", userID),
+							zap.String("email", firebaseUser.Email),
+							zap.String("phone", firebaseUser.PhoneNumber),
+							zap.Error(createErr))
+						c.JSON(http.StatusInternalServerError, gin.H{
+							"error": "Failed to create user account",
+						})
+						return
+					}
+				} else {
+					if userData, ok := createResponse.Data.(map[string]interface{}); ok {
+						if id, ok := userData["id"].(string); ok {
+							internalUserID = id
+						}
+					}
+					h.logger.Info("Auto-created user in local database from Firebase",
 						zap.String("firebase_uid", userID),
 						zap.String("email", firebaseUser.Email),
 						zap.String("phone", firebaseUser.PhoneNumber),
-						zap.Error(createErr))
-					c.JSON(http.StatusInternalServerError, gin.H{
-						"error": "Failed to create user account",
-					})
-					return
+						zap.String("internal_id", internalUserID))
 				}
-
-				if userData, ok := createResponse.Data.(map[string]interface{}); ok {
-					if id, ok := userData["id"].(string); ok {
-						internalUserID = id
-					}
-				}
-				h.logger.Info("Auto-created user in local database from Firebase",
-					zap.String("firebase_uid", userID),
-					zap.String("email", firebaseUser.Email),
-					zap.String("phone", firebaseUser.PhoneNumber),
-					zap.String("internal_id", internalUserID))
 			}
 		}
 	}

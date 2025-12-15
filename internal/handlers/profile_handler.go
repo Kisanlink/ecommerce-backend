@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
@@ -41,16 +42,95 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 		firebaseUID, ok := firebaseUIDValue.(string)
 		if ok && firebaseUID != "" {
 			// Look up the actual user in database by Firebase UID
-			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
-			if err != nil {
-				return "", fmt.Errorf("user not found in database")
-			}
+			userResponse, _ := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
 			if userResponse != nil && userResponse.Success {
-				userData := userResponse.Data.(map[string]interface{})
-				if userID, exists := userData["id"].(string); exists {
-					return userID, nil
+				if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+					if userID, exists := userData["id"].(string); exists && userID != "" {
+						return userID, nil
+					}
 				}
 			}
+
+			// If user is not found in our database but Firebase auth succeeded,
+			// lazily create or link a local user record based on email/phone.
+			ctx := c.Request.Context()
+
+			// Try phone-based user first (for phone auth users)
+			firebasePhone := ""
+			if phoneValue, exists := c.Get("firebase_phone"); exists {
+				if phone, ok := phoneValue.(string); ok {
+					firebasePhone = phone
+				}
+			}
+
+			if firebasePhone != "" && h.userService != nil {
+				// See if a user already exists with this phone number
+				if respByPhone, _ := h.userService.GetUserByPhoneNumber(ctx, firebasePhone); respByPhone != nil && respByPhone.Success {
+					if data, ok := respByPhone.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							// Ensure Firebase UID is linked
+							_ = h.userService.UpdateUserFirebaseUID(ctx, id, firebaseUID)
+							return id, nil
+						}
+					}
+				}
+
+				// Create a new phone-only user and link Firebase UID
+				phoneReq := requests.PhoneSignupRequest{
+					PhoneNumber: firebasePhone,
+					Name:        "User",
+				}
+				if createResp, err := h.userService.CreatePhoneUser(ctx, &phoneReq); err == nil && createResp != nil && createResp.Success {
+					if data, ok := createResp.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							_ = h.userService.UpdateUserFirebaseUID(ctx, id, firebaseUID)
+							return id, nil
+						}
+					}
+				}
+			}
+
+			// Fallback: try email-based user (for email/password or Google users)
+			firebaseEmail := ""
+			if emailValue, exists := c.Get("firebase_email"); exists {
+				if email, ok := emailValue.(string); ok {
+					firebaseEmail = email
+				}
+			}
+
+			if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") && h.userService != nil {
+				// Check if a user already exists with this email
+				if respByEmail, _ := h.userService.GetUserByEmail(ctx, firebaseEmail); respByEmail != nil && respByEmail.Success {
+					if data, ok := respByEmail.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							// Ensure Firebase UID is linked
+							_ = h.userService.UpdateUserFirebaseUID(ctx, id, firebaseUID)
+							return id, nil
+						}
+					}
+				}
+
+				// Create a new Firebase/Google-style user without password
+				name := firebaseEmail
+				if at := strings.Index(firebaseEmail, "@"); at > 0 {
+					name = firebaseEmail[:at]
+				}
+
+				signupReq := requests.SignupRequest{
+					Email:    firebaseEmail,
+					Name:     name,
+					Password: "",
+				}
+
+				if createResp, err := h.userService.CreateGoogleUser(ctx, &signupReq, firebaseUID); err == nil && createResp != nil && createResp.Success {
+					if data, ok := createResp.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							return id, nil
+						}
+					}
+				}
+			}
+
 			return "", fmt.Errorf("user not found in database")
 		}
 	}

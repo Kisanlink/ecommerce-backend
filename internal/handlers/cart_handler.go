@@ -75,7 +75,8 @@ func (h *CartHandler) authenticateUser(c *gin.Context) (string, bool) {
 			if firebaseClient == nil {
 				h.logger.Error("Firebase client not initialized, cannot auto-create user",
 					zap.String("firebase_uid", userID))
-				return userID, true // Return Firebase UID as fallback
+				// Do not fall back to Firebase UID as DB user ID
+				return "", false
 			}
 
 			firebaseUser, firebaseErr := firebaseClient.GetUser(c.Request.Context(), userID)
@@ -83,7 +84,8 @@ func (h *CartHandler) authenticateUser(c *gin.Context) (string, bool) {
 				h.logger.Error("Failed to get user from Firebase",
 					zap.String("firebase_uid", userID),
 					zap.Error(firebaseErr))
-				return userID, true // Return Firebase UID as fallback
+				// Do not fall back to Firebase UID as DB user ID
+				return "", false
 			}
 
 			// Try to find existing user by email or phone
@@ -157,6 +159,7 @@ func (h *CartHandler) authenticateUser(c *gin.Context) (string, bool) {
 
 			h.logger.Error("Failed to auto-create user in local database",
 				zap.String("firebase_uid", userID))
+			return "", false
 		}
 	}
 

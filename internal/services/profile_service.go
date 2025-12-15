@@ -74,17 +74,18 @@ func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastNam
 	baseModel.SetCreatedAt(now)
 	baseModel.SetUpdatedAt(now)
 
-	// Ensure email is not empty (required by DB schema)
-	if email == "" {
-		email = "user@example.com" // Fallback email
-	}
+	// NOTE: Do NOT force a fallback email here.
+	// The profiles table has a unique index on email (idx_profiles_email),
+	// and using a constant fallback like \"user@example.com\" causes
+	// duplicate key violations for phone-only users.
+	// It's safe to leave email empty for users who don't have one yet.
 
 	profile := &models.Profile{
 		BaseModel:            baseModel,
 		UserID:               userID,
 		FirstName:            firstName,
 		LastName:             lastName,
-		Email:                email, // Required by DB schema
+		Email:                email, // May be empty for phone users
 		IsActive:             true,
 		IsVerified:           false,
 		NewsletterSubscribed: false,
@@ -147,11 +148,6 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 			}
 		}
 
-		// Use defaults if empty
-		if firstName == "" {
-			firstName = "User"
-		}
-
 		// For email: Only use if user has email in database or Firebase provides valid email
 		// For phone users: Leave email empty - they can add it later in profile
 		if user.Email != nil && *user.Email != "" {
@@ -165,6 +161,35 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 			// User can add email later through profile update
 			email = ""
 			log.Printf("No email found for phone user %s - email will be empty, user can add it later", userID)
+		}
+
+		// Derive a nicer default name from email if name is still empty
+		if (firstName == "" || firstName == "User") && email != "" {
+			localPart := strings.SplitN(email, "@", 2)[0]
+			if localPart != "" {
+				// Simple heuristic: split on dot/underscore/hyphen and capitalize first segment
+				separators := []string{".", "_", "-"}
+				for _, sep := range separators {
+					if strings.Contains(localPart, sep) {
+						parts := strings.Split(localPart, sep)
+						if len(parts) > 0 && parts[0] != "" {
+							firstName = strings.Title(parts[0])
+							if len(parts) > 1 && parts[1] != "" {
+								lastName = strings.Title(parts[1])
+							}
+						}
+						break
+					}
+				}
+				if firstName == "" {
+					firstName = strings.Title(localPart)
+				}
+			}
+		}
+
+		// Use defaults if still empty
+		if firstName == "" {
+			firstName = "User"
 		}
 
 		// Log extracted names for debugging

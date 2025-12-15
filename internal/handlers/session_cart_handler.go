@@ -11,6 +11,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
+	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -42,26 +43,124 @@ func (h *SessionCartHandler) getCartIdentifier(c *gin.Context) (string, bool, er
 		// Check if this is a Firebase UID (they typically don't start with "USER")
 		// Internal user IDs start with "USER" prefix
 		if !strings.HasPrefix(userID, "USER") && h.userService != nil {
-			// This is likely a Firebase UID, map it to internal user ID
-			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
-			if err == nil && userResponse != nil && userResponse.Data != nil {
-				// Extract the internal user ID from the response
+			// This is likely a Firebase UID, map or auto-create internal user ID
+			ctx := c.Request.Context()
+
+			// Try direct mapping first
+			if userResponse, err := h.userService.GetUserByFirebaseUID(ctx, userID); err == nil && userResponse != nil && userResponse.Data != nil {
 				if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
-					if internalID, ok := userMap["id"].(string); ok {
-						h.logger.Info("Mapped Firebase UID to internal user ID",
+					if internalID, ok := userMap["id"].(string); ok && internalID != "" {
+						h.logger.Info("Mapped Firebase UID to internal user ID (session cart)",
 							zap.String("firebase_uid", userID),
 							zap.String("internal_id", internalID))
 						return internalID, true, nil
 					}
 				}
 			}
-			h.logger.Error("Failed to map Firebase UID to internal user ID",
-				zap.String("firebase_uid", userID),
-				zap.Error(err))
-		}
 
-		h.logger.Info("User is authenticated", zap.String("user_id", userID))
-		return userID, true, nil
+			// Fallback: try to resolve via email/phone, similar to Magic Checkout / payment handler logic
+			var existingUser map[string]interface{}
+
+			// If OptionalFirebaseAuth set firebase_email or firebase_phone in context, use them
+			var firebaseEmail, firebasePhone string
+			if emailVal, exists := c.Get("firebase_email"); exists {
+				if email, ok := emailVal.(string); ok {
+					firebaseEmail = email
+				}
+			}
+			if phoneVal, exists := c.Get("firebase_phone"); exists {
+				if phone, ok := phoneVal.(string); ok {
+					firebasePhone = phone
+				}
+			}
+
+			// Try by email first
+			if firebaseEmail != "" {
+				if emailResp, _ := h.userService.GetUserByEmail(ctx, firebaseEmail); emailResp != nil && emailResp.Success && emailResp.Data != nil {
+					if userMap, ok := emailResp.Data.(map[string]interface{}); ok {
+						existingUser = userMap
+					}
+				}
+			}
+
+			// Then by phone
+			if existingUser == nil && firebasePhone != "" {
+				if phoneResp, _ := h.userService.GetUserByPhoneNumber(ctx, firebasePhone); phoneResp != nil && phoneResp.Success && phoneResp.Data != nil {
+					if userMap, ok := phoneResp.Data.(map[string]interface{}); ok {
+						existingUser = userMap
+					}
+				}
+			}
+
+			if existingUser != nil {
+				// Link Firebase UID to existing user
+				if internalID, ok := existingUser["id"].(string); ok && internalID != "" {
+					_ = h.userService.UpdateUserFirebaseUID(ctx, internalID, userID)
+					h.logger.Info("Linked Firebase UID to existing user for session cart",
+						zap.String("firebase_uid", userID),
+						zap.String("internal_id", internalID))
+					return internalID, true, nil
+				}
+			} else {
+				// Auto-create a new user, similar to Firebase-auth flows
+				displayName := "User"
+				if firebaseEmail != "" {
+					displayName = firebaseEmail
+					if at := strings.Index(firebaseEmail, "@"); at > 0 {
+						displayName = firebaseEmail[:at]
+					}
+				}
+
+				var createResp *base.BaseResponse
+				var createErr error
+
+				if firebasePhone != "" && firebaseEmail == "" {
+					// Phone-only user
+					phoneReq := requests.PhoneSignupRequest{
+						PhoneNumber: firebasePhone,
+						Name:        displayName,
+					}
+					createResp, createErr = h.userService.CreatePhoneUser(ctx, &phoneReq)
+				} else if firebaseEmail != "" {
+					// Email/Google user
+					signupReq := requests.SignupRequest{
+						Email:    firebaseEmail,
+						Name:     displayName,
+						Password: "",
+					}
+					createResp, createErr = h.userService.CreateGoogleUser(ctx, &signupReq, userID)
+				}
+
+				if createErr == nil && createResp != nil && createResp.Success {
+					if data, ok := createResp.Data.(map[string]interface{}); ok {
+						if internalID, ok := data["id"].(string); ok && internalID != "" {
+							_ = h.userService.UpdateUserFirebaseUID(ctx, internalID, userID)
+							h.logger.Info("Auto-created user for session cart from Firebase UID",
+								zap.String("firebase_uid", userID),
+								zap.String("internal_id", internalID))
+							return internalID, true, nil
+						}
+					}
+				} else if createErr != nil {
+					h.logger.Error("Failed to auto-create user for session cart",
+						zap.String("firebase_uid", userID),
+						zap.String("email", firebaseEmail),
+						zap.String("phone", firebasePhone),
+						zap.Error(createErr))
+				}
+			}
+
+			// If everything fails, log error and TREAT AS UNAUTHENTICATED for cart purposes.
+			// We do NOT want to create carts with Firebase UID as user_id in database.
+			h.logger.Error("Failed to map or create internal user for Firebase UID in session cart - using session cart instead",
+				zap.String("firebase_uid", userID))
+
+			// Fall through to anonymous/session cart flow below
+		} else {
+			// Successfully mapped or auto-created internal user ID: return it as authenticated identifier
+			h.logger.Info("User is authenticated (session cart) with internal user ID", zap.String("user_id", userID))
+			return userID, true, nil
+		}
 	}
 
 	h.logger.Info("User is not authenticated, using session-based cart")

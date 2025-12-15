@@ -93,16 +93,22 @@ func FirebaseAuthMiddleware() gin.HandlerFunc {
 						if jsonErr := parseJSON(import_decoded, &claims); jsonErr == nil {
 							if uid, ok := claims["user_id"].(string); ok && uid != "" {
 								c.Set("firebase_uid", uid)
-								if email, ok := claims["email"].(string); ok {
+								if email, ok := claims["email"].(string); ok && email != "" {
 									c.Set("firebase_email", email)
+								}
+								if phone, ok := claims["phone_number"].(string); ok && phone != "" {
+									c.Set("firebase_phone", phone)
 								}
 								fmt.Printf("✅ Extracted UID from token despite clock skew: %s\n", uid)
 								c.Next()
 								return
 							} else if sub, ok := claims["sub"].(string); ok && sub != "" {
 								c.Set("firebase_uid", sub)
-								if email, ok := claims["email"].(string); ok {
+								if email, ok := claims["email"].(string); ok && email != "" {
 									c.Set("firebase_email", email)
+								}
+								if phone, ok := claims["phone_number"].(string); ok && phone != "" {
+									c.Set("firebase_phone", phone)
 								}
 								fmt.Printf("✅ Extracted UID (sub) from token despite clock skew: %s\n", sub)
 								c.Next()
@@ -122,7 +128,13 @@ func FirebaseAuthMiddleware() gin.HandlerFunc {
 
 		// Set user info in context
 		c.Set("firebase_uid", token.UID)
-		c.Set("firebase_email", token.Claims["email"])
+		if email, ok := token.Claims["email"].(string); ok && email != "" {
+			c.Set("firebase_email", email)
+		}
+		// Also capture phone number if available (for phone-auth users)
+		if phone, ok := token.Claims["phone_number"].(string); ok && phone != "" {
+			c.Set("firebase_phone", phone)
+		}
 		c.Next()
 	}
 }
