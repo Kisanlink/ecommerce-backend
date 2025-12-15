@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
+	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
@@ -30,6 +32,142 @@ func NewOrderHandler(orderService services.OrderServiceInterface, userService *s
 		authContext:  auth.NewAuthContext(),
 		logger:       logger,
 	}
+}
+
+// mapFirebaseUIDToInternalUserID ensures we always use the internal USER... ID for orders.
+// It mirrors the logic used in payment/cart/profile flows:
+//   1) Try GetUserByFirebaseUID
+//   2) If not found, fetch from Firebase Admin and try by email/phone
+//   3) Auto-create a local user when needed
+func (h *OrderHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebaseUID string) string {
+	if h.userService == nil || firebaseUID == "" {
+		return firebaseUID
+	}
+
+	ctx := c.Request.Context()
+
+	// 1) Direct lookup by Firebase UID
+	if userResp, err := h.userService.GetUserByFirebaseUID(ctx, firebaseUID); err == nil && userResp != nil && userResp.Success && userResp.Data != nil {
+		if userMap, ok := userResp.Data.(map[string]interface{}); ok {
+			if internalID, ok := userMap["id"].(string); ok && internalID != "" {
+				h.logger.Info("OrderHandler: mapped Firebase UID to internal user ID",
+					zap.String("firebase_uid", firebaseUID),
+					zap.String("internal_id", internalID))
+				return internalID
+			}
+		}
+	}
+
+	// 2) Enrich email/phone from Firebase Admin
+	var firebaseEmail, firebasePhone string
+	if emailVal, exists := c.Get("firebase_email"); exists {
+		if email, ok := emailVal.(string); ok {
+			firebaseEmail = email
+		}
+	}
+	if phoneVal, exists := c.Get("firebase_phone"); exists {
+		if phone, ok := phoneVal.(string); ok {
+			firebasePhone = phone
+		}
+	}
+
+	if firebaseEmail == "" || firebasePhone == "" {
+		if firebaseClient := config.GetFirebaseAuth(); firebaseClient != nil {
+			if firebaseUser, err := firebaseClient.GetUser(ctx, firebaseUID); err == nil && firebaseUser != nil {
+				if firebaseEmail == "" && firebaseUser.Email != "" {
+					firebaseEmail = firebaseUser.Email
+				}
+				if firebasePhone == "" && firebaseUser.PhoneNumber != "" {
+					firebasePhone = firebaseUser.PhoneNumber
+				}
+			} else if err != nil {
+				h.logger.Error("OrderHandler: failed to fetch user from Firebase",
+					zap.String("firebase_uid", firebaseUID),
+					zap.Error(err))
+			}
+		} else {
+			h.logger.Error("OrderHandler: Firebase client not initialized",
+				zap.String("firebase_uid", firebaseUID))
+		}
+	}
+
+	// 3) Resolve or create by phone
+	if firebasePhone != "" {
+		if byPhone, _ := h.userService.GetUserByPhoneNumber(ctx, firebasePhone); byPhone != nil && byPhone.Success && byPhone.Data != nil {
+			if userMap, ok := byPhone.Data.(map[string]interface{}); ok {
+				if internalID, ok := userMap["id"].(string); ok && internalID != "" {
+					_ = h.userService.UpdateUserFirebaseUID(ctx, internalID, firebaseUID)
+					h.logger.Info("OrderHandler: linked Firebase UID to existing phone user",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("internal_id", internalID))
+					return internalID
+				}
+			}
+		}
+	}
+
+	// 4) Resolve or create by email
+	if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") {
+		if byEmail, _ := h.userService.GetUserByEmail(ctx, firebaseEmail); byEmail != nil && byEmail.Success && byEmail.Data != nil {
+			if userMap, ok := byEmail.Data.(map[string]interface{}); ok {
+				if internalID, ok := userMap["id"].(string); ok && internalID != "" {
+					_ = h.userService.UpdateUserFirebaseUID(ctx, internalID, firebaseUID)
+					h.logger.Info("OrderHandler: linked Firebase UID to existing email user",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("internal_id", internalID))
+					return internalID
+				}
+			}
+		}
+	}
+
+	// 5) Auto-create minimal user if we have at least an email or phone
+	if firebasePhone != "" && firebaseEmail == "" {
+		// Phone-only user
+		phoneReq := requests.PhoneSignupRequest{
+			PhoneNumber: firebasePhone,
+			Name:        "User",
+		}
+		if createResp, err := h.userService.CreatePhoneUser(ctx, &phoneReq); err == nil && createResp != nil && createResp.Success {
+			if data, ok := createResp.Data.(map[string]interface{}); ok {
+				if internalID, ok := data["id"].(string); ok && internalID != "" {
+					_ = h.userService.UpdateUserFirebaseUID(ctx, internalID, firebaseUID)
+					h.logger.Info("OrderHandler: auto-created phone user from Firebase UID",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("internal_id", internalID))
+					return internalID
+				}
+			}
+		}
+	}
+
+	if firebaseEmail != "" {
+		// Email/Google user
+		name := firebaseEmail
+		if at := strings.Index(firebaseEmail, "@"); at > 0 {
+			name = firebaseEmail[:at]
+		}
+		signupReq := requests.SignupRequest{
+			Email:    firebaseEmail,
+			Name:     name,
+			Password: "",
+		}
+		if createResp, err := h.userService.CreateGoogleUser(ctx, &signupReq, firebaseUID); err == nil && createResp != nil && createResp.Success {
+			if data, ok := createResp.Data.(map[string]interface{}); ok {
+				if internalID, ok := data["id"].(string); ok && internalID != "" {
+					h.logger.Info("OrderHandler: auto-created email/Google user from Firebase UID",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("internal_id", internalID))
+					return internalID
+				}
+			}
+		}
+	}
+
+	// Fallback: return the original UID (order service will likely not find a cart for it)
+	h.logger.Warn("OrderHandler: failed to resolve Firebase UID to internal user ID; using raw UID as fallback",
+		zap.String("firebase_uid", firebaseUID))
+	return firebaseUID
 }
 
 // CreateOrder creates a new order manually (alternative to payment flow)
@@ -61,6 +199,12 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 			zap.String("user_agent", c.GetHeader("User-Agent")))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
+	}
+
+	// Ensure we are working with internal USER... ID, not raw Firebase UID,
+	// so that we hit the same cart/profile rows used everywhere else.
+	if !strings.HasPrefix(userID, "USER") {
+		userID = h.mapFirebaseUIDToInternalUserID(c, userID)
 	}
 
 	h.logger.Info("User authenticated for order creation",

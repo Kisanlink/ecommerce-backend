@@ -9,6 +9,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
@@ -41,8 +42,10 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 	if exists {
 		firebaseUID, ok := firebaseUIDValue.(string)
 		if ok && firebaseUID != "" {
-			// Look up the actual user in database by Firebase UID
-			userResponse, _ := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
+			ctx := c.Request.Context()
+
+			// 1) Direct lookup by Firebase UID
+			userResponse, _ := h.userService.GetUserByFirebaseUID(ctx, firebaseUID)
 			if userResponse != nil && userResponse.Success {
 				if userData, ok := userResponse.Data.(map[string]interface{}); ok {
 					if userID, exists := userData["id"].(string); exists && userID != "" {
@@ -53,9 +56,10 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 
 			// If user is not found in our database but Firebase auth succeeded,
 			// lazily create or link a local user record based on email/phone.
-			ctx := c.Request.Context()
+			// We try to get those from the request context first, then fall back
+			// to Firebase Admin SDK if needed.
 
-			// Try phone-based user first (for phone auth users)
+			// Collect phone/email from context (set by FirebaseAuthMiddleware / OptionalFirebaseAuth)
 			firebasePhone := ""
 			if phoneValue, exists := c.Get("firebase_phone"); exists {
 				if phone, ok := phoneValue.(string); ok {
@@ -63,6 +67,38 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 				}
 			}
 
+			firebaseEmail := ""
+			if emailValue, exists := c.Get("firebase_email"); exists {
+				if email, ok := emailValue.(string); ok {
+					firebaseEmail = email
+				}
+			}
+
+			// If email/phone are missing in context (or partially missing), try to
+			// enrich them from Firebase Admin SDK using the UID. This covers cases
+			// where the frontend authenticated directly with Firebase and did not
+			// hit our /auth endpoints first.
+			if firebaseEmail == "" || firebasePhone == "" {
+				if firebaseClient := config.GetFirebaseAuth(); firebaseClient != nil {
+					if firebaseUser, err := firebaseClient.GetUser(ctx, firebaseUID); err == nil && firebaseUser != nil {
+						if firebaseEmail == "" && firebaseUser.Email != "" {
+							firebaseEmail = firebaseUser.Email
+						}
+						if firebasePhone == "" && firebaseUser.PhoneNumber != "" {
+							firebasePhone = firebaseUser.PhoneNumber
+						}
+					} else if err != nil {
+						h.logger.Error("Failed to get user from Firebase in getUserID",
+							zap.String("firebase_uid", firebaseUID),
+							zap.Error(err))
+					}
+				} else {
+					h.logger.Error("Firebase client not initialized in getUserID",
+						zap.String("firebase_uid", firebaseUID))
+				}
+			}
+
+			// Try phone-based user first (for phone-auth users)
 			if firebasePhone != "" && h.userService != nil {
 				// See if a user already exists with this phone number
 				if respByPhone, _ := h.userService.GetUserByPhoneNumber(ctx, firebasePhone); respByPhone != nil && respByPhone.Success {
@@ -87,17 +123,15 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 							return id, nil
 						}
 					}
+				} else if err != nil {
+					h.logger.Error("Failed to auto-create phone user in getUserID",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("phone", firebasePhone),
+						zap.Error(err))
 				}
 			}
 
 			// Fallback: try email-based user (for email/password or Google users)
-			firebaseEmail := ""
-			if emailValue, exists := c.Get("firebase_email"); exists {
-				if email, ok := emailValue.(string); ok {
-					firebaseEmail = email
-				}
-			}
-
 			if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") && h.userService != nil {
 				// Check if a user already exists with this email
 				if respByEmail, _ := h.userService.GetUserByEmail(ctx, firebaseEmail); respByEmail != nil && respByEmail.Success {
@@ -128,6 +162,11 @@ func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 							return id, nil
 						}
 					}
+				} else if err != nil {
+					h.logger.Error("Failed to auto-create email/Google user in getUserID",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("email", firebaseEmail),
+						zap.Error(err))
 				}
 			}
 

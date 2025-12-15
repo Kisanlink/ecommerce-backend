@@ -9,6 +9,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
@@ -71,6 +72,31 @@ func (h *SessionCartHandler) getCartIdentifier(c *gin.Context) (string, bool, er
 			if phoneVal, exists := c.Get("firebase_phone"); exists {
 				if phone, ok := phoneVal.(string); ok {
 					firebasePhone = phone
+				}
+			}
+
+			// If email/phone are missing or incomplete, try to fetch them from Firebase directly.
+			// This handles flows where the frontend authenticated with Firebase but our middleware
+			// did not populate all claims (or where phone/email are only available via Admin SDK).
+			if firebaseEmail == "" || firebasePhone == "" {
+				firebaseClient := config.GetFirebaseAuth()
+				if firebaseClient != nil {
+					firebaseUser, firebaseErr := firebaseClient.GetUser(ctx, userID)
+					if firebaseErr != nil {
+						h.logger.Error("Failed to get user from Firebase for session cart mapping",
+							zap.String("firebase_uid", userID),
+							zap.Error(firebaseErr))
+					} else if firebaseUser != nil {
+						if firebaseEmail == "" && firebaseUser.Email != "" {
+							firebaseEmail = firebaseUser.Email
+						}
+						if firebasePhone == "" && firebaseUser.PhoneNumber != "" {
+							firebasePhone = firebaseUser.PhoneNumber
+						}
+					}
+				} else {
+					h.logger.Error("Firebase client not initialized for session cart mapping",
+						zap.String("firebase_uid", userID))
 				}
 			}
 
