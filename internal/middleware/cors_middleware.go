@@ -159,46 +159,153 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 
 		// Handle preflight requests
 		if c.Request.Method == "OPTIONS" {
+			// Get requested headers from preflight request
+			requestedHeaders := c.Request.Header.Get("Access-Control-Request-Headers")
+			requestedMethod := c.Request.Header.Get("Access-Control-Request-Method")
+
 			if config.Debug && logger != nil {
 				logger.Info("CORS: Handling preflight request",
 					zap.String("origin", origin),
 					zap.String("host", c.Request.Host),
-					zap.String("method", c.Request.Header.Get("Access-Control-Request-Method")),
-					zap.String("headers", c.Request.Header.Get("Access-Control-Request-Headers")),
+					zap.String("requested_method", requestedMethod),
+					zap.String("requested_headers", requestedHeaders),
 					zap.Bool("origin_allowed", originAllowed),
 				)
 			}
 
-			// For preflight, always set CORS headers if origin is allowed or if it's a localhost/ngrok request
+			// For preflight, always check for localhost or ngrok if origin wasn't initially allowed
 			if !originAllowed {
-				// Check again for localhost or ngrok if not already allowed
 				host := c.Request.Host
 				if strings.HasPrefix(host, "localhost:") || strings.HasPrefix(host, "127.0.0.1:") {
 					originAllowed = true
-					allowedOrigin = "*"
-					c.Header("Access-Control-Allow-Origin", allowedOrigin)
-				} else if strings.Contains(host, "ngrok") {
-					originAllowed = true
-					if origin != "" && origin != "null" {
+					// If credentials are allowed, use the specific origin instead of wildcard
+					if config.AllowCredentials && origin != "" && origin != "null" {
 						allowedOrigin = origin
 					} else {
 						allowedOrigin = "*"
 					}
-					c.Header("Access-Control-Allow-Origin", allowedOrigin)
+				} else if strings.Contains(host, "ngrok") {
+					originAllowed = true
+					if origin != "" && origin != "null" {
+						allowedOrigin = origin
+					} else if !config.AllowCredentials {
+						allowedOrigin = "*"
+					} else {
+						// Can't use wildcard with credentials, use host-based origin
+						allowedOrigin = fmt.Sprintf("http://%s", host)
+					}
+				} else if strings.Contains(origin, "razorpay.com") {
+					originAllowed = true
+					allowedOrigin = origin
 				}
 			}
 
-			// Always set other CORS headers for preflight even if origin check failed
-			// This helps with debugging
+			// Set origin header for preflight (required for CORS)
+			if originAllowed {
+				// If credentials are enabled, never use wildcard - always use specific origin
+				if config.AllowCredentials {
+					if origin != "" && origin != "null" {
+						c.Header("Access-Control-Allow-Origin", origin)
+						c.Header("Vary", "Origin")
+					} else if allowedOrigin != "*" {
+						c.Header("Access-Control-Allow-Origin", allowedOrigin)
+						c.Header("Vary", "Origin")
+					} else {
+						// Can't use wildcard with credentials - reject or use a fallback
+						if config.Debug && logger != nil {
+							logger.Warn("CORS: Cannot use wildcard origin with credentials enabled",
+								zap.String("origin", origin),
+							)
+						}
+						// Still allow the request but use the origin if available
+						if origin != "" && origin != "null" {
+							c.Header("Access-Control-Allow-Origin", origin)
+							c.Header("Vary", "Origin")
+						} else {
+							c.Header("Access-Control-Allow-Origin", allowedOrigin)
+						}
+					}
+				} else {
+					// No credentials, can use wildcard
+					c.Header("Access-Control-Allow-Origin", allowedOrigin)
+					if allowedOrigin == "*" {
+						// Don't set Vary header when using wildcard
+					} else {
+						c.Header("Vary", "Origin")
+					}
+				}
+			} else if origin != "" && origin != "null" {
+				// For preflight, allow the origin even if not in list (helps with debugging)
+				// But log a warning
+				if config.Debug && logger != nil {
+					logger.Warn("CORS: Allowing preflight for non-whitelisted origin",
+						zap.String("origin", origin),
+						zap.Strings("allowed_origins", config.AllowedOrigins),
+					)
+				}
+				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Vary", "Origin")
+				originAllowed = true // Mark as allowed for this preflight
+			}
+
+			// Validate and set allowed headers
+			// If specific headers are requested, validate they're all allowed
+			headersToAllow := config.AllowedHeaders
+			if requestedHeaders != "" {
+				// Parse requested headers (can be comma-separated)
+				requestedHeaderList := strings.Split(requestedHeaders, ",")
+				requestedHeaderMap := make(map[string]bool)
+				for _, h := range requestedHeaderList {
+					normalized := strings.TrimSpace(strings.ToLower(h))
+					requestedHeaderMap[normalized] = true
+				}
+
+				// Check if all requested headers are in allowed list
+				allAllowed := true
+				for reqHeader := range requestedHeaderMap {
+					found := false
+					for _, allowedHeader := range config.AllowedHeaders {
+						if strings.ToLower(strings.TrimSpace(allowedHeader)) == reqHeader {
+							found = true
+							break
+						}
+					}
+					if !found {
+						allAllowed = false
+						if config.Debug && logger != nil {
+							logger.Warn("CORS: Requested header not in allowed list",
+								zap.String("requested_header", reqHeader),
+								zap.Strings("allowed_headers", config.AllowedHeaders),
+							)
+						}
+					}
+				}
+
+				// If all requested headers are allowed, use all allowed headers
+				// Otherwise, still return all allowed headers (browser will reject if needed)
+				if !allAllowed && config.Debug && logger != nil {
+					logger.Warn("CORS: Some requested headers not allowed, but returning all allowed headers",
+						zap.String("requested_headers", requestedHeaders),
+					)
+				}
+			}
+
+			// Set allowed methods
 			if len(config.AllowedMethods) > 0 {
 				c.Header("Access-Control-Allow-Methods", strings.Join(config.AllowedMethods, ", "))
 			}
-			if len(config.AllowedHeaders) > 0 {
-				c.Header("Access-Control-Allow-Headers", strings.Join(config.AllowedHeaders, ", "))
+
+			// Set allowed headers (always return all allowed headers)
+			if len(headersToAllow) > 0 {
+				c.Header("Access-Control-Allow-Headers", strings.Join(headersToAllow, ", "))
 			}
+
+			// Set credentials header
 			if config.AllowCredentials && originAllowed {
 				c.Header("Access-Control-Allow-Credentials", "true")
 			}
+
+			// Set max age
 			if config.MaxAge > 0 {
 				c.Header("Access-Control-Max-Age", fmt.Sprintf("%d", config.MaxAge))
 			}
@@ -280,9 +387,25 @@ func GetCORSHeadersFromEnv() []string {
 			"X-API-Key",
 			"ngrok-skip-browser-warning",
 			"X-Session-ID",
+			// Additional headers for migration and common API usage
+			"X-Request-ID",
+			"X-API-Version",
+			"X-User-ID",
+			"X-Cart-ID",
+			// Standard headers that browsers may send
+			"Referer",
+			"User-Agent",
+			"DNT",
+			"X-Forwarded-For",
+			"X-Forwarded-Proto",
 		}
 	}
-	return strings.Split(headers, ",")
+	// Split and trim headers
+	headerList := strings.Split(headers, ",")
+	for i, h := range headerList {
+		headerList[i] = strings.TrimSpace(h)
+	}
+	return headerList
 }
 
 // GetCORSExposedHeadersFromEnv reads exposed headers from environment variables
