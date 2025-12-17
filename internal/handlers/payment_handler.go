@@ -86,13 +86,14 @@ type VerifyPaymentRequest struct {
 
 // VerifyPaymentResponse represents payment verification response
 type VerifyPaymentResponse struct {
-	Success     bool   `json:"success"`
-	Message     string `json:"message"`
-	PaymentID   string `json:"payment_id,omitempty"`
-	OrderID     string `json:"order_id,omitempty"`
-	AWBNumber   string `json:"awb_number,omitempty"`
-	TrackingURL string `json:"tracking_url,omitempty"`
-	InvoiceURL  string `json:"invoice_url,omitempty"`
+	Success          bool   `json:"success"`
+	Message          string `json:"message"`
+	PaymentID        string `json:"payment_id,omitempty"`
+	OrderID          string `json:"order_id,omitempty"`
+	AWBNumber        string `json:"awb_number,omitempty"`
+	TrackingURL      string `json:"tracking_url,omitempty"`
+	InvoiceURL       string `json:"invoice_url,omitempty"`
+	WhatsAppMessage  string `json:"whatsapp_message,omitempty"`
 }
 
 // CheckoutPage serves a minimal Razorpay Checkout HTML to initiate payment
@@ -1855,7 +1856,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 						zap.String("waybill", awbNumber),
 						zap.String("tracking_url", trackingURL))
 
-					// Note: WhatsApp notification will be sent later with payment_order_confirm_2 template
+					// Note: WhatsApp notification will be sent later with order_management_amrti template
 					h.logger.Info("Shipment created successfully, WhatsApp notification will be sent with payment confirmation",
 						zap.String("request_id", requestID),
 						zap.String("order_id", order.ID),
@@ -1886,6 +1887,9 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		}
 
 		// Send WhatsApp notifications - get updated order with AWB number
+		// Initialize response message (will be updated with WhatsApp status)
+		responseMessage := "Payment verified and order created successfully."
+
 		if h.whatsappService != nil && h.whatsappService.IsEnabled() {
 			// Get the latest order data with AWB number from database
 			updatedOrder, getOrderErr := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
@@ -1905,45 +1909,94 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					zap.String("delhivery_status", updatedOrder.DelhiveryStatus))
 			}
 
+			// Extract customer phone number with detailed logging
+			h.logger.Info("Extracting customer phone number from order for WhatsApp notification",
+				zap.String("request_id", requestID),
+				zap.String("order_id", updatedOrder.ID),
+				zap.String("order_customer_phone", updatedOrder.CustomerPhone),
+				zap.String("order_customer_phone_alt", updatedOrder.CustomerPhoneAlt),
+				zap.Bool("has_customer_object", updatedOrder.Customer != nil),
+				zap.String("customer_object_phone", func() string {
+					if updatedOrder.Customer != nil {
+						return updatedOrder.Customer.Phone
+					}
+					return ""
+				}()),
+				zap.String("customer_object_phone_alt", func() string {
+					if updatedOrder.Customer != nil {
+						return updatedOrder.Customer.PhoneAlt
+					}
+					return ""
+				}()))
+
 			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(updatedOrder)
+			
+			// Log the extracted phone number
+			h.logger.Info("Customer phone number extracted for WhatsApp",
+				zap.String("request_id", requestID),
+				zap.String("order_id", updatedOrder.ID),
+				zap.String("extracted_phone", customerPhone),
+				zap.Bool("phone_found", customerPhone != ""))
+
 			if customerPhone != "" {
-				// Send payment confirmation notification using payment_order_confirm_2 template with dynamic tracking
-				h.logger.Info("Sending WhatsApp payment order confirmation notification with dynamic tracking",
+				// Send payment confirmation notification using order_management_amrti template
+				h.logger.Info("Attempting to send WhatsApp payment order confirmation notification",
 					zap.String("request_id", requestID),
 					zap.String("order_id", updatedOrder.ID),
 					zap.String("customer_phone", customerPhone),
-					zap.String("awb_number", updatedOrder.DelhiveryWaybill))
+					zap.String("customer_phone_formatted", h.whatsappService.FormatPhoneNumber(customerPhone)),
+					zap.String("awb_number", updatedOrder.DelhiveryWaybill),
+					zap.String("order_number", updatedOrder.ID),
+					zap.String("tracking_url", updatedOrder.TrackingURL))
 
 				if err := h.whatsappService.SendPaymentOrderConfirmMessage(c.Request.Context(), updatedOrder, customerPhone); err != nil {
 					h.logger.Error("Failed to send WhatsApp payment order confirmation message",
 						zap.String("request_id", requestID),
 						zap.String("order_id", updatedOrder.ID),
 						zap.String("customer_phone", customerPhone),
+						zap.String("customer_phone_formatted", h.whatsappService.FormatPhoneNumber(customerPhone)),
 						zap.String("awb_number", updatedOrder.DelhiveryWaybill),
+						zap.String("error_details", err.Error()),
 						zap.Error(err))
+					responseMessage += " WhatsApp message failed to send."
 				} else {
-					h.logger.Info("WhatsApp payment order confirmation message sent successfully with dynamic tracking",
+					h.logger.Info("WhatsApp payment order confirmation message sent successfully",
 						zap.String("request_id", requestID),
 						zap.String("order_id", updatedOrder.ID),
 						zap.String("customer_phone", customerPhone),
+						zap.String("customer_phone_formatted", h.whatsappService.FormatPhoneNumber(customerPhone)),
 						zap.String("awb_number", updatedOrder.DelhiveryWaybill),
-						zap.String("tracking_url", updatedOrder.TrackingURL))
+						zap.String("tracking_url", updatedOrder.TrackingURL),
+						zap.String("template_name", "order_management_amrti"))
+					responseMessage += " WhatsApp message triggered successfully."
 				}
 
-				// Note: Only one WhatsApp message is sent using payment_order_confirm_2 template
-				// This includes both payment confirmation and tracking information
-				h.logger.Info("Single WhatsApp message sent with payment confirmation and tracking info",
+				// Note: WhatsApp message is sent using order_management_amrti template
+				// This includes customer name, order number, and tracking information
+				h.logger.Info("WhatsApp notification process completed",
 					zap.String("request_id", requestID),
-					zap.String("order_id", updatedOrder.ID))
+					zap.String("order_id", updatedOrder.ID),
+					zap.String("customer_phone", customerPhone))
 			} else {
-				h.logger.Warn("No customer phone number found for WhatsApp notifications",
+				h.logger.Warn("No customer phone number found for WhatsApp notifications - checking order details",
 					zap.String("request_id", requestID),
-					zap.String("order_id", updatedOrder.ID))
+					zap.String("order_id", updatedOrder.ID),
+					zap.String("order_customer_phone", updatedOrder.CustomerPhone),
+					zap.String("order_customer_phone_alt", updatedOrder.CustomerPhoneAlt),
+					zap.Bool("has_customer_object", updatedOrder.Customer != nil),
+					zap.String("customer_id", func() string {
+						if updatedOrder.Customer != nil {
+							return updatedOrder.Customer.ID
+						}
+						return ""
+					}()))
+				responseMessage += " WhatsApp message skipped - no phone number found."
 			}
 		} else {
 			h.logger.Info("WhatsApp service not available or disabled",
 				zap.String("request_id", requestID),
 				zap.String("order_id", order.ID))
+			responseMessage = "Payment verified and order created successfully. WhatsApp service disabled."
 		}
 
 		// Clear user cart
@@ -1954,23 +2007,33 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("user_id", userID))
 		}
 
-		// Prepare response
-		responseMessage := "Payment verified and order created successfully."
-
 		// Get updated order to include tracking details and invoice URL if available
 		updatedOrder, _ := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
 		if updatedOrder != nil {
 			order = updatedOrder
 		}
 
+		// Extract WhatsApp message status from responseMessage
+		whatsAppStatus := ""
+		if strings.Contains(responseMessage, "WhatsApp message triggered successfully") {
+			whatsAppStatus = "WhatsApp message triggered successfully"
+		} else if strings.Contains(responseMessage, "WhatsApp message failed to send") {
+			whatsAppStatus = "WhatsApp message failed to send"
+		} else if strings.Contains(responseMessage, "WhatsApp message skipped") {
+			whatsAppStatus = "WhatsApp message skipped - no phone number found"
+		} else if h.whatsappService == nil || !h.whatsappService.IsEnabled() {
+			whatsAppStatus = "WhatsApp service disabled"
+		}
+
 		response = VerifyPaymentResponse{
-			Success:     true,
-			Message:     responseMessage,
-			PaymentID:   req.PaymentID,
-			OrderID:     order.ID,
-			AWBNumber:   order.DelhiveryWaybill,
-			TrackingURL: order.TrackingURL,
-			InvoiceURL:  order.InvoiceURL,
+			Success:         true,
+			Message:         responseMessage,
+			PaymentID:       req.PaymentID,
+			OrderID:         order.ID,
+			AWBNumber:       order.DelhiveryWaybill,
+			TrackingURL:     order.TrackingURL,
+			InvoiceURL:      order.InvoiceURL,
+			WhatsAppMessage: whatsAppStatus,
 		}
 
 		// Comprehensive success logging
