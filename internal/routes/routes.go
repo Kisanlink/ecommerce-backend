@@ -26,7 +26,14 @@ import (
 // RegisterRoutes registers all application routes by delegating to specific route modules
 func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
 	// Health check endpoint (CORS is handled by global middleware)
+	// HEAD request - returns status only (no body) - preferred method
+	r.HEAD("/health", func(c *gin.Context) {
+		logger.Info("Health check: Backend is healthy and live", zap.String("method", "HEAD"))
+		c.Status(200)
+	})
+	// GET request - returns JSON response - kept for backward compatibility
 	r.GET("/health", func(c *gin.Context) {
+		logger.Info("Health check: Backend is healthy and live", zap.String("method", "GET"))
 		c.JSON(200, gin.H{
 			"status":  "ok",
 			"service": "ecommerce-backend",
