@@ -1891,8 +1891,8 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		responseMessage := "Payment verified and order created successfully."
 
 		if h.whatsappService != nil && h.whatsappService.IsEnabled() {
-			// Get the latest order data with AWB number from database
-			updatedOrder, getOrderErr := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
+			// Get the latest order data with AWB number and order items from database
+			updatedOrder, _, getOrderErr := h.orderService.GetOrderDetails(c.Request.Context(), order.ID)
 			if getOrderErr != nil {
 				h.logger.Warn("Failed to get updated order for WhatsApp notification",
 					zap.String("request_id", requestID),
@@ -1900,13 +1900,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					zap.Error(getOrderErr))
 				updatedOrder = order // Use original order as fallback
 			} else {
-				// Log the AWB status for debugging
+				// Log the AWB status and order items for debugging
 				h.logger.Info("Retrieved updated order for WhatsApp notification",
 					zap.String("request_id", requestID),
 					zap.String("order_id", updatedOrder.ID),
 					zap.String("awb_number", updatedOrder.DelhiveryWaybill),
 					zap.String("tracking_url", updatedOrder.TrackingURL),
-					zap.String("delhivery_status", updatedOrder.DelhiveryStatus))
+					zap.String("delhivery_status", updatedOrder.DelhiveryStatus),
+					zap.Int("order_items_count", len(updatedOrder.OrderItems)))
 			}
 
 			// Extract customer phone number with detailed logging
@@ -1967,12 +1968,13 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 						zap.String("customer_phone_formatted", h.whatsappService.FormatPhoneNumber(customerPhone)),
 						zap.String("awb_number", updatedOrder.DelhiveryWaybill),
 						zap.String("tracking_url", updatedOrder.TrackingURL),
-						zap.String("template_name", "order_management_amrti"))
+						zap.String("template_name", "mani_test1"),
+						zap.Int("order_items_count", len(updatedOrder.OrderItems)))
 					responseMessage += " WhatsApp message triggered successfully."
 				}
 
-				// Note: WhatsApp message is sent using order_management_amrti template
-				// This includes customer name, order number, and tracking information
+				// Note: WhatsApp message is sent using mani_test1 template
+				// This includes customer name, order number, tracking URL, and order items
 				h.logger.Info("WhatsApp notification process completed",
 					zap.String("request_id", requestID),
 					zap.String("order_id", updatedOrder.ID),
