@@ -35,14 +35,12 @@ WORKDIR /app
 # Copy the binary from builder stage
 COPY --from=builder /app/main .
 
-# Copy runtime configuration needed at startup (.env + firebase service account)
-COPY --from=builder /app/.env .env
-RUN mkdir -p internal/config && \
-    chown -R appuser:appgroup /app/internal
-COPY --from=builder /app/internal/config/firebase_service_account.json internal/config/firebase_service_account.json
+# Copy entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
 
 # Change ownership to non-root user
-RUN chown -R appuser:appgroup /app
+RUN chown -R appuser:appgroup /app && \
+    chmod +x /app/entrypoint.sh
 
 # Switch to non-root user
 USER appuser
@@ -54,5 +52,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Run the application
-CMD ["./main"]
+# Run the application via entrypoint script
+# The entrypoint script will create the Firebase JSON file from the secret and then start the app
+CMD ["./entrypoint.sh"]

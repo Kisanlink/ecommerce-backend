@@ -223,6 +223,8 @@ docs/generated/
 
 # Temporary documentation
 *.tmp.md
+DEPLOYMENT_GUIDE.md
+PARAMETERS_REFERENCE.md
 
 # =============================================================================
 # Security & Keys
