@@ -31,6 +31,10 @@ type Product struct {
 	ReviewCount int     `json:"review_count" gorm:"default:0"` // Number of reviews
 	Rating      float64 `json:"rating" gorm:"default:0"`       // Average rating
 	IsActive    bool    `json:"is_active" gorm:"default:true"`
+
+	// Normalized relationships
+	Images    []*Image   `json:"images,omitempty" gorm:"foreignKey:ProductID;references:ID"`
+	Inventory *Inventory `json:"inventory,omitempty" gorm:"foreignKey:ProductID;references:ID"`
 }
 
 // NewProduct creates a new product with base model

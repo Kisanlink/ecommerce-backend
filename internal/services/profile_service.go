@@ -51,7 +51,7 @@ func (s *ProfileService) initializeIDGenerator() {
 }
 
 // createProfileWithTimestampID creates a new profile with timestamp-based ID to avoid collisions
-func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastName string) *models.Profile {
+func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastName, email string) *models.Profile {
 	// Generate timestamp-based ID to avoid collisions
 	timestampID, err := hash.GenerateRandomIDWithPattern("PROF", hash.Small, "timestamp")
 	if err != nil {
@@ -74,11 +74,18 @@ func (s *ProfileService) createProfileWithTimestampID(userID, firstName, lastNam
 	baseModel.SetCreatedAt(now)
 	baseModel.SetUpdatedAt(now)
 
+	// NOTE: Do NOT force a fallback email here.
+	// The profiles table has a unique index on email (idx_profiles_email),
+	// and using a constant fallback like \"user@example.com\" causes
+	// duplicate key violations for phone-only users.
+	// It's safe to leave email empty for users who don't have one yet.
+
 	profile := &models.Profile{
 		BaseModel:            baseModel,
 		UserID:               userID,
 		FirstName:            firstName,
 		LastName:             lastName,
+		Email:                email, // May be empty for phone users
 		IsActive:             true,
 		IsVerified:           false,
 		NewsletterSubscribed: false,
@@ -113,13 +120,22 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 		log.Printf("User not found in users table, using Firebase data")
 		firstName = "User"
 		lastName = ""
-		email = firebaseEmail
-		if email == "" {
-			email = "user@example.com" // Fallback
+		// Check if firebaseEmail is actually an email (contains @) or a phone number
+		if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") {
+			email = firebaseEmail
+		} else {
+			// No email available (phone-only user) - leave empty
+			// User can add email later through profile update
+			email = ""
+			log.Printf("No email found for phone user - email will be empty, user can add it later")
 		}
 	} else {
 		// Log user data for debugging
-		log.Printf("Found user in database - ID: %s, Name: %s, Email: %s, Role: %s", user.GetID(), user.Name, user.Email, user.Role)
+		var emailStr string
+		if user.Email != nil {
+			emailStr = *user.Email
+		}
+		log.Printf("Found user in database - ID: %s, Name: %s, Email: %s, Role: %s", user.GetID(), user.Name, emailStr, user.Role)
 
 		// Extract names from display name
 		if user.Name != "" {
@@ -132,15 +148,48 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 			}
 		}
 
-		// Use defaults if empty
-		if firstName == "" {
-			firstName = "User"
+		// For email: Only use if user has email in database or Firebase provides valid email
+		// For phone users: Leave email empty - they can add it later in profile
+		if user.Email != nil && *user.Email != "" {
+			// User has email in database - use it
+			email = *user.Email
+		} else if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") {
+			// Firebase email is provided and looks like an email (contains @)
+			email = firebaseEmail
+		} else {
+			// No email available (phone-only user) - leave empty
+			// User can add email later through profile update
+			email = ""
+			log.Printf("No email found for phone user %s - email will be empty, user can add it later", userID)
 		}
 
-		// Use Firebase email if available, otherwise fall back to users table email
-		email = firebaseEmail
-		if email == "" {
-			email = user.Email
+		// Derive a nicer default name from email if name is still empty
+		if (firstName == "" || firstName == "User") && email != "" {
+			localPart := strings.SplitN(email, "@", 2)[0]
+			if localPart != "" {
+				// Simple heuristic: split on dot/underscore/hyphen and capitalize first segment
+				separators := []string{".", "_", "-"}
+				for _, sep := range separators {
+					if strings.Contains(localPart, sep) {
+						parts := strings.Split(localPart, sep)
+						if len(parts) > 0 && parts[0] != "" {
+							firstName = strings.Title(parts[0])
+							if len(parts) > 1 && parts[1] != "" {
+								lastName = strings.Title(parts[1])
+							}
+						}
+						break
+					}
+				}
+				if firstName == "" {
+					firstName = strings.Title(localPart)
+				}
+			}
+		}
+
+		// Use defaults if still empty
+		if firstName == "" {
+			firstName = "User"
 		}
 
 		// Log extracted names for debugging
@@ -148,7 +197,7 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 	}
 
 	// Create profile with information using timestamp-based ID to avoid collisions
-	profile := s.createProfileWithTimestampID(userID, firstName, lastName)
+	profile := s.createProfileWithTimestampID(userID, firstName, lastName, email)
 
 	// Set additional fields if user exists
 	if err == nil {
@@ -172,7 +221,7 @@ func (s *ProfileService) CreateAutoProfile(ctx context.Context, userID string, f
 		if strings.Contains(errorStr, "duplicate key value violates unique constraint") &&
 			strings.Contains(errorStr, "profiles_pkey") {
 			// Generate a new ID and try again with timestamp-based ID
-			profile = s.createProfileWithTimestampID(userID, firstName, lastName)
+			profile = s.createProfileWithTimestampID(userID, firstName, lastName, email)
 			// Re-set additional fields if user exists
 			if err == nil {
 				// Note: Phone and Email are now only in users table, not profiles
@@ -231,8 +280,8 @@ func (s *ProfileService) UpdateProfile(ctx context.Context, req *requests.Update
 	return profile, nil
 }
 
-// UpdateProfilePictureWithS3 updates profile with S3 image details
-func (s *ProfileService) UpdateProfilePictureWithS3(ctx context.Context, userID, imageURL, s3Key string) (*models.Profile, error) {
+// UpdateProfilePictureWithS3 updates profile with R2 image details (kept method name for backward compatibility)
+func (s *ProfileService) UpdateProfilePictureWithS3(ctx context.Context, userID, imageURL, r2Key string) (*models.Profile, error) {
 	log.Printf("Updating profile picture for user ID: %s", userID)
 
 	// Get existing profile
@@ -241,9 +290,9 @@ func (s *ProfileService) UpdateProfilePictureWithS3(ctx context.Context, userID,
 		return nil, fmt.Errorf("failed to get existing profile: %w", err)
 	}
 
-	// Update S3 fields
+	// Update R2 fields
 	profile.ProfilePictureURL = imageURL
-	profile.ProfilePictureS3Key = s3Key
+	profile.ProfilePictureR2Key = r2Key
 
 	// Save updated profile
 	if err := s.repoManager.ProfileRepository.UpdateProfile(ctx, profile); err != nil {

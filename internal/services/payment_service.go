@@ -20,6 +20,7 @@ import (
 // PaymentServiceInterface defines the contract for payment operations
 type PaymentServiceInterface interface {
 	CreateOrder(ctx context.Context, userID string, amount float64, currency string, cartID string, notes map[string]interface{}) (*RazorpayOrder, error)
+	CreateOrderWithOptions(ctx context.Context, orderOptions map[string]interface{}) (*RazorpayOrder, error)
 	VerifyPayment(ctx context.Context, orderID, paymentID, signature string) (bool, error)
 	ProcessWebhook(ctx context.Context, body []byte, signature string) error
 	GetPaymentStatus(ctx context.Context, paymentID string) (*RazorpayPayment, error)
@@ -46,18 +47,50 @@ func NewPaymentService(logger *zap.Logger) PaymentServiceInterface {
 
 // RazorpayOrder represents Razorpay order response
 type RazorpayOrder struct {
-	ID         string                 `json:"id"`
-	Entity     string                 `json:"entity"`
-	Amount     int                    `json:"amount"`      // Amount in paisa
-	AmountPaid int                    `json:"amount_paid"` // Amount paid in paisa
-	AmountDue  int                    `json:"amount_due"`  // Amount due in paisa
-	Currency   string                 `json:"currency"`
-	Receipt    string                 `json:"receipt"`
-	OfferID    string                 `json:"offer_id,omitempty"`
-	Status     string                 `json:"status"`
-	Attempts   int                    `json:"attempts"`
-	Notes      map[string]interface{} `json:"notes"`
-	CreatedAt  int64                  `json:"created_at"`
+	ID               string                 `json:"id"`
+	Entity           string                 `json:"entity"`
+	Amount           int                    `json:"amount"`      // Amount in paisa
+	AmountPaid       int                    `json:"amount_paid"` // Amount paid in paisa
+	AmountDue        int                    `json:"amount_due"`  // Amount due in paisa
+	Currency         string                 `json:"currency"`
+	Receipt          string                 `json:"receipt"`
+	OfferID          string                 `json:"offer_id,omitempty"`
+	Status           string                 `json:"status"`
+	Attempts         int                    `json:"attempts"`
+	Notes            map[string]interface{} `json:"notes"`
+	CreatedAt        int64                  `json:"created_at"`
+	Description      string                 `json:"description,omitempty"`
+	Checkout         map[string]interface{} `json:"checkout,omitempty"`
+	Promotions       []map[string]interface{} `json:"promotions,omitempty"`
+	CODFee           int                    `json:"cod_fee,omitempty"`
+	ShippingFee      int                    `json:"shipping_fee,omitempty"`
+	LineItemsTotal   int                    `json:"line_items_total,omitempty"`
+	TaxDetails       map[string]interface{} `json:"tax_details,omitempty"`
+	// Customer details from Magic Checkout
+	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
+}
+
+// CustomerDetails represents customer details from Magic Checkout
+type CustomerDetails struct {
+	Email           string          `json:"email"`
+	Contact         string          `json:"contact"`
+	BillingAddress  *MagicAddress   `json:"billing_address,omitempty"`
+	ShippingAddress *MagicAddress   `json:"shipping_address,omitempty"`
+}
+
+// MagicAddress represents address from Magic Checkout
+type MagicAddress struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Name     string `json:"name"`
+	Contact  string `json:"contact,omitempty"`
+	Line1    string `json:"line1"`
+	Line2    string `json:"line2,omitempty"`
+	City     string `json:"city"`
+	State    string `json:"state"`
+	Country  string `json:"country"`
+	Zipcode  string `json:"zipcode"`
+	Tag      string `json:"tag,omitempty"`
 }
 
 // RazorpayPayment represents Razorpay payment response
@@ -87,6 +120,8 @@ type RazorpayPayment struct {
 	ErrorCode        string                 `json:"error_code,omitempty"`
 	ErrorDescription string                 `json:"error_description,omitempty"`
 	CreatedAt        int64                  `json:"created_at"`
+	// Magic Checkout fields - customer details with shipping address
+	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
 }
 
 // RazorpayWebhookPayload represents webhook event payload
@@ -183,6 +218,128 @@ func (s *PaymentService) CreateOrder(ctx context.Context, userID string, amount 
 	return &order, nil
 }
 
+// CreateOrderWithOptions creates a Razorpay order with custom options including line_items for Magic Checkout
+func (s *PaymentService) CreateOrderWithOptions(ctx context.Context, orderOptions map[string]interface{}) (*RazorpayOrder, error) {
+	// Validate required fields
+	amount, ok := orderOptions["amount"].(int)
+	if !ok {
+		return nil, fmt.Errorf("amount must be an integer (in paise)")
+	}
+	if amount <= 0 {
+		return nil, fmt.Errorf("invalid amount %d; must be greater than 0", amount)
+	}
+
+	currency, ok := orderOptions["currency"].(string)
+	if !ok || currency == "" {
+		currency = "INR"
+	}
+
+	if s.config.KeyID == "" || s.config.KeySecret == "" {
+		return nil, fmt.Errorf("razorpay credentials missing: KeyID or KeySecret not configured")
+	}
+
+	// Generate receipt if not provided
+	receipt, ok := orderOptions["receipt"].(string)
+	if !ok || receipt == "" {
+		receipt = s.makeCompactReceipt(fmt.Sprintf("order_%d", time.Now().Unix()))
+	}
+
+	// Prepare order data
+	orderData := map[string]interface{}{
+		"amount":   amount,
+		"currency": currency,
+		"receipt":  receipt,
+	}
+
+	// Add notes if provided
+	if notes, ok := orderOptions["notes"].(map[string]interface{}); ok {
+		orderData["notes"] = notes
+	}
+
+	// Add line_items_total and line_items for Magic Checkout (if provided)
+	var lineItemsCount int
+	if lineItemsTotal, ok := orderOptions["line_items_total"].(int); ok {
+		orderData["line_items_total"] = lineItemsTotal
+	}
+	if lineItems, ok := orderOptions["line_items"].([]interface{}); ok && len(lineItems) > 0 {
+		orderData["line_items"] = lineItems
+		lineItemsCount = len(lineItems)
+	}
+
+	jsonData, err := json.Marshal(orderData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal order data: %w", err)
+	}
+
+	// Validate credentials before making request
+	if s.config.KeyID == "" || s.config.KeySecret == "" {
+		keySecretDisplay := ""
+		if s.config.KeySecret != "" {
+			keySecretDisplay = "***"
+		}
+		s.logger.Error("Razorpay credentials missing in CreateOrderWithOptions",
+			zap.String("key_id", s.config.KeyID),
+			zap.Bool("has_key_secret", s.config.KeySecret != ""),
+			zap.String("base_url", s.config.BaseURL))
+		return nil, fmt.Errorf("razorpay credentials missing: KeyID=%q, KeySecret=%q (check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET env vars)",
+			s.config.KeyID,
+			keySecretDisplay)
+	}
+
+	// Log key prefix for debugging (first 10 chars only)
+	keyIDPrefix := s.config.KeyID
+	if len(keyIDPrefix) > 10 {
+		keyIDPrefix = keyIDPrefix[:10] + "..."
+	}
+	s.logger.Info("Creating Razorpay order with options",
+		zap.String("key_id_prefix", keyIDPrefix),
+		zap.String("base_url", s.config.BaseURL),
+		zap.Int("amount", amount),
+		zap.Bool("has_line_items", lineItemsCount > 0))
+
+	endpoint := fmt.Sprintf("%s/orders", s.config.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.SetBasicAuth(s.config.KeyID, s.config.KeySecret)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.logger.Error("Razorpay order creation failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to create order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("Razorpay API error",
+			zap.Int("status", resp.StatusCode),
+			zap.String("body", string(body)),
+			zap.String("key_id_prefix", keyIDPrefix))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var order RazorpayOrder
+	if err := json.Unmarshal(body, &order); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	s.logger.Info("Razorpay order created successfully with options",
+		zap.String("order_id", order.ID),
+		zap.Int("amount", order.Amount),
+		zap.String("receipt", receipt),
+		zap.Bool("has_line_items", lineItemsCount > 0))
+
+	return &order, nil
+}
+
 // VerifyPayment verifies Razorpay payment signature with enhanced debugging
 func (s *PaymentService) VerifyPayment(ctx context.Context, orderID, paymentID, signature string) (bool, error) {
 	// Validate inputs
@@ -253,9 +410,36 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Log raw response for debugging Magic Checkout customer_details
+	s.logger.Info("Razorpay GetPaymentStatus RAW response",
+		zap.String("payment_id", paymentID),
+		zap.String("raw_response", string(body)))
+
 	var payment RazorpayPayment
 	if err := json.Unmarshal(body, &payment); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Log customer details if present (Magic Checkout payments)
+	if payment.CustomerDetails != nil {
+		s.logger.Info("Payment has customer_details (Magic Checkout)",
+			zap.String("payment_id", paymentID),
+			zap.String("email", payment.CustomerDetails.Email),
+			zap.String("contact", payment.CustomerDetails.Contact),
+			zap.Bool("has_shipping_address", payment.CustomerDetails.ShippingAddress != nil))
+
+		if payment.CustomerDetails.ShippingAddress != nil {
+			addr := payment.CustomerDetails.ShippingAddress
+			s.logger.Info("Magic Checkout shipping address from payment",
+				zap.String("payment_id", paymentID),
+				zap.String("name", addr.Name),
+				zap.String("line1", addr.Line1),
+				zap.String("line2", addr.Line2),
+				zap.String("city", addr.City),
+				zap.String("state", addr.State),
+				zap.String("zipcode", addr.Zipcode),
+				zap.String("country", addr.Country))
+		}
 	}
 
 	return &payment, nil
@@ -263,6 +447,8 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 
 // GetOrder fetches a Razorpay order by ID
 func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*RazorpayOrder, error) {
+	// Note: Razorpay Orders API only supports expand for: payments, payments.card, virtual_account, transfers, offers
+	// customer_details is NOT supported as expand parameter but IS returned for Magic Checkout orders
 	endpoint := fmt.Sprintf("%s/orders/%s", s.config.BaseURL, orderID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -288,10 +474,47 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Log raw response for debugging Magic Checkout customer_details
+	s.logger.Info("Razorpay GetOrder RAW response",
+		zap.String("order_id", orderID),
+		zap.String("raw_response", string(body)))
+
 	var order RazorpayOrder
 	if err := json.Unmarshal(body, &order); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	// Log customer details if present (Magic Checkout orders)
+	if order.CustomerDetails != nil {
+		s.logger.Info("Razorpay order has customer_details (Magic Checkout)",
+			zap.String("order_id", orderID),
+			zap.String("email", order.CustomerDetails.Email),
+			zap.String("contact", order.CustomerDetails.Contact),
+			zap.Bool("has_shipping_address", order.CustomerDetails.ShippingAddress != nil))
+
+		if order.CustomerDetails.ShippingAddress != nil {
+			addr := order.CustomerDetails.ShippingAddress
+			s.logger.Info("Magic Checkout shipping address from order",
+				zap.String("order_id", orderID),
+				zap.String("name", addr.Name),
+				zap.String("line1", addr.Line1),
+				zap.String("line2", addr.Line2),
+				zap.String("city", addr.City),
+				zap.String("state", addr.State),
+				zap.String("zipcode", addr.Zipcode),
+				zap.String("country", addr.Country))
+		}
+	} else {
+		s.logger.Info("Razorpay order does NOT have customer_details",
+			zap.String("order_id", orderID),
+			zap.String("status", order.Status))
+	}
+
+	s.logger.Info("Razorpay order fetched",
+		zap.String("order_id", orderID),
+		zap.String("status", order.Status),
+		zap.Int("amount", order.Amount))
+
 	return &order, nil
 }
 

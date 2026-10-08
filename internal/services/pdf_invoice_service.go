@@ -10,15 +10,15 @@ import (
 
 // PDFInvoiceService handles PDF invoice generation
 type PDFInvoiceService struct {
-	s3Service       *S3Service
+	r2Service       *R2Service // Cloudflare R2 storage
 	templateService *PDFTemplateService
 	logger          *zap.Logger
 }
 
-// NewPDFInvoiceService creates a new PDF invoice service
-func NewPDFInvoiceService(s3Service *S3Service, logger *zap.Logger) *PDFInvoiceService {
+// NewPDFInvoiceService creates a new PDF invoice service with R2 storage
+func NewPDFInvoiceService(r2Service *R2Service, logger *zap.Logger) *PDFInvoiceService {
 	return &PDFInvoiceService{
-		s3Service:       s3Service,
+		r2Service:       r2Service,
 		templateService: NewPDFTemplateService(),
 		logger:          logger,
 	}
@@ -28,11 +28,12 @@ func NewPDFInvoiceService(s3Service *S3Service, logger *zap.Logger) *PDFInvoiceS
 
 // Note: InvoiceItem struct is now defined in pdf_template_service.go
 
-// GeneratePDFInvoice creates a PDF invoice and uploads it to S3
+// GeneratePDFInvoice creates a PDF invoice and uploads it to R2
 func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *models.Order, items []*models.OrderItem, productRepo ProductRepositoryInterface) (string, error) {
-	if s.s3Service == nil {
-		s.logger.Error("S3 service is nil", zap.String("order_id", order.ID))
-		return "", fmt.Errorf("s3 service unavailable")
+	// Check if R2 storage service is available
+	if s.r2Service == nil || !s.r2Service.IsConfigured() {
+		s.logger.Error("R2 storage service not available", zap.String("order_id", order.ID))
+		return "", fmt.Errorf("storage service unavailable")
 	}
 
 	s.logger.Info("Starting PDF invoice generation",
@@ -55,20 +56,19 @@ func (s *PDFInvoiceService) GeneratePDFInvoice(ctx context.Context, order *model
 		zap.String("order_id", order.ID),
 		zap.Int("pdf_size_bytes", len(pdfBytes)))
 
-	// Upload to S3
+	// Upload to R2
 	key := fmt.Sprintf("invoices/%s.pdf", order.ID)
-	url, err := s.s3Service.UploadFile(ctx, key, pdfBytes, "application/pdf")
+	url, err := s.r2Service.UploadFile(ctx, key, pdfBytes, "application/pdf")
 	if err != nil {
-		s.logger.Error("Failed to upload PDF to S3",
+		s.logger.Error("Failed to upload PDF to R2",
 			zap.String("order_id", order.ID),
-			zap.String("s3_key", key),
+			zap.String("r2_key", key),
 			zap.Error(err))
-		return "", fmt.Errorf("failed to upload PDF invoice: %w", err)
+		return "", fmt.Errorf("failed to upload PDF invoice to R2: %w", err)
 	}
-
-	s.logger.Info("PDF invoice generated and uploaded successfully",
+	s.logger.Info("PDF invoice uploaded to R2 successfully",
 		zap.String("order_id", order.ID),
-		zap.String("s3_key", key),
+		zap.String("r2_key", key),
 		zap.String("invoice_url", url))
 
 	return url, nil

@@ -41,6 +41,15 @@ func (r *UserRepository) GetUserByFirebaseUID(ctx context.Context, firebaseUID s
 	return r.FindOne(ctx, filter)
 }
 
+// GetUserByPhoneNumber retrieves a user by phone number using filters
+func (r *UserRepository) GetUserByPhoneNumber(ctx context.Context, phoneNumber string) (*models.User, error) {
+	filter := base.NewFilterBuilder().
+		Where("phone_number", base.OpEqual, phoneNumber).
+		Build()
+
+	return r.FindOne(ctx, filter)
+}
+
 // GetByFirebaseUID is an alias to GetUserByFirebaseUID for guard usage
 func (r *UserRepository) GetByFirebaseUID(ctx context.Context, firebaseUID string) (*models.User, error) {
 	return r.GetUserByFirebaseUID(ctx, firebaseUID)

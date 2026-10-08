@@ -18,10 +18,9 @@ func RegisterProfileRoutes(r *gin.RouterGroup, repoManager *repositories.Reposit
 	profiles.Use(middleware.FirebaseAuthMiddleware())
 	{
 		// Core functionality routes
-		profiles.POST("/auto", profileHandler.CreateAutoProfile)          // Auto-create profile from user info
 		profiles.GET("", profileHandler.GetProfile)                       // Get user's profile
 		profiles.PUT("", profileHandler.UpdateProfile)                    // Update profile
-		profiles.POST("/upload-image", profileHandler.UploadProfileImage) // Upload profile image to S3
-		profiles.GET("/image-url", profileHandler.GetProfileImageURL)     // Get profile image presigned URL
+		profiles.POST("/upload-image", profileHandler.UploadProfileImage) // Upload profile image to R2
+		profiles.GET("/image-url", profileHandler.GetProfileImageURL)     // Get profile image public URL
 	}
 }

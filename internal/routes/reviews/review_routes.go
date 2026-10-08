@@ -3,14 +3,14 @@ package reviews
 import (
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
-	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
-// RegisterReviewRoutes registers all review related routes
-func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager, repoManager *repositories.RepositoryManager, logger *zap.Logger) {
+// RegisterReviewRoutes registers public and user review routes
+// Admin review routes are registered separately via admin.RegisterAdminReviewRoutes
+func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceManager, logger *zap.Logger) {
 	// Initialize logger if not provided
 	if logger == nil {
 		logger, _ = zap.NewProduction()
@@ -53,17 +53,6 @@ func RegisterReviewRoutes(r *gin.RouterGroup, serviceManager *services.ServiceMa
 	{
 		// Public user review routes (can view any user's reviews)
 		users.GET("/:id/reviews", reviewHandler.GetUserReviews) // Get all reviews by a user
-	}
-
-	// Admin review routes (admin access required)
-	admin := r.Group("/admin/reviews")
-	admin.Use(middleware.FirebaseAuthMiddleware())
-	admin.Use(middleware.AdminGuard(repoManager))
-	{
-		admin.GET("", reviewHandler.AdminListReviews)                         // Get all reviews with admin filtering
-		admin.GET("/flagged", reviewHandler.AdminGetFlaggedReviews)           // Get flagged reviews
-		admin.PUT("/:reviewId", reviewHandler.AdminManageReview)              // Manage review (flag, unflag, approve, reject, force_delete, hard_delete)
-		admin.DELETE("/flagged", reviewHandler.AdminBulkDeleteFlaggedReviews) // Bulk delete all flagged reviews
 	}
 
 	logger.Info("Review routes registered successfully")

@@ -78,6 +78,14 @@ db-setup: migrate
 dev-setup: deps db-setup
 	@echo "✅ Development environment setup completed!"
 
+# Neon migration helper
+neon-migrate:
+	@echo "🔁 Migrating Postgres data into Neon..."
+	@echo "Usage: make neon-migrate SOURCE_DSN='...' TARGET_DSN='...'"
+	@test -n "$(SOURCE_DSN)" || (echo "SOURCE_DSN is required" && exit 1)
+	@test -n "$(TARGET_DSN)" || (echo "TARGET_DSN is required" && exit 1)
+	./scripts/neon-migrate.sh "$(SOURCE_DSN)" "$(TARGET_DSN)" "$(MODE)"
+
 # Swagger documentation targets
 
 # Generate Swagger documentation

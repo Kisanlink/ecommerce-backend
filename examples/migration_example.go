@@ -13,7 +13,7 @@ func migrationExample() {
 	fmt.Println("=== Example 1: Basic Migration ===")
 
 	// Set environment variable (in real usage, this would be in .env file)
-	os.Setenv("POSTGRES_DSN", "host=localhost user=postgres password=password dbname=ecommerce port=5432 sslmode=disable")
+	os.Setenv("POSTGRES_DSN", "postgresql://neondb_owner:password@ep-sample-neon-host.ap-south-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
 
 	// Connect and run migrations
 	if err := database.ConnectAndMigrate(); err != nil {

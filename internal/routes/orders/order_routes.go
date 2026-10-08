@@ -9,10 +9,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// RegisterOrderRoutes registers all order related routes
+// RegisterOrderRoutes registers user order routes (authenticated users)
+// Admin order routes are registered separately via admin.RegisterAdminOrderRoutes
 func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
-	// Create order handler with dependencies
-	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, logger)
+	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, serviceManager.UserService, logger)
 
 	// Protected order routes (requires authentication)
 	orders := r.Group("/orders")
@@ -29,19 +29,5 @@ func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.Repositor
 	debug := r.Group("/debug")
 	{
 		debug.GET("/order/:id", orderHandler.GetOrderDetailsDebug) // Debug order details
-	}
-
-	// Future route groups (commented until handlers are implemented)
-	// Admin order routes
-	adminOrders := r.Group("/admin/orders")
-	adminOrders.Use(middleware.FirebaseAuthMiddleware())
-	{
-		adminOrders.GET("", orderHandler.GetAllOrders)                 // GET /api/v1/admin/orders
-		adminOrders.GET("/:id", orderHandler.GetOrderDetailsAdmin)     // GET /api/v1/admin/orders/:id
-		adminOrders.PUT("/:id/status", orderHandler.UpdateOrderStatus) // PUT /api/v1/admin/orders/:id/status
-		adminOrders.PUT("/:id/payment", orderHandler.UpdatePayment)    // PUT /api/v1/admin/orders/:id/payment
-		adminOrders.PUT("/:id/shipment", orderHandler.UpdateShipment)  // PUT /api/v1/admin/orders/:id/shipment
-		adminOrders.GET("/stats", orderHandler.GetOrderStats)          // GET /api/v1/admin/orders/stats
-		adminOrders.GET("/export", orderHandler.ExportOrders)          // GET /api/v1/admin/orders/export
 	}
 }

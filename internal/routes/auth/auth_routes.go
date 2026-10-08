@@ -10,8 +10,8 @@ import (
 
 // RegisterAuthRoutes registers all authentication related routes
 func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
-	// Firebase Auth Handler with UserService dependency injection
-	firebaseAuth := handlers.NewFirebaseAuthHandler(serviceManager.UserService)
+	// Firebase Auth Handler with UserService and ProfileService dependency injection
+	firebaseAuth := handlers.NewFirebaseAuthHandler(serviceManager.UserService, serviceManager.ProfileService)
 
 	// Firebase Authentication routes
 	auth := r.Group("/auth")
@@ -26,6 +26,14 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		// Google OAuth endpoints
 		auth.GET("/google", firebaseAuth.GetGoogleAuthURL) // Get Google OAuth info
 		auth.POST("/google", firebaseAuth.GoogleSignIn)    // Google Sign-In with ID token
+
+		// Phone Authentication endpoints
+		phone := auth.Group("/phone")
+		{
+			phone.POST("/send-code", firebaseAuth.SendPhoneVerificationCode) // Send SMS verification code
+			phone.POST("/verify-code", firebaseAuth.VerifyPhoneCode)         // Verify SMS code and authenticate
+			phone.POST("/signup", firebaseAuth.PhoneSignup)                  // Alternative phone signup
+		}
 
 		// Protected auth endpoints
 		protected := auth.Group("/")

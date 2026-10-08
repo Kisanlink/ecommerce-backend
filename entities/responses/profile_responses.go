@@ -28,7 +28,7 @@ type ProfileResponse struct {
 
 	// Profile Image
 	ProfilePictureURL   string `json:"profile_picture_url"`
-	ProfilePictureS3Key string `json:"profile_picture_s3_key"`
+	ProfilePictureR2Key string `json:"profile_picture_r2_key"`
 	Bio                 string `json:"bio"`
 
 	// Preferences
@@ -72,7 +72,7 @@ type ProfileStatsResponse struct {
 // ToProfileResponse converts a Profile model to ProfileResponse
 func ToProfileResponse(profile *models.Profile) ProfileResponse {
 	return ProfileResponse{
-		ID:                   profile.ID,
+		ID:                   profile.GetID(),
 		UserID:               profile.UserID,
 		FirstName:            profile.FirstName,
 		LastName:             profile.LastName,
@@ -88,14 +88,14 @@ func ToProfileResponse(profile *models.Profile) ProfileResponse {
 		FullAddress:          profile.GetFullAddress(),
 		IsAddressComplete:    profile.IsAddressComplete(),
 		ProfilePictureURL:    profile.ProfilePictureURL,
-		ProfilePictureS3Key:  profile.ProfilePictureS3Key,
+		ProfilePictureR2Key:  profile.ProfilePictureR2Key,
 		Bio:                  profile.Bio,
 		NewsletterSubscribed: profile.NewsletterSubscribed,
 		PreferredLanguage:    profile.PreferredLanguage,
 		IsActive:             profile.IsActive,
 		IsVerified:           profile.IsVerified,
-		CreatedAt:            profile.CreatedAt,
-		UpdatedAt:            profile.UpdatedAt,
+		CreatedAt:            profile.GetCreatedAt(),
+		UpdatedAt:            profile.GetUpdatedAt(),
 	}
 }
 
@@ -113,6 +113,6 @@ func ToProfileUpdateResponse(profile *models.Profile, message string) ProfileUpd
 	return ProfileUpdateResponse{
 		Profile:   ToProfileResponse(profile),
 		Message:   message,
-		UpdatedAt: profile.UpdatedAt,
+		UpdatedAt: profile.GetUpdatedAt(),
 	}
 }

@@ -3,26 +3,27 @@ package models
 import (
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
+	"github.com/lib/pq"
 )
 
 // Recipe represents a recipe in the system
 type Recipe struct {
 	*base.BaseModel `gorm:"embedded"`
-	RecipeID        string            `json:"recipe_id" dynamodb:"recipee_id"` // Map to DynamoDB's recipee_id field
-	Name            string            `json:"name" dynamodb:"name"`
-	Category        string            `json:"category" dynamodb:"category"`
-	Rating          float64           `json:"rating" dynamodb:"rating"`
-	Reviews         int               `json:"reviews" dynamodb:"reviews"`
-	Description     string            `json:"description" dynamodb:"description"`
-	DemoDescription string            `json:"demo_description" dynamodb:"demo_description"`
-	PrepTime        string            `json:"prep_time" dynamodb:"prep_time"`
-	Servings        int               `json:"servings" dynamodb:"servings"`
-	Difficulty      string            `json:"difficulty" dynamodb:"difficulty"`
-	Image           string            `json:"image" dynamodb:"image"` // Recipe image URL from S3
-	Ingredients     []string          `json:"ingredients" dynamodb:"ingredients"`
-	Instructions    []string          `json:"instructions" dynamodb:"instructions"`
-	NutritionFacts  map[string]string `json:"nutrition_facts" dynamodb:"nutrition_facts"`
-	ProTips         []string          `json:"pro_tips" dynamodb:"pro_tips"`
+	RecipeID        string            `json:"recipe_id" gorm:"type:varchar(64);uniqueIndex"`
+	Name            string            `json:"name"`
+	Category        string            `json:"category"`
+	Rating          float64           `json:"rating" gorm:"default:0"`
+	Reviews         int               `json:"reviews" gorm:"default:0"`
+	Description     string            `json:"description" gorm:"type:text"`
+	DemoDescription string            `json:"demo_description" gorm:"type:text"`
+	PrepTime        string            `json:"prep_time"`
+	Servings        int               `json:"servings"`
+	Difficulty      string            `json:"difficulty"`
+	Image           string            `json:"image"` // Recipe image URL from S3
+	Ingredients     pq.StringArray    `json:"ingredients" gorm:"type:text[]"`
+	Instructions    pq.StringArray    `json:"instructions" gorm:"type:text[]"`
+	NutritionFacts  map[string]string `json:"nutrition_facts" gorm:"type:jsonb;serializer:json"`
+	ProTips         pq.StringArray    `json:"pro_tips" gorm:"type:text[]"`
 }
 
 // NewRecipe creates a new recipe with base model

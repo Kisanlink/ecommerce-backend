@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Magic Checkout Test</title>
+    <style>
+        body { font-family: Arial; padding: 20px; max-width: 600px; margin: auto; }
+        textarea { width: 100%; height: 80px; margin: 10px 0; }
+        input { width: 100%; padding: 8px; margin: 5px 0; }
+        button { background: #528FF0; color: white; padding: 15px 30px; border: none; cursor: pointer; font-size: 16px; margin: 10px 0; }
+        button:disabled { background: #ccc; }
+        #log { background: #000; color: #0f0; padding: 10px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <h2>Magic Checkout Test</h2>
+
+    <label>ID Token:</label>
+    <textarea id="token" placeholder="Paste your Firebase ID token here..."></textarea>
+
+    <label>API URL:</label>
+    <input id="api" value="http://localhost:8080/api/v1">
+
+    <label>Razorpay Key:</label>
+    <input id="key" value="rzp_test_RbZdqWTb0nVG4u">
+
+    <button id="btn" onclick="createOrder()">Create Order & Open Magic Checkout</button>
+
+    <h4>Log:</h4>
+    <div id="log"></div>
+
+    <script src="https://checkout.razorpay.com/v1/magic-checkout.js"></script>
+    <script>
+        function log(msg) {
+            document.getElementById('log').innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}\n` + document.getElementById('log').innerHTML;
+            console.log(msg);
+        }
+
+        async function createOrder() {
+            const token = document.getElementById('token').value.trim();
+            const api = document.getElementById('api').value.trim();
+            const key = document.getElementById('key').value.trim();
+            const btn = document.getElementById('btn');
+
+            if (!token) { log('ERROR: Enter token'); return; }
+
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            try {
+                log('Creating order...');
+
+                const res = await fetch(`${api}/magic-checkout/create-order`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({})
+                });
+
+                const data = await res.json();
+                log('Response: ' + JSON.stringify(data));
+
+                if (!res.ok || !data.success) {
+                    throw new Error(data.message || data.error || 'Failed');
+                }
+
+                log('Order ID: ' + data.data.razorpay_order_id);
+                log('Amount: Rs.' + (data.data.amount/100));
+
+                // Open Magic Checkout
+                const rzp = new Razorpay({
+                    key: key,
+                    one_click_checkout: true,
+                    name: "Test Store",
+                    order_id: data.data.razorpay_order_id,
+                    amount: data.data.amount,
+                    currency: "INR",
+                    handler: function(response) {
+                        log('SUCCESS! Payment ID: ' + response.razorpay_payment_id);
+                        verifyPayment(response, token, api);
+                    },
+                    modal: { ondismiss: () => { log('Dismissed'); resetBtn(); } }
+                });
+
+                rzp.on('payment.failed', (r) => { log('FAILED: ' + r.error.description); resetBtn(); });
+                rzp.open();
+                log('Magic Checkout opened');
+
+            } catch (e) {
+                log('ERROR: ' + e.message);
+                resetBtn();
+            }
+        }
+
+        async function verifyPayment(r, token, api) {
+            try {
+                log('Verifying...');
+                const res = await fetch(`${api}/payments/verify`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({
+                        razorpay_payment_id: r.razorpay_payment_id,
+                        razorpay_order_id: r.razorpay_order_id,
+                        razorpay_signature: r.razorpay_signature
+                    })
+                });
+                const data = await res.json();
+                log('Verify: ' + JSON.stringify(data));
+            } catch (e) { log('Verify error: ' + e.message); }
+            resetBtn();
+        }
+
+        function resetBtn() {
+            document.getElementById('btn').disabled = false;
+            document.getElementById('btn').textContent = 'Create Order & Open Magic Checkout';
+        }
+
+        log('Ready');
+    </script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:razorpay.com)",
+      "Bash(go build:*)",
+      "WebFetch(domain:developers.cloudflare.com)",
+      "Bash(go doc:*)",
+      "Bash(go get:*)",
+      "WebSearch",
+      "Bash(go run:*)",
+      "Bash(del test-build.exe)",
+      "Bash(cat:*)",
+      "Bash(del \"D:\\amrti1\\ecommerce-backend\\test-build.exe\")",
+      "Bash(find:*)",
+      "Bash(xargs -I {} sh -c 'echo \"\"=== {} ===\"\" && grep -n \"\"^\\s*//.*func\\|^\\s*//.*type\\|^/\\*.*\\*/\"\" {} 2>/dev/null | head -5')",
+      "Bash(cmd /c \"del test-build.exe\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

@@ -13,14 +13,14 @@ import (
 // UserRecipeHandler handles user recipe-related HTTP requests
 type UserRecipeHandler struct {
 	repoManager *repositories.RepositoryManager
-	s3Service   *services.S3Service
+	r2Service   *services.R2Service
 }
 
 // NewUserRecipeHandler creates a new user recipe handler
-func NewUserRecipeHandler(repoManager *repositories.RepositoryManager, s3Service *services.S3Service) *UserRecipeHandler {
+func NewUserRecipeHandler(repoManager *repositories.RepositoryManager, r2Service *services.R2Service) *UserRecipeHandler {
 	return &UserRecipeHandler{
 		repoManager: repoManager,
-		s3Service:   s3Service,
+		r2Service:   r2Service,
 	}
 }
 
@@ -139,7 +139,7 @@ func (h *UserRecipeHandler) GetUserSubmittedRecipes(c *gin.Context) {
 
 // UploadRecipeImage handles POST /api/v1/recipes/images/upload
 // @Summary Upload recipe image
-// @Description Upload an image for a recipe and get the S3 URL
+// @Description Upload an image for a recipe and get the R2 URL
 // @Tags User Recipes
 // @Accept multipart/form-data
 // @Produce json
@@ -182,8 +182,17 @@ func (h *UserRecipeHandler) UploadRecipeImage(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Upload to S3
-	s3Key, err := h.s3Service.UploadRecipeImage(ctx, userIDStr, file, header)
+	// Check if R2 service is available
+	if h.r2Service == nil || !h.r2Service.IsConfigured() {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "R2 service not available",
+			"details": "R2 storage service is not configured",
+		})
+		return
+	}
+
+	// Upload to R2
+	r2Key, err := h.r2Service.UploadRecipeImage(ctx, userIDStr, file, header)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to upload image",
@@ -192,8 +201,8 @@ func (h *UserRecipeHandler) UploadRecipeImage(c *gin.Context) {
 		return
 	}
 
-	// Generate presigned URL for the uploaded image
-	imageURL, err := h.s3Service.GetRecipeImageURL(ctx, s3Key, 24*time.Hour)
+	// Generate public URL for the uploaded image
+	imageURL, err := h.r2Service.GetRecipeImageURL(ctx, r2Key, 24*time.Hour)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to generate image URL",
@@ -209,7 +218,8 @@ func (h *UserRecipeHandler) UploadRecipeImage(c *gin.Context) {
 		"message":   "Image uploaded successfully",
 		"image_id":  imageID,
 		"image_url": imageURL,
-		"s3_key":    s3Key,
+		"s3_key":    r2Key, // Keep s3_key for backward compatibility
+		"r2_key":    r2Key,
 		"filename":  header.Filename,
 		"size":      header.Size,
 		"type":      contentType,
@@ -218,7 +228,7 @@ func (h *UserRecipeHandler) UploadRecipeImage(c *gin.Context) {
 
 // DeleteRecipeImage handles DELETE /api/v1/recipes/images/{s3_key}
 // @Summary Delete recipe image
-// @Description Delete an uploaded recipe image from S3
+// @Description Delete an uploaded recipe image from R2
 // @Tags User Recipes
 // @Produce json
 // @Param s3_key path string true "S3 key of the image to delete"
@@ -235,23 +245,32 @@ func (h *UserRecipeHandler) DeleteRecipeImage(c *gin.Context) {
 		return
 	}
 
-	s3Key := c.Param("s3_key")
-	if s3Key == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "S3 key is required"})
+	r2Key := c.Param("s3_key") // Parameter name kept as s3_key for backward compatibility
+	if r2Key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "R2 key is required"})
 		return
 	}
 
-	// Basic security check - ensure the S3 key belongs to the user
+	// Basic security check - ensure the R2 key belongs to the user
 	userIDStr := userID.(string)
-	if !contains(s3Key, userIDStr) {
+	if !contains(r2Key, userIDStr) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You can only delete your own images"})
+		return
+	}
+
+	// Check if R2 service is available
+	if h.r2Service == nil || !h.r2Service.IsConfigured() {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "R2 service not available",
+			"details": "R2 storage service is not configured",
+		})
 		return
 	}
 
 	ctx := c.Request.Context()
 
-	// Delete from S3
-	err := h.s3Service.DeleteRecipeImage(ctx, s3Key)
+	// Delete from R2
+	err := h.r2Service.DeleteRecipeImage(ctx, r2Key)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to delete image",
@@ -262,7 +281,8 @@ func (h *UserRecipeHandler) DeleteRecipeImage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Image deleted successfully",
-		"s3_key":  s3Key,
+		"s3_key":  r2Key, // Keep s3_key for backward compatibility
+		"r2_key":  r2Key,
 	})
 }
 

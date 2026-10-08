@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
@@ -58,26 +59,58 @@ func (r *CouponRepository) GetByID(ctx context.Context, id string, coupon *model
 	return coupon, nil
 }
 
-// GetByCode retrieves a coupon by code
+// GetByCode retrieves a coupon by code (case-insensitive)
 func (r *CouponRepository) GetByCode(ctx context.Context, code string, coupon *models.Coupon) (*models.Coupon, error) {
-	// Use filter to find coupon by code
-	filter := base.NewFilterBuilder().
-		Where("code", base.OpEqual, code).
-		Build()
+	// Normalize code - trim whitespace
+	normalizedCode := strings.TrimSpace(code)
 
-	coupons, err := r.BaseFilterableRepository.Find(ctx, filter)
+	if normalizedCode == "" {
+		return nil, fmt.Errorf("coupon code cannot be empty")
+	}
+
+	// Get direct database access for case-insensitive query using ILIKE
+	pgManager, ok := r.dbManager.(*db.PostgresManager)
+	if !ok {
+		// Fallback to case-sensitive search if not PostgresManager
+		r.logger.Warn("Using case-sensitive coupon lookup (not PostgresManager)")
+		filter := base.NewFilterBuilder().
+			Where("code", base.OpEqual, normalizedCode).
+			Build()
+
+		coupons, err := r.BaseFilterableRepository.Find(ctx, filter)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get coupon: %w", err)
+		}
+		if len(coupons) == 0 {
+			return nil, fmt.Errorf("coupon not found: %s", code)
+		}
+		*coupon = *coupons[0]
+		return coupon, nil
+	}
+
+	// Use ILIKE for case-insensitive matching (PostgreSQL)
+	gormDB, err := pgManager.GetDB(ctx, true) // read-only
 	if err != nil {
-		r.logger.Error("Failed to get coupon by code",
+		r.logger.Error("Failed to get database connection",
 			zap.String("code", code),
 			zap.Error(err))
-		return nil, fmt.Errorf("failed to get coupon: %w", err)
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
 	}
 
-	if len(coupons) == 0 {
-		return nil, fmt.Errorf("coupon not found")
+	var result models.Coupon
+	err = gormDB.WithContext(ctx).
+		Where("code ILIKE ?", normalizedCode).
+		First(&result).Error
+
+	if err != nil {
+		r.logger.Warn("Coupon not found",
+			zap.String("code", code),
+			zap.String("normalized_code", normalizedCode),
+			zap.Error(err))
+		return nil, fmt.Errorf("coupon not found: %s", code)
 	}
 
-	*coupon = *coupons[0]
+	*coupon = result
 	return coupon, nil
 }
 

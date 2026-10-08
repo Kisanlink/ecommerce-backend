@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/gin-gonic/gin"
@@ -17,7 +19,8 @@ import (
 // ProfileHandler handles profile-related HTTP requests
 type ProfileHandler struct {
 	profileService *services.ProfileService
-	s3Service      *services.S3Service
+	userService    *services.UserService
+	r2Service      *services.R2Service
 	logger         *zap.Logger
 }
 
@@ -26,7 +29,8 @@ func NewProfileHandler(serviceManager *services.ServiceManager) *ProfileHandler 
 	logger, _ := zap.NewProduction()
 	return &ProfileHandler{
 		profileService: serviceManager.ProfileService,
-		s3Service:      serviceManager.S3Service,
+		userService:    serviceManager.UserService,
+		r2Service:      serviceManager.R2Service,
 		logger:         logger,
 	}
 }
@@ -34,13 +38,146 @@ func NewProfileHandler(serviceManager *services.ServiceManager) *ProfileHandler 
 // getUserID extracts and validates user ID from context
 func (h *ProfileHandler) getUserID(c *gin.Context) (string, error) {
 	// Try firebase_uid first (set by FirebaseAuthMiddleware)
-	userIDValue, exists := c.Get("firebase_uid")
-	if !exists {
-		// Fallback to user_id (set by AuthMiddleware)
-		userIDValue, exists = c.Get("user_id")
-		if !exists {
-			return "", fmt.Errorf("user not authenticated")
+	firebaseUIDValue, exists := c.Get("firebase_uid")
+	if exists {
+		firebaseUID, ok := firebaseUIDValue.(string)
+		if ok && firebaseUID != "" {
+			ctx := c.Request.Context()
+
+			// 1) Direct lookup by Firebase UID
+			userResponse, _ := h.userService.GetUserByFirebaseUID(ctx, firebaseUID)
+			if userResponse != nil && userResponse.Success {
+				if userData, ok := userResponse.Data.(map[string]interface{}); ok {
+					if userID, exists := userData["id"].(string); exists && userID != "" {
+						return userID, nil
+					}
+				}
+			}
+
+			// If user is not found in our database but Firebase auth succeeded,
+			// lazily create or link a local user record based on email/phone.
+			// We try to get those from the request context first, then fall back
+			// to Firebase Admin SDK if needed.
+
+			// Collect phone/email from context (set by FirebaseAuthMiddleware / OptionalFirebaseAuth)
+			firebasePhone := ""
+			if phoneValue, exists := c.Get("firebase_phone"); exists {
+				if phone, ok := phoneValue.(string); ok {
+					firebasePhone = phone
+				}
+			}
+
+			firebaseEmail := ""
+			if emailValue, exists := c.Get("firebase_email"); exists {
+				if email, ok := emailValue.(string); ok {
+					firebaseEmail = email
+				}
+			}
+
+			// If email/phone are missing in context (or partially missing), try to
+			// enrich them from Firebase Admin SDK using the UID. This covers cases
+			// where the frontend authenticated directly with Firebase and did not
+			// hit our /auth endpoints first.
+			if firebaseEmail == "" || firebasePhone == "" {
+				if firebaseClient := config.GetFirebaseAuth(); firebaseClient != nil {
+					if firebaseUser, err := firebaseClient.GetUser(ctx, firebaseUID); err == nil && firebaseUser != nil {
+						if firebaseEmail == "" && firebaseUser.Email != "" {
+							firebaseEmail = firebaseUser.Email
+						}
+						if firebasePhone == "" && firebaseUser.PhoneNumber != "" {
+							firebasePhone = firebaseUser.PhoneNumber
+						}
+					} else if err != nil {
+						h.logger.Error("Failed to get user from Firebase in getUserID",
+							zap.String("firebase_uid", firebaseUID),
+							zap.Error(err))
+					}
+				} else {
+					h.logger.Error("Firebase client not initialized in getUserID",
+						zap.String("firebase_uid", firebaseUID))
+				}
+			}
+
+			// Try phone-based user first (for phone-auth users)
+			if firebasePhone != "" && h.userService != nil {
+				// See if a user already exists with this phone number
+				if respByPhone, _ := h.userService.GetUserByPhoneNumber(ctx, firebasePhone); respByPhone != nil && respByPhone.Success {
+					if data, ok := respByPhone.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							// Ensure Firebase UID is linked
+							_ = h.userService.UpdateUserFirebaseUID(ctx, id, firebaseUID)
+							return id, nil
+						}
+					}
+				}
+
+				// Create a new phone-only user and link Firebase UID
+				phoneReq := requests.PhoneSignupRequest{
+					PhoneNumber: firebasePhone,
+					Name:        "User",
+				}
+				if createResp, err := h.userService.CreatePhoneUser(ctx, &phoneReq); err == nil && createResp != nil && createResp.Success {
+					if data, ok := createResp.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							_ = h.userService.UpdateUserFirebaseUID(ctx, id, firebaseUID)
+							return id, nil
+						}
+					}
+				} else if err != nil {
+					h.logger.Error("Failed to auto-create phone user in getUserID",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("phone", firebasePhone),
+						zap.Error(err))
+				}
+			}
+
+			// Fallback: try email-based user (for email/password or Google users)
+			if firebaseEmail != "" && strings.Contains(firebaseEmail, "@") && h.userService != nil {
+				// Check if a user already exists with this email
+				if respByEmail, _ := h.userService.GetUserByEmail(ctx, firebaseEmail); respByEmail != nil && respByEmail.Success {
+					if data, ok := respByEmail.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							// Ensure Firebase UID is linked
+							_ = h.userService.UpdateUserFirebaseUID(ctx, id, firebaseUID)
+							return id, nil
+						}
+					}
+				}
+
+				// Create a new Firebase/Google-style user without password
+				name := firebaseEmail
+				if at := strings.Index(firebaseEmail, "@"); at > 0 {
+					name = firebaseEmail[:at]
+				}
+
+				signupReq := requests.SignupRequest{
+					Email:    firebaseEmail,
+					Name:     name,
+					Password: "",
+				}
+
+				if createResp, err := h.userService.CreateGoogleUser(ctx, &signupReq, firebaseUID); err == nil && createResp != nil && createResp.Success {
+					if data, ok := createResp.Data.(map[string]interface{}); ok {
+						if id, ok := data["id"].(string); ok && id != "" {
+							return id, nil
+						}
+					}
+				} else if err != nil {
+					h.logger.Error("Failed to auto-create email/Google user in getUserID",
+						zap.String("firebase_uid", firebaseUID),
+						zap.String("email", firebaseEmail),
+						zap.Error(err))
+				}
+			}
+
+			return "", fmt.Errorf("user not found in database")
 		}
+	}
+
+	// Fallback to user_id (set by AuthMiddleware for non-Firebase auth)
+	userIDValue, exists := c.Get("user_id")
+	if !exists {
+		return "", fmt.Errorf("user not authenticated")
 	}
 
 	userID, ok := userIDValue.(string)
@@ -119,7 +256,7 @@ func (h *ProfileHandler) CreateAutoProfile(c *gin.Context) {
 	h.logger.Info("Auto profile created successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
+		zap.String("profile_id", profile.GetID()),
 		zap.String("firebase_email", firebaseEmail))
 
 	// Convert to response structure
@@ -169,28 +306,59 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	profile, err := h.profileService.GetProfileByUserID(c.Request.Context(), userID)
 	if err != nil {
 		if err.Error() == "record not found" {
-			h.logger.Warn("Profile not found for user",
+			h.logger.Warn("Profile not found for user, attempting to create one",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
 				zap.String("error_type", "profile_not_found"))
-			c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
+
+			// Try to get user email for profile creation
+			var userEmail string
+			firebaseUIDValue, exists := c.Get("firebase_uid")
+			if exists {
+				firebaseUID, ok := firebaseUIDValue.(string)
+				if ok && firebaseUID != "" {
+					// Get user details from database
+					userResponse, _ := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
+					if userResponse != nil && userResponse.Success {
+						userData := userResponse.Data.(map[string]interface{})
+						if email, exists := userData["email"].(string); exists {
+							userEmail = email
+						}
+					}
+				}
+			}
+
+			// Attempt to create profile automatically
+			profile, err = h.profileService.CreateAutoProfile(c.Request.Context(), userID, userEmail)
+			if err != nil {
+				h.logger.Error("Failed to auto-create profile",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.Error(err))
+				c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found and could not be created"})
+				return
+			}
+
+			h.logger.Info("Profile auto-created successfully",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("profile_id", profile.GetID()))
+		} else {
+			h.logger.Error("Failed to retrieve profile",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Error(err),
+				zap.String("error_type", "profile_retrieval_error"))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get profile", "details": err.Error()})
 			return
 		}
-
-		h.logger.Error("Failed to retrieve profile",
-			zap.String("request_id", requestID),
-			zap.String("user_id", userID),
-			zap.Error(err),
-			zap.String("error_type", "profile_retrieval_error"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get profile", "details": err.Error()})
-		return
 	}
 
 	h.logger.Info("Profile retrieved successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
-		zap.Bool("has_profile_picture", profile.ProfilePictureS3Key != ""),
+		zap.String("profile_id", profile.GetID()),
+		zap.Bool("has_profile_picture", profile.ProfilePictureR2Key != ""),
 		zap.Bool("has_full_name", profile.FirstName != "" && profile.LastName != ""))
 
 	// Convert to response structure
@@ -283,7 +451,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	h.logger.Info("Profile updated successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID))
+		zap.String("profile_id", profile.GetID()))
 
 	// Convert to response structure
 	profileResponse := responses.ToProfileResponse(profile)
@@ -294,9 +462,9 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	})
 }
 
-// UploadProfileImage uploads a profile image file to S3
+// UploadProfileImage uploads a profile image file to R2
 // @Summary Upload profile image
-// @Description Upload a profile image file to S3 and update the profile
+// @Description Upload a profile image file to R2 and update the profile
 // @Tags Profile
 // @Accept multipart/form-data
 // @Produce json
@@ -348,58 +516,68 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 		zap.Int64("file_size", header.Size),
 		zap.String("content_type", header.Header.Get("Content-Type")))
 
-	// Upload image to S3
-	h.logger.Info("Uploading profile image to S3",
+	// Check if R2 service is available
+	if h.r2Service == nil || !h.r2Service.IsConfigured() {
+		h.logger.Error("R2 service not configured for profile image upload",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("error_type", "r2_service_error"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage service not available"})
+		return
+	}
+
+	// Upload image to R2
+	h.logger.Info("Uploading profile image to R2",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID))
 
-	s3Key, err := h.s3Service.UploadProfileImage(c.Request.Context(), userID, file, header)
+	r2Key, err := h.r2Service.UploadProfileImage(c.Request.Context(), userID, file, header)
 	if err != nil {
-		h.logger.Error("Failed to upload profile image to S3",
+		h.logger.Error("Failed to upload profile image to R2",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
 			zap.String("filename", header.Filename),
 			zap.Error(err),
-			zap.String("error_type", "s3_upload_error"))
+			zap.String("error_type", "r2_upload_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image", "details": err.Error()})
 		return
 	}
 
-	h.logger.Info("Profile image uploaded to S3 successfully",
+	h.logger.Info("Profile image uploaded to R2 successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("s3_key", s3Key))
+		zap.String("r2_key", r2Key))
 
-	// Generate presigned URL for immediate access
-	h.logger.Info("Generating presigned URL for uploaded image",
+	// Get public URL for the uploaded image
+	h.logger.Info("Getting public URL for uploaded image",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("s3_key", s3Key))
+		zap.String("r2_key", r2Key))
 
-	imageURL, err := h.s3Service.GetProfileImageURL(c.Request.Context(), s3Key, 24*time.Hour)
+	imageURL, err := h.r2Service.GetProfileImageURL(c.Request.Context(), r2Key, 24*time.Hour)
 	if err != nil {
-		h.logger.Error("Failed to generate presigned URL for profile image",
+		h.logger.Error("Failed to get public URL for profile image",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("s3_key", s3Key),
+			zap.String("r2_key", r2Key),
 			zap.Error(err),
-			zap.String("error_type", "presigned_url_error"))
+			zap.String("error_type", "url_generation_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image URL", "details": err.Error()})
 		return
 	}
 
-	// Update profile with S3 key and URL
+	// Update profile with R2 key and URL (using S3 field names for backward compatibility)
 	h.logger.Info("Updating profile with uploaded image details",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("s3_key", s3Key))
+		zap.String("r2_key", r2Key))
 
-	profile, err := h.profileService.UpdateProfilePictureWithS3(c.Request.Context(), userID, imageURL, s3Key)
+	profile, err := h.profileService.UpdateProfilePictureWithS3(c.Request.Context(), userID, imageURL, r2Key)
 	if err != nil {
 		h.logger.Error("Failed to update profile with image details",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("s3_key", s3Key),
+			zap.String("r2_key", r2Key),
 			zap.Error(err),
 			zap.String("error_type", "profile_update_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile with image", "details": err.Error()})
@@ -409,8 +587,8 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 	h.logger.Info("Profile image upload completed successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
-		zap.String("s3_key", s3Key),
+		zap.String("profile_id", profile.GetID()),
+		zap.String("r2_key", r2Key),
 		zap.String("filename", header.Filename),
 		zap.Int64("file_size", header.Size))
 
@@ -421,17 +599,17 @@ func (h *ProfileHandler) UploadProfileImage(c *gin.Context) {
 		"message":   "Profile image uploaded successfully",
 		"data":      profileResponse,
 		"image_url": imageURL,
-		"s3_key":    s3Key,
+		"r2_key":    r2Key,
 	})
 }
 
-// GetProfileImageURL generates a presigned URL for the profile image
+// GetProfileImageURL generates a public URL for the profile image
 // @Summary Get profile image URL
-// @Description Generate a presigned URL for the profile image
+// @Description Generate a public URL for the profile image (R2 URLs don't expire)
 // @Tags Profile
 // @Produce json
 // @Security FirebaseAuth
-// @Param expires_in_hours query int false "Expiry in hours" default(1)
+// @Param expires_in_hours query int false "Expiry in hours (ignored for R2)" default(1)
 // @Success 200 {object} map[string]interface{} "Image URL generated"
 // @Failure 401 {object} map[string]interface{} "User not authenticated"
 // @Failure 404 {object} map[string]interface{} "No profile image"
@@ -457,7 +635,7 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		return
 	}
 
-	// Parse expiry duration from query parameter (default 1 hour)
+	// Parse expiry duration from query parameter (kept for API compatibility, but R2 URLs don't expire)
 	expiryHours := 1
 	if expiryParam := c.Query("expires_in_hours"); expiryParam != "" {
 		if hours, parseErr := strconv.Atoi(expiryParam); parseErr == nil && hours > 0 {
@@ -482,36 +660,45 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 		return
 	}
 
-	if profile.ProfilePictureS3Key == "" {
+	if profile.ProfilePictureR2Key == "" {
 		h.logger.Warn("No profile image found for URL generation",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("profile_id", profile.ID),
+			zap.String("profile_id", profile.GetID()),
 			zap.String("error_type", "no_profile_image"))
 		c.JSON(http.StatusNotFound, gin.H{"error": "No profile image found"})
 		return
 	}
 
-	h.logger.Info("Generating presigned URL for profile image",
+	// Check if R2 service is available
+	if h.r2Service == nil || !h.r2Service.IsConfigured() {
+		h.logger.Error("R2 service not configured for profile image URL generation",
+			zap.String("request_id", requestID),
+			zap.String("user_id", userID),
+			zap.String("error_type", "r2_service_error"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage service not available"})
+		return
+	}
+
+	h.logger.Info("Generating public URL for profile image",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
-		zap.String("s3_key", profile.ProfilePictureS3Key),
-		zap.Int("expiry_hours", expiryHours))
+		zap.String("profile_id", profile.GetID()),
+		zap.String("r2_key", profile.ProfilePictureR2Key))
 
-	// Generate presigned URL
-	imageURL, err := h.s3Service.GetProfileImageURL(
+	// Generate public URL (R2 public URLs don't expire)
+	imageURL, err := h.r2Service.GetProfileImageURL(
 		c.Request.Context(),
-		profile.ProfilePictureS3Key,
+		profile.ProfilePictureR2Key,
 		time.Duration(expiryHours)*time.Hour,
 	)
 	if err != nil {
-		h.logger.Error("Failed to generate presigned URL for profile image",
+		h.logger.Error("Failed to generate public URL for profile image",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
-			zap.String("s3_key", profile.ProfilePictureS3Key),
+			zap.String("r2_key", profile.ProfilePictureR2Key),
 			zap.Error(err),
-			zap.String("error_type", "presigned_url_generation_error"))
+			zap.String("error_type", "url_generation_error"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image URL", "details": err.Error()})
 		return
 	}
@@ -519,13 +706,12 @@ func (h *ProfileHandler) GetProfileImageURL(c *gin.Context) {
 	h.logger.Info("Profile image URL generated successfully",
 		zap.String("request_id", requestID),
 		zap.String("user_id", userID),
-		zap.String("profile_id", profile.ID),
-		zap.String("s3_key", profile.ProfilePictureS3Key),
-		zap.Int("expiry_hours", expiryHours))
+		zap.String("profile_id", profile.GetID()),
+		zap.String("r2_key", profile.ProfilePictureR2Key))
 
 	c.JSON(http.StatusOK, gin.H{
 		"image_url":  imageURL,
-		"expires_in": fmt.Sprintf("%d hours", expiryHours),
-		"s3_key":     profile.ProfilePictureS3Key,
+		"expires_in": "never (R2 public URL)",
+		"r2_key":     profile.ProfilePictureR2Key,
 	})
 }

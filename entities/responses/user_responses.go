@@ -6,6 +6,14 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 )
 
+// getPhoneNumberString safely extracts phone number string from pointer
+func getPhoneNumberString(phoneNum *string) string {
+	if phoneNum == nil {
+		return ""
+	}
+	return *phoneNum
+}
+
 // UserResponse represents a user response (authentication data only)
 type UserResponse struct {
 	ID          string    `json:"id"`
@@ -47,12 +55,22 @@ type UserStatsResponse struct {
 
 // ToUserResponse converts a User model to UserResponse
 func ToUserResponse(user *models.User) UserResponse {
+	var firebaseUID string
+	if user.FirebaseUID != nil {
+		firebaseUID = *user.FirebaseUID
+	}
+
+	var emailStr string
+	if user.Email != nil {
+		emailStr = *user.Email
+	}
+
 	return UserResponse{
 		ID:          user.ID,
-		Email:       user.Email,
+		Email:       emailStr,
 		Name:        user.Name,
-		FirebaseUID: user.FirebaseUID,
-		PhoneNumber: user.PhoneNumber,
+		FirebaseUID: firebaseUID,
+		PhoneNumber: getPhoneNumberString(user.PhoneNumber),
 		IsVerified:  user.IsVerified,
 		IsActive:    user.IsActive,
 		Role:        user.Role,

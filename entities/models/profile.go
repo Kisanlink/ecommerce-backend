@@ -13,6 +13,7 @@ type Profile struct {
 	UserID          string     `json:"user_id" gorm:"uniqueIndex;not null"`
 	FirstName       string     `json:"first_name" gorm:"size:100;not null"`
 	LastName        string     `json:"last_name" gorm:"size:100;not null"`
+	Email           string     `json:"email,omitempty" gorm:"size:255"` // Optional - phone users don't need email
 	DateOfBirth     *time.Time `json:"date_of_birth" gorm:"type:date"`
 	Gender          string     `json:"gender" gorm:"size:10"` // Male, Female, Other
 
@@ -24,10 +25,10 @@ type Profile struct {
 	Country      string `json:"country" gorm:"size:100"`
 	Pincode      string `json:"pincode" gorm:"size:20"`
 
-	// Profile Image (S3 Integration)
-	ProfilePictureURL   string `json:"profile_picture_url" gorm:"type:text"`   // Full URL for access
-	ProfilePictureS3Key string `json:"profile_picture_s3_key" gorm:"size:500"` // S3 key for storage
-	Bio                 string `json:"bio" gorm:"type:text"`                   // User bio
+	// Profile Image (R2 Integration)
+	ProfilePictureURL   string `json:"profile_picture_url" gorm:"type:text"`                              // Full URL for access
+	ProfilePictureR2Key string `json:"profile_picture_r2_key" gorm:"column:profile_picture_s3_key;size:500"` // R2 key for storage (column kept as profile_picture_s3_key for backward compatibility)
+	Bio                 string `json:"bio" gorm:"type:text"`                                              // User bio
 
 	// Preferences
 	NewsletterSubscribed bool   `json:"newsletter_subscribed" gorm:"default:false"`
@@ -39,13 +40,14 @@ type Profile struct {
 }
 
 // NewProfile creates a new profile instance
-func NewProfile(userID, firstName, lastName string) *Profile {
+func NewProfile(userID, firstName, lastName, email string) *Profile {
 	baseModel := base.NewBaseModel("PROF", hash.Small)
 	return &Profile{
 		BaseModel:            baseModel,
 		UserID:               userID,
 		FirstName:            firstName,
 		LastName:             lastName,
+		Email:                email, // Optional - can be empty for phone users
 		IsActive:             true,
 		IsVerified:           false,
 		NewsletterSubscribed: false,

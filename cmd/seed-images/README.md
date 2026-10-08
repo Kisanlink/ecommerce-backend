@@ -57,7 +57,7 @@ If you have PostgreSQL running locally or have different connection settings:
 
 1. Set environment variables:
    ```bash
-   export POSTGRES_DSN="host=localhost user=postgres password=12345678 dbname=DemoDB port=5432 sslmode=disable"
+   export POSTGRES_DSN="postgresql://neondb_owner:password@ep-your-neon-host.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
    ```
 
 2. Run the seeding script:
@@ -73,7 +73,7 @@ The script uses the following default database settings:
 - **User**: postgres
 - **Password**: 12345678
 - **Database**: DemoDB
-- **SSL Mode**: disable
+- **SSL Mode**: require (override `DB_POSTGRES_SSLMODE` for local testing)
 
 ## Image URLs
 

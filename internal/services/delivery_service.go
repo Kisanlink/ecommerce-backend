@@ -27,6 +27,7 @@ type DeliveryServiceInterface interface {
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
 	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error)
 	GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error)
+	GetShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error)
 }
 
 // ShipmentResult contains detailed shipment creation results
@@ -176,8 +177,8 @@ func (s *DeliveryService) getPincodeInfo(ctx context.Context, pincode string) (c
 	return strings.TrimSpace(info.City), strings.TrimSpace(info.State), nil
 }
 
-// getShippingCharges gets shipping charges from Delhivery
-func (s *DeliveryService) getShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error) {
+// GetShippingCharges gets shipping charges from Delhivery API based on destination pincode and weight
+func (s *DeliveryService) GetShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error) {
 	if len(destinationPin) != 6 {
 		return 0, fmt.Errorf("destination pincode must be 6 digits, got: %s", destinationPin)
 	}
@@ -341,7 +342,7 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 	const PRODUCT_WEIGHT_GRAMS = 100
 	weight := cart.TotalItems * PRODUCT_WEIGHT_GRAMS
 
-	charges, err := s.getShippingCharges(ctx, pincode, weight, 0)
+	charges, err := s.GetShippingCharges(ctx, pincode, weight, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shipping charges from Delhivery API: %w", err)
 	}
@@ -423,30 +424,93 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	}
 
 	var pincode, destCity, destState string
+	var shippingAddressString string
 
-	// Try to use structured address data first (preferred method)
-	if order.ShippingAddrID != "" && s.repoManager != nil && s.repoManager.AddressRepository != nil {
+	// Log address IDs for debugging
+	s.logger.Info("CreateShipment: Starting address resolution",
+		zap.String("order_id", order.ID),
+		zap.String("shipping_address_id", order.ShippingAddressID),
+		zap.String("shipping_addr_id_legacy", order.ShippingAddrID),
+		zap.String("shipping_addr_string", order.ShippingAddr))
+
+	// PRIORITY 1: Try to use OrderAddress (normalized address from order)
+	// This is used for Magic Checkout and new orders
+	// IMPORTANT: Only use this if ShippingAddressID has OADR prefix (order_addresses table)
+	// Legacy ADDR prefix belongs to the 'addresses' table and should use Priority 2
+	if order.ShippingAddressID != "" && strings.HasPrefix(order.ShippingAddressID, "OADR") && s.repoManager != nil && s.repoManager.OrderRepository != nil {
+		orderAddr, addrErr := s.repoManager.OrderRepository.GetOrderAddress(ctx, order.ShippingAddressID)
+		if addrErr == nil && orderAddr != nil {
+			pincode = orderAddr.PostalCode
+			destCity = orderAddr.City
+			destState = orderAddr.State
+			// Build address string from OrderAddress
+			line2 := ""
+			if orderAddr.AddressLine2 != "" {
+				line2 = ", " + orderAddr.AddressLine2
+			}
+			shippingAddressString = fmt.Sprintf("%s%s, %s, %s %s, %s",
+				orderAddr.AddressLine1, line2, orderAddr.City, orderAddr.State, orderAddr.PostalCode, orderAddr.Country)
+
+			s.logger.Info("Using OrderAddress for shipment",
+				zap.String("order_id", order.ID),
+				zap.String("address_id", order.ShippingAddressID),
+				zap.String("city", destCity),
+				zap.String("state", destState),
+				zap.String("pincode", pincode))
+		} else {
+			s.logger.Warn("Failed to fetch OrderAddress, trying next option",
+				zap.String("order_id", order.ID),
+				zap.String("address_id", order.ShippingAddressID),
+				zap.Error(addrErr))
+		}
+	} else if order.ShippingAddressID != "" && !strings.HasPrefix(order.ShippingAddressID, "OADR") {
+		// ShippingAddressID has wrong prefix - log this as it indicates a bug
+		s.logger.Warn("ShippingAddressID has incorrect prefix (expected OADR), skipping to legacy lookup",
+			zap.String("order_id", order.ID),
+			zap.String("shipping_address_id", order.ShippingAddressID),
+			zap.String("expected_prefix", "OADR"))
+	}
+
+	// PRIORITY 2: Try to use legacy Address table (for backward compatibility)
+	if pincode == "" && order.ShippingAddrID != "" && s.repoManager != nil && s.repoManager.AddressRepository != nil {
 		addr, addrErr := s.repoManager.AddressRepository.GetAddressByID(ctx, order.UserID, order.ShippingAddrID)
 		if addrErr == nil && addr != nil {
 			pincode = addr.PostalCode
 			destCity = addr.City
 			destState = addr.State
-			s.logger.Info("Using structured address data for shipment",
+			// Build address string from Address
+			line2 := ""
+			if addr.AddressLine2 != "" {
+				line2 = ", " + addr.AddressLine2
+			}
+			name := addr.FirstName
+			if addr.LastName != "" {
+				name = name + " " + addr.LastName
+			}
+			shippingAddressString = fmt.Sprintf("%s, %s%s, %s, %s %s, %s",
+				name, addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country)
+
+			s.logger.Info("Using legacy Address for shipment",
 				zap.String("order_id", order.ID),
 				zap.String("address_id", order.ShippingAddrID),
 				zap.String("city", destCity),
 				zap.String("state", destState),
 				zap.String("pincode", pincode))
 		} else {
-			s.logger.Warn("Failed to fetch structured address, falling back to string parsing",
+			s.logger.Warn("Failed to fetch legacy address, falling back to string parsing",
 				zap.String("order_id", order.ID),
 				zap.String("address_id", order.ShippingAddrID),
 				zap.Error(addrErr))
 		}
 	}
 
-	// Fallback to parsing address string if structured data not available
+	// PRIORITY 3: Fallback to parsing address string if structured data not available
 	if pincode == "" {
+		// Use existing ShippingAddr string if available
+		if order.ShippingAddr != "" {
+			shippingAddressString = order.ShippingAddr
+		}
+
 		pincode = s.extractPincode(order.ShippingAddr)
 		if pincode == "" {
 			return &ShipmentResult{
@@ -464,15 +528,56 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 				Message: "Could not get city/state information for pincode",
 			}, fmt.Errorf("could not get city/state for pincode: %w", err)
 		}
+
+		// If address string is empty, build a basic one
+		if shippingAddressString == "" {
+			shippingAddressString = fmt.Sprintf("Address, %s, %s %s", destCity, destState, pincode)
+		}
 	}
 
-	// Use only order-level customer fields (no fallbacks)
-	custName := strings.TrimSpace(strings.TrimSpace(order.CustomerFirstName + " " + order.CustomerLastName))
-	custPhone := strings.TrimSpace(order.CustomerPhone)
+	// Fetch customer data from order_customers table (PRIORITY 1)
+	// Falls back to legacy order-level fields if not available
+	// IMPORTANT: Only lookup if CustomerID has OCUS prefix (order_customers table)
+	var custName, custPhone string
+
+	if order.CustomerID != "" && strings.HasPrefix(order.CustomerID, "OCUS") && s.repoManager != nil && s.repoManager.OrderRepository != nil {
+		orderCustomer, custErr := s.repoManager.OrderRepository.GetOrderCustomer(ctx, order.CustomerID)
+		if custErr == nil && orderCustomer != nil {
+			custName = strings.TrimSpace(orderCustomer.FirstName + " " + orderCustomer.LastName)
+			custPhone = strings.TrimSpace(orderCustomer.Phone)
+
+			s.logger.Info("Using OrderCustomer for shipment",
+				zap.String("order_id", order.ID),
+				zap.String("customer_id", order.CustomerID),
+				zap.String("customer_name", custName),
+				zap.String("customer_phone", custPhone))
+		} else {
+			s.logger.Warn("Failed to fetch OrderCustomer, falling back to legacy fields",
+				zap.String("order_id", order.ID),
+				zap.String("customer_id", order.CustomerID),
+				zap.Error(custErr))
+		}
+	} else if order.CustomerID != "" && !strings.HasPrefix(order.CustomerID, "OCUS") {
+		// CustomerID has wrong prefix - log warning
+		s.logger.Warn("CustomerID has incorrect prefix (expected OCUS), using legacy fields",
+			zap.String("order_id", order.ID),
+			zap.String("customer_id", order.CustomerID),
+			zap.String("expected_prefix", "OCUS"))
+	}
+
+	// Fallback to legacy order-level customer fields
+	if custName == "" {
+		custName = strings.TrimSpace(order.CustomerFirstName + " " + order.CustomerLastName)
+	}
+	if custPhone == "" {
+		custPhone = strings.TrimSpace(order.CustomerPhone)
+	}
+
 	if custName == "" || custPhone == "" {
 		return &ShipmentResult{Success: false, Message: "Customer name and phone are required on the order"}, fmt.Errorf("missing customer name/phone on order")
 	}
-	// Normalize phone to last 10 digits
+
+	// Normalize primary phone to last 10 digits
 	{
 		var digits strings.Builder
 		digits.Grow(len(custPhone))
@@ -543,10 +648,14 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	uniqueOrderID := fmt.Sprintf("%s_%d", order.ID, time.Now().Unix())
 
+	// Use the address string we built (from OrderAddress, Address, or parsed string)
 	// Include phone number subtly in the address - not highlighted, just there if needed
-	enhancedAddress := order.ShippingAddr
-	if custPhone != "" {
-		enhancedAddress = fmt.Sprintf("%s, %s", order.ShippingAddr, custPhone)
+	enhancedAddress := shippingAddressString
+	if enhancedAddress == "" {
+		enhancedAddress = order.ShippingAddr // Final fallback
+	}
+	if custPhone != "" && enhancedAddress != "" {
+		enhancedAddress = fmt.Sprintf("%s, %s", enhancedAddress, custPhone)
 	}
 
 	shipmentDetail := requests.DelhiveryShipmentDetail{
@@ -732,6 +841,8 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 	if !shipmentResp.IsSuccessful() {
 		errorMsg := shipmentResp.GetErrorMessage()
+
+		// Enhanced error logging with configuration details
 		s.logger.Error("Delhivery shipment creation failed - API returned failure status",
 			zap.String("order_id", order.ID),
 			zap.String("error_message", errorMsg),
@@ -739,6 +850,26 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 			zap.Int("packages_received", len(shipmentResp.PackageData)),
 			zap.String("rmk", shipmentResp.RMK),
 			zap.String("error_type", "delhivery_api_failure"))
+
+		// Log configuration to help debug
+		s.logger.Error("Delhivery configuration at time of failure - CHECK THESE VALUES",
+			zap.String("order_id", order.ID),
+			zap.String("warehouse_name", s.config.WarehouseName),
+			zap.String("origin_pincode", s.config.OriginPincode),
+			zap.String("origin_city", s.config.OriginCity),
+			zap.String("origin_state", s.config.OriginState),
+			zap.String("origin_address", s.config.OriginAddress),
+			zap.String("origin_phone", s.config.OriginPhone),
+			zap.String("base_url", s.config.BaseURL),
+			zap.Bool("is_production", s.config.IsProduction),
+			zap.String("dest_pincode", pincode),
+			zap.String("dest_city", destCity),
+			zap.String("dest_state", destState),
+			zap.String("customer_name", custName),
+			zap.String("customer_phone", custPhone),
+			zap.String("shipping_address", shippingAddressString),
+			zap.String("HINT", "Warehouse name must EXACTLY match pickup location name in Delhivery dashboard"))
+
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Failed to create shipment: %s", errorMsg),
@@ -800,18 +931,217 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	}, nil
 }
 
-// GetTrackingInfo retrieves tracking information for a waybill
+// GetTrackingInfo retrieves real-time tracking information for a waybill from Delhivery API
 func (s *DeliveryService) GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error) {
 	if waybill == "" {
 		return nil, fmt.Errorf("waybill cannot be empty")
 	}
 
+	// Build tracking API URL
+	// Delhivery tracking API endpoint: https://track.delhivery.com/api/v1/packages/json/
+	trackingEndpoint := fmt.Sprintf("https://track.delhivery.com/api/v1/packages/json/?token=%s&waybill=%s",
+		s.config.APIToken, waybill)
+
+	s.logger.Info("Fetching tracking info from Delhivery API",
+		zap.String("waybill", waybill),
+		zap.String("endpoint", "track.delhivery.com/api/v1/packages/json"))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", trackingEndpoint, nil)
+	if err != nil {
+		s.logger.Error("Failed to create tracking request",
+			zap.String("waybill", waybill),
+			zap.Error(err))
+		return s.getStaticTrackingInfo(waybill), nil
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.logger.Warn("Failed to fetch tracking from Delhivery API, returning static info",
+			zap.String("waybill", waybill),
+			zap.Error(err))
+		return s.getStaticTrackingInfo(waybill), nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.logger.Warn("Failed to read tracking response",
+			zap.String("waybill", waybill),
+			zap.Error(err))
+		return s.getStaticTrackingInfo(waybill), nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("Delhivery tracking API returned non-200 status",
+			zap.String("waybill", waybill),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(body)))
+		return s.getStaticTrackingInfo(waybill), nil
+	}
+
+	// Parse tracking response
+	trackingResp, err := responses.ParseTrackingResponse(body)
+	if err != nil {
+		s.logger.Warn("Failed to parse tracking response",
+			zap.String("waybill", waybill),
+			zap.Error(err),
+			zap.String("response", string(body)))
+		return s.getStaticTrackingInfo(waybill), nil
+	}
+
+	// Extract tracking details
+	shipment := trackingResp.GetShipmentTracking()
+	if shipment == nil {
+		s.logger.Warn("No shipment data found in tracking response",
+			zap.String("waybill", waybill))
+		return s.getStaticTrackingInfo(waybill), nil
+	}
+
+	status := trackingResp.GetCurrentStatus()
+	if status == "" {
+		status = "In Transit"
+	}
+
+	lastUpdate := trackingResp.GetLastUpdate()
+	if lastUpdate == "" {
+		lastUpdate = time.Now().Format("2006-01-02 15:04:05")
+	}
+
 	trackingURL := fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", waybill)
+
+	s.logger.Info("Successfully retrieved tracking info from Delhivery",
+		zap.String("waybill", waybill),
+		zap.String("status", status),
+		zap.String("last_update", lastUpdate),
+		zap.String("expected_delivery", trackingResp.GetExpectedDelivery()))
 
 	return &TrackingInfo{
 		Waybill:     waybill,
-		Status:      "Shipped",
+		Status:      status,
 		TrackingURL: trackingURL,
-		LastUpdate:  time.Now().Format("2006-01-02 15:04:05"),
+		LastUpdate:  lastUpdate,
 	}, nil
+}
+
+// getStaticTrackingInfo returns a basic tracking info with just the URL (fallback)
+func (s *DeliveryService) getStaticTrackingInfo(waybill string) *TrackingInfo {
+	return &TrackingInfo{
+		Waybill:     waybill,
+		Status:      "Shipped",
+		TrackingURL: fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", waybill),
+		LastUpdate:  time.Now().Format("2006-01-02 15:04:05"),
+	}
+}
+
+// ValidateWarehouse checks if the warehouse/pickup location is registered with Delhivery
+func (s *DeliveryService) ValidateWarehouse(ctx context.Context) (*WarehouseValidationResult, error) {
+	result := &WarehouseValidationResult{
+		WarehouseName: s.config.WarehouseName,
+		IsValid:       false,
+		Issues:        []string{},
+	}
+
+	// Check configuration issues first
+	configIssues := config.ValidateDelhiveryConfig(s.config)
+	if len(configIssues) > 0 {
+		result.Issues = append(result.Issues, configIssues...)
+	}
+
+	// Check if origin address is still default
+	if s.config.OriginAddress == "Default Address" || s.config.OriginAddress == "" {
+		result.Issues = append(result.Issues, "CRITICAL: DELHIVERY_ORIGIN_ADDRESS is not set to your actual pickup address")
+	}
+
+	// Try to get warehouses from Delhivery API
+	endpoint := fmt.Sprintf("%s/api/backend/clientwarehouse/edit/", s.config.BaseURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		result.Issues = append(result.Issues, fmt.Sprintf("Failed to create warehouse check request: %v", err))
+		return result, nil
+	}
+
+	req.Header.Set("Authorization", "Token "+s.config.APIToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		result.Issues = append(result.Issues, fmt.Sprintf("Failed to connect to Delhivery: %v", err))
+		return result, nil
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK {
+		// Try to parse warehouse list
+		var warehouseResp struct {
+			Data []struct {
+				Name   string `json:"name"`
+				Active bool   `json:"active"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(body, &warehouseResp); err == nil {
+			result.AvailableWarehouses = []string{}
+			for _, wh := range warehouseResp.Data {
+				result.AvailableWarehouses = append(result.AvailableWarehouses, wh.Name)
+				if wh.Name == s.config.WarehouseName {
+					result.IsValid = true
+					if !wh.Active {
+						result.Issues = append(result.Issues, fmt.Sprintf("Warehouse '%s' exists but is NOT ACTIVE", s.config.WarehouseName))
+						result.IsValid = false
+					}
+				}
+			}
+
+			if !result.IsValid && len(result.AvailableWarehouses) > 0 {
+				result.Issues = append(result.Issues, fmt.Sprintf("Warehouse '%s' NOT FOUND. Available warehouses: %v", s.config.WarehouseName, result.AvailableWarehouses))
+			}
+		}
+	} else {
+		s.logger.Warn("Could not fetch warehouse list from Delhivery",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(body)))
+	}
+
+	// Log the validation result
+	s.logger.Info("Delhivery warehouse validation completed",
+		zap.Bool("is_valid", result.IsValid),
+		zap.String("warehouse_name", result.WarehouseName),
+		zap.Strings("issues", result.Issues),
+		zap.Strings("available_warehouses", result.AvailableWarehouses))
+
+	return result, nil
+}
+
+// WarehouseValidationResult contains the result of warehouse validation
+type WarehouseValidationResult struct {
+	WarehouseName       string   `json:"warehouse_name"`
+	IsValid             bool     `json:"is_valid"`
+	Issues              []string `json:"issues"`
+	AvailableWarehouses []string `json:"available_warehouses,omitempty"`
+}
+
+// GetConfigurationStatus returns the current Delhivery configuration status for debugging
+func (s *DeliveryService) GetConfigurationStatus() map[string]interface{} {
+	issues := config.ValidateDelhiveryConfig(s.config)
+
+	return map[string]interface{}{
+		"is_production":   s.config.IsProduction,
+		"base_url":        s.config.BaseURL,
+		"warehouse_name":  s.config.WarehouseName,
+		"origin_pincode":  s.config.OriginPincode,
+		"origin_city":     s.config.OriginCity,
+		"origin_state":    s.config.OriginState,
+		"origin_address":  s.config.OriginAddress,
+		"origin_phone":    s.config.OriginPhone,
+		"has_api_token":   s.config.APIToken != "",
+		"api_token_len":   len(s.config.APIToken),
+		"config_issues":   issues,
+		"is_valid_config": len(issues) == 0,
+	}
 }

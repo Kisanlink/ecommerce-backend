@@ -24,7 +24,7 @@ type OrderServiceInterface interface {
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetUserOrders(ctx context.Context, userID string) ([]models.Order, error)
-	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error)
+	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
 	UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error
 	UpdatePaymentStatusAndOrderStatus(ctx context.Context, orderID string, paymentStatus, paymentID string, orderStatus models.OrderStatus) error
@@ -54,19 +54,19 @@ type OrderService struct {
 	productRepo repositories.ProductRepositoryInterface
 	addressRepo *repositories.AddressRepository
 	couponRepo  repositories.CouponRepositoryInterface
-	s3Service   *S3Service
+	r2Service   *R2Service // Cloudflare R2 storage
 	logger      *zap.Logger
 }
 
 // NewOrderService creates a new order service
-func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, s3Service *S3Service, logger *zap.Logger) OrderServiceInterface {
+func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
 	service := &OrderService{
 		orderRepo:   orderRepo,
 		cartService: cartService,
 		productRepo: productRepo,
 		addressRepo: addressRepo,
 		couponRepo:  couponRepo,
-		s3Service:   s3Service,
+		r2Service:   r2Service,
 		logger:      logger,
 	}
 
@@ -498,17 +498,42 @@ func (s *OrderService) FormatAddress(addr *models.Address) string {
 	return fmt.Sprintf("%s, %s%s, %s, %s %s, %s%s", name, addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country, phone)
 }
 
-// GenerateAndAttachInvoice generates a PDF invoice, uploads to S3, and stores URL on the order
+// GenerateAndAttachInvoice generates a PDF invoice, uploads to R2 (preferred) or S3, and stores URL on the order
 func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error) {
-	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
+	// Get order with full details including shipping address from order_addresses table
+	order, err := s.orderRepo.GetOrderWithDetails(ctx, orderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load order for invoice: %w", err)
 	}
 
-	// Create PDF invoice service
-	pdfInvoiceService := NewPDFInvoiceService(s.s3Service, s.logger)
+	// Populate ShippingAddr from OrderAddress if available (for invoice generation)
+	if order.ShippingAddress != nil {
+		addr := order.ShippingAddress
+		line2 := ""
+		if addr.AddressLine2 != "" {
+			line2 = ", " + addr.AddressLine2
+		}
+		order.ShippingAddr = fmt.Sprintf("%s%s, %s, %s %s, %s",
+			addr.AddressLine1, line2, addr.City, addr.State, addr.PostalCode, addr.Country)
+
+		s.logger.Info("Using order_addresses for invoice",
+			zap.String("order_id", orderID),
+			zap.String("address_id", order.ShippingAddressID),
+			zap.String("formatted_address", order.ShippingAddr))
+	}
+
+	// Populate customer name from OrderCustomer if available
+	if order.Customer != nil {
+		order.CustomerFirstName = order.Customer.FirstName
+		order.CustomerLastName = order.Customer.LastName
+		order.CustomerPhone = order.Customer.Phone
+	}
+
+	// Create PDF invoice service with R2 storage
+	pdfInvoiceService := NewPDFInvoiceService(s.r2Service, s.logger)
 
 	// Convert items to pointers
+	items := order.OrderItems
 	itemPointers := make([]*models.OrderItem, len(items))
 	for i := range items {
 		itemPointers[i] = &items[i]
@@ -962,11 +987,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 }
 
 // GetOrderDetails retrieves an order with customer, address, and items data including product information
-func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*models.Order, error) {
+// Returns order and enriched items separately so response builder can use all image URLs
+func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error) {
 	// Get order with enhanced product information
 	order, enrichedItems, err := s.orderRepo.GetOrderWithItemsAndProducts(ctx, orderID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get order details: %w", err)
+		return nil, nil, fmt.Errorf("failed to get order details: %w", err)
 	}
 
 	// Get customer data if customer_id exists
@@ -989,28 +1015,25 @@ func (s *OrderService) GetOrderDetails(ctx context.Context, orderID string) (*mo
 		}
 	}
 
-	// Convert enriched items back to regular order items for the response
+	// Convert enriched items back to regular order items for basic order structure
 	var orderItems []models.OrderItem
 	for _, enrichedItem := range enrichedItems {
-		// Create a regular order item with minimal product information
 		orderItem := enrichedItem.OrderItem
-
-		// Create a minimal product object with only name and primary image
 		if enrichedItem.ProductName != "" || enrichedItem.ProductImageURL != "" {
 			product := &models.Product{
 				Name:     enrichedItem.ProductName,
-				ImageURL: enrichedItem.ProductImageURL, // Primary image only
+				ImageURL: enrichedItem.ProductImageURL, // Primary image
 			}
 			orderItem.Product = product
 		}
-
 		orderItems = append(orderItems, orderItem)
 	}
 
 	// Set the enriched order items
 	order.OrderItems = orderItems
 
-	return order, nil
+	// Return enriched items separately so response builder can access all image URLs
+	return order, enrichedItems, nil
 }
 
 // createOrderCustomerWithRetry creates an order customer with retry logic for duplicate key errors

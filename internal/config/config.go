@@ -19,14 +19,15 @@ func LoadEnv() {
 
 // PostgresEnvConfig holds PostgreSQL connection configuration from env
 type PostgresEnvConfig struct {
-	Host      string
-	Port      string
-	User      string
-	Password  string
-	DBName    string
-	SSLMode   string
-	MaxConns  int
-	IdleConns int
+	Host           string
+	Port           string
+	User           string
+	Password       string
+	DBName         string
+	SSLMode        string
+	ChannelBinding string
+	MaxConns       int
+	IdleConns      int
 }
 
 // GetPostgresEnvConfig returns Postgres config from environment variables
@@ -40,14 +41,15 @@ func GetPostgresEnvConfig() PostgresEnvConfig {
 		idleConns = 5
 	}
 	return PostgresEnvConfig{
-		Host:      os.Getenv("DB_POSTGRES_HOST"),
-		Port:      os.Getenv("DB_POSTGRES_PORT"),
-		User:      os.Getenv("DB_POSTGRES_USER"),
-		Password:  os.Getenv("DB_POSTGRES_PASSWORD"),
-		DBName:    os.Getenv("DB_POSTGRES_DBNAME"),
-		SSLMode:   os.Getenv("DB_POSTGRES_SSLMODE"),
-		MaxConns:  maxConns,
-		IdleConns: idleConns,
+		Host:           getEnvOrDefault("DB_POSTGRES_HOST", ""),
+		Port:           getEnvOrDefault("DB_POSTGRES_PORT", "5432"),
+		User:           getEnvOrDefault("DB_POSTGRES_USER", ""),
+		Password:       getEnvOrDefault("DB_POSTGRES_PASSWORD", ""),
+		DBName:         getEnvOrDefault("DB_POSTGRES_DBNAME", ""),
+		SSLMode:        getEnvOrDefault("DB_POSTGRES_SSLMODE", "require"),
+		ChannelBinding: os.Getenv("DB_POSTGRES_CHANNEL_BINDING"),
+		MaxConns:       maxConns,
+		IdleConns:      idleConns,
 	}
 }
 
@@ -221,6 +223,39 @@ func GetWhatsAppEnvConfig() WhatsAppEnvConfig {
 		WebhookToken:   os.Getenv("WHATSAPP_WEBHOOK_TOKEN"),
 		APIBaseURL:     getEnvOrDefault("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v22.0"),
 	}
+}
+
+// R2Config holds Cloudflare R2 configuration from env
+type R2Config struct {
+	AccountID       string
+	AccessKeyID     string
+	SecretAccessKey string
+	BucketName      string
+	PublicDomain    string // Optional: for public URL generation (e.g., pub-xxx.r2.dev or custom domain)
+	Endpoint        string // Auto-generated from AccountID
+}
+
+// GetR2Config returns Cloudflare R2 config from environment variables
+func GetR2Config() R2Config {
+	accountID := os.Getenv("R2_ACCOUNT_ID")
+	endpoint := ""
+	if accountID != "" {
+		endpoint = "https://" + accountID + ".r2.cloudflarestorage.com"
+	}
+
+	return R2Config{
+		AccountID:       accountID,
+		AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+		BucketName:      getEnvOrDefault("R2_BUCKET_NAME", "amrti"),
+		PublicDomain:    os.Getenv("R2_PUBLIC_DOMAIN"), // e.g., "pub-xxx.r2.dev" or custom domain
+		Endpoint:        endpoint,
+	}
+}
+
+// IsR2Configured returns true if R2 is properly configured
+func (c R2Config) IsR2Configured() bool {
+	return c.AccountID != "" && c.AccessKeyID != "" && c.SecretAccessKey != "" && c.BucketName != ""
 }
 
 // getEnvOrDefault returns environment variable value or default if empty

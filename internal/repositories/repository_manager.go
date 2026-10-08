@@ -19,6 +19,7 @@ type RepositoryManager struct {
 	AddressRepository             *AddressRepository
 	RecipesRepository             *RecipesRepository
 	PendingRecipeReviewRepository *PendingRecipeReviewRepository // Pending recipe reviews
+	ReviewRepository              *ReviewRepository              // Product reviews
 	ProfileRepository             *ProfileRepository
 	FavoriteRepository            *FavoriteRepository
 	ImageRepository               ImageRepositoryInterface     // Image repository
@@ -36,20 +37,16 @@ func (rm *RepositoryManager) GetDBManager() db.DBManager {
 }
 
 // NewRepositoryManager creates a new repository manager with database manager
-func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *RepositoryManager {
-	// Create recipes repository with logger
-	recipesRepo, err := NewRecipesRepository(logger)
-	if err != nil {
-		logger.Error("Failed to create recipes repository", zap.Error(err))
-		// Continue without recipes repository rather than failing completely
-	}
+// pgManager is passed separately for repositories that need direct GORM access
+func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager, logger *zap.Logger) *RepositoryManager {
+	// Create recipes repository with pgManager and logger (needs direct GORM access)
+	recipesRepo := NewRecipesRepository(pgManager, logger)
 
-	// Create pending recipe review repository with logger
-	pendingRecipeReviewRepo, err := NewPendingRecipeReviewRepository(logger)
-	if err != nil {
-		logger.Error("Failed to create pending recipe review repository", zap.Error(err))
-		// Continue without pending recipe review repository rather than failing completely
-	}
+	// Create pending recipe review repository with pgManager and logger (needs direct GORM access)
+	pendingRecipeReviewRepo := NewPendingRecipeReviewRepository(pgManager, logger)
+
+	// Create review repository with pgManager and logger (needs direct GORM access)
+	reviewRepo := NewReviewRepository(pgManager, logger)
 
 	// Initialize Redis manager
 	redisManager, err := database.NewRedisManager(logger)
@@ -66,6 +63,7 @@ func NewRepositoryManager(dbManager db.DBManager, logger *zap.Logger) *Repositor
 		AddressRepository:             NewAddressRepository(dbManager),
 		RecipesRepository:             recipesRepo,
 		PendingRecipeReviewRepository: pendingRecipeReviewRepo,
+		ReviewRepository:              reviewRepo,
 		ProfileRepository:             NewProfileRepository(dbManager),
 		FavoriteRepository:            NewFavoriteRepository(dbManager),
 		ImageRepository:               NewImageRepository(dbManager),          // Image repository

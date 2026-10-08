@@ -10,15 +10,21 @@ import (
 
 // FavoriteService provides business logic for favorites
 type FavoriteService struct {
-	favoriteRepo *repositories.FavoriteRepository
-	productRepo  repositories.ProductRepositoryInterface
+	favoriteRepo  *repositories.FavoriteRepository
+	productRepo   repositories.ProductRepositoryInterface
+	imageRepo     repositories.ImageRepositoryInterface
+	inventoryRepo repositories.InventoryRepositoryInterface
+	repoManager   *repositories.RepositoryManager
 }
 
 // NewFavoriteService creates a new favorite service
 func NewFavoriteService(repoManager *repositories.RepositoryManager) *FavoriteService {
 	return &FavoriteService{
-		favoriteRepo: repoManager.FavoriteRepository,
-		productRepo:  repoManager.ProductRepository,
+		favoriteRepo:  repoManager.FavoriteRepository,
+		productRepo:   repoManager.ProductRepository,
+		imageRepo:     repoManager.ImageRepository,
+		inventoryRepo: repoManager.InventoryRepository,
+		repoManager:   repoManager,
 	}
 }
 
@@ -79,8 +85,39 @@ func (s *FavoriteService) GetUserFavorites(ctx context.Context, userID string) (
 	return favorites, products, nil
 }
 
+// populateProductDetails populates product images and inventory from normalized tables
+func (s *FavoriteService) populateProductDetails(ctx context.Context, product *models.Product) error {
+	if product == nil {
+		return nil
+	}
+
+	// Get all active images for the product
+	images, err := s.imageRepo.GetActiveImagesByProductID(ctx, product.ID)
+	if err != nil {
+		// If no images found, that's okay - product will have empty image arrays
+	} else {
+		product.Images = images
+	}
+
+	// Get inventory information for the product
+	inventory, err := s.inventoryRepo.GetByProductID(ctx, product.ID)
+	if err == nil {
+		// Calculate available stock
+		inventory.AvailableStock = inventory.GetAvailableStock()
+		product.Inventory = inventory
+	}
+
+	return nil
+}
+
 // GetFavoritesWithProducts retrieves favorites with product details populated
 func (s *FavoriteService) GetFavoritesWithProducts(ctx context.Context, userID string) ([]*models.Favorite, error) {
+	// Use repository pattern for now - this is working and reliable
+	return s.getFavoritesWithRepositoryPattern(ctx, userID)
+}
+
+// getFavoritesWithRepositoryPattern fallback method using repository pattern
+func (s *FavoriteService) getFavoritesWithRepositoryPattern(ctx context.Context, userID string) ([]*models.Favorite, error) {
 	// Get favorites
 	favorites, err := s.favoriteRepo.GetByUserID(ctx, userID)
 	if err != nil {
@@ -92,6 +129,8 @@ func (s *FavoriteService) GetFavoritesWithProducts(ctx context.Context, userID s
 		var product models.Product
 		_, err := s.productRepo.GetByID(ctx, favorite.ProductID, &product)
 		if err == nil {
+			// Populate images and inventory from normalized tables
+			s.populateProductDetails(ctx, &product)
 			favorite.Product = &product
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
+	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,7 @@ import (
 ) // CartHandler handles cart operations using the cart service
 type CartHandler struct {
 	cartService services.CartServiceInterface
+	userService *services.UserService
 	logger      *zap.Logger
 	authContext *auth.AuthContext
 	deliverySvc services.DeliveryServiceInterface
@@ -28,9 +30,10 @@ func round2(f float64) float64 {
 }
 
 // NewCartHandler creates a new cart handler with cart service
-func NewCartHandler(cartService services.CartServiceInterface, logger *zap.Logger) *CartHandler {
+func NewCartHandler(cartService services.CartServiceInterface, userService *services.UserService, logger *zap.Logger) *CartHandler {
 	return &CartHandler{
 		cartService: cartService,
+		userService: userService,
 		logger:      logger,
 		authContext: auth.NewAuthContext(),
 	}
@@ -42,11 +45,124 @@ func (h *CartHandler) SetDeliveryService(svc services.DeliveryServiceInterface) 
 }
 
 // authenticateUser is a helper method to get authenticated user ID
+// It maps Firebase UIDs to internal user IDs, auto-creating users if needed
 func (h *CartHandler) authenticateUser(c *gin.Context) (string, bool) {
 	userID, authenticated := h.authContext.GetAuthenticatedUserID(c)
 	if !authenticated {
 		return "", false
 	}
+
+	// Check if this is a Firebase UID (they typically don't start with "USER")
+	// Internal user IDs start with "USER" prefix
+	if !strings.HasPrefix(userID, "USER") {
+		// This is likely a Firebase UID, map it to internal user ID
+		if h.userService != nil {
+			userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
+			if err == nil && userResponse != nil && userResponse.Data != nil {
+				// Extract the internal user ID from the response
+				if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
+					if internalID, ok := userMap["id"].(string); ok {
+						return internalID, true
+					}
+				}
+			}
+
+			// User doesn't exist in local database - auto-create from Firebase
+			h.logger.Info("User not found in local database, attempting to auto-create from Firebase",
+				zap.String("firebase_uid", userID))
+
+			firebaseClient := config.GetFirebaseAuth()
+			if firebaseClient == nil {
+				h.logger.Error("Firebase client not initialized, cannot auto-create user",
+					zap.String("firebase_uid", userID))
+				// Do not fall back to Firebase UID as DB user ID
+				return "", false
+			}
+
+			firebaseUser, firebaseErr := firebaseClient.GetUser(c.Request.Context(), userID)
+			if firebaseErr != nil {
+				h.logger.Error("Failed to get user from Firebase",
+					zap.String("firebase_uid", userID),
+					zap.Error(firebaseErr))
+				// Do not fall back to Firebase UID as DB user ID
+				return "", false
+			}
+
+			// Try to find existing user by email or phone
+			var existingUser map[string]interface{}
+			if firebaseUser.Email != "" {
+				emailResponse, _ := h.userService.GetUserByEmail(c.Request.Context(), firebaseUser.Email)
+				if emailResponse != nil && emailResponse.Success && emailResponse.Data != nil {
+					existingUser, _ = emailResponse.Data.(map[string]interface{})
+				}
+			}
+			if existingUser == nil && firebaseUser.PhoneNumber != "" {
+				phoneResponse, _ := h.userService.GetUserByPhoneNumber(c.Request.Context(), firebaseUser.PhoneNumber)
+				if phoneResponse != nil && phoneResponse.Success && phoneResponse.Data != nil {
+					existingUser, _ = phoneResponse.Data.(map[string]interface{})
+				}
+			}
+
+			if existingUser != nil {
+				// User exists, link Firebase UID
+				internalID := existingUser["id"].(string)
+				h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalID, userID)
+				h.logger.Info("Linked Firebase UID to existing user",
+					zap.String("firebase_uid", userID),
+					zap.String("internal_id", internalID))
+				return internalID, true
+			}
+
+			// Create new user
+			displayName := firebaseUser.DisplayName
+			if displayName == "" {
+				displayName = "User"
+			}
+
+			if firebaseUser.PhoneNumber != "" && firebaseUser.Email == "" {
+				// Phone user
+				phoneReq := requests.PhoneSignupRequest{
+					PhoneNumber: firebaseUser.PhoneNumber,
+					Name:        displayName,
+				}
+				createResponse, createErr := h.userService.CreatePhoneUser(c.Request.Context(), &phoneReq)
+				if createErr == nil && createResponse != nil && createResponse.Success {
+					if userData, ok := createResponse.Data.(map[string]interface{}); ok {
+						if id, ok := userData["id"].(string); ok {
+							h.userService.UpdateUserFirebaseUID(c.Request.Context(), id, userID)
+							h.logger.Info("Auto-created phone user",
+								zap.String("firebase_uid", userID),
+								zap.String("internal_id", id))
+							return id, true
+						}
+					}
+				}
+			} else {
+				// Email/Google user
+				signupReq := requests.SignupRequest{
+					Email:    firebaseUser.Email,
+					Name:     displayName,
+					Password: "",
+				}
+				createResponse, createErr := h.userService.CreateGoogleUser(c.Request.Context(), &signupReq, userID)
+				if createErr == nil && createResponse != nil && createResponse.Success {
+					if userData, ok := createResponse.Data.(map[string]interface{}); ok {
+						if id, ok := userData["id"].(string); ok {
+							h.logger.Info("Auto-created Google user",
+								zap.String("firebase_uid", userID),
+								zap.String("internal_id", id))
+							return id, true
+						}
+					}
+				}
+			}
+
+			h.logger.Error("Failed to auto-create user in local database",
+				zap.String("firebase_uid", userID))
+			return "", false
+		}
+	}
+
 	return userID, true
 }
 

@@ -21,22 +21,31 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 	}
 	defer logger.Sync()
 
-	// Create cart handler with cart service
+	// Create session cart handler
+	var sessionCartHandler *handlers.SessionCartHandler
+	if serviceManager != nil && serviceManager.CartService != nil && serviceManager.SessionCartService != nil && serviceManager.UserService != nil {
+		sessionCartHandler = handlers.NewSessionCartHandler(serviceManager.CartService, serviceManager.SessionCartService, serviceManager.UserService, logger)
+	}
+
+	// Create original cart handler for authenticated-only operations
 	var cartHandler *handlers.CartHandler
-	if serviceManager != nil && serviceManager.CartService != nil {
-		cartHandler = handlers.NewCartHandler(serviceManager.CartService, logger)
+	if serviceManager != nil && serviceManager.CartService != nil && serviceManager.UserService != nil {
+		cartHandler = handlers.NewCartHandler(serviceManager.CartService, serviceManager.UserService, logger)
 		if serviceManager.DeliveryService != nil {
 			cartHandler.SetDeliveryService(serviceManager.DeliveryService)
 		}
 	} else {
-		logger.Error("Cart service not available in service manager")
+		logger.Error("Cart service or user service not available in service manager")
 	}
 
-	// Cart routes (requires authentication)
+	// Public cart routes (no authentication required, but can detect auth if present)
 	cart := r.Group("/cart")
 
-	// Apply authentication middleware with error recovery
-	cart.Use(middleware.FirebaseAuthMiddleware())
+	// Apply cart-specific CORS middleware
+	cart.Use(middleware.CORSMiddlewareWithConfig(middleware.CartCORSConfig()))
+
+	// Apply optional authentication middleware to detect auth when present
+	cart.Use(middleware.OptionalFirebaseAuth())
 
 	// Add error recovery middleware for cart routes
 	cart.Use(func(c *gin.Context) {
@@ -53,55 +62,76 @@ func RegisterCartRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		c.Next()
 	})
 
-	// Check if cart handler is available
-	if cartHandler != nil {
-		// Core cart operations
-		cart.GET("", cartHandler.GetCart)                // Get user's cart
-		cart.GET("/summary", cartHandler.GetCartSummary) // Get cart summary
-		cart.GET("/count", cartHandler.GetCartItemCount) // Get item count
-		cart.GET("/validate", cartHandler.ValidateCart)  // Validate cart
+	// Check if session cart handler is available
+	if sessionCartHandler != nil {
+		// Core cart operations (work for both authenticated and anonymous users)
+		cart.GET("", sessionCartHandler.GetCart)                             // Get user's cart
+		cart.GET("/summary", sessionCartHandler.GetCartSummary)              // Get cart summary
+		cart.POST("/items", sessionCartHandler.AddToCart)                    // Add item to cart
+		cart.PUT("/items/:product_id", sessionCartHandler.UpdateCartItem)    // Update cart item
+		cart.DELETE("/items/:product_id", sessionCartHandler.RemoveFromCart) // Remove item from cart
+		cart.DELETE("/clear", sessionCartHandler.ClearCart)                  // Clear entire cart
 
-		// Cart item management
-		cart.POST("/items", cartHandler.AddToCart)                               // Add item to cart
-		cart.PUT("/items/:product_id", cartHandler.UpdateCartItem)               // Update cart item
-		cart.POST("/items/:product_id/increment", cartHandler.IncrementCartItem) // Increment cart item quantity
-		cart.POST("/items/:product_id/decrement", cartHandler.DecrementCartItem) // Decrement cart item quantity
-		cart.DELETE("/items/:product_id", cartHandler.RemoveFromCart)            // Remove item from cart
+		// Coupon operations (work for both authenticated and anonymous users)
+		cart.POST("/apply-coupon", sessionCartHandler.ApplyCoupon)      // Apply coupon to cart
+		cart.DELETE("/remove-coupon", sessionCartHandler.RemoveCoupon)  // Remove coupon from cart
+		cart.GET("/validate-coupon", sessionCartHandler.ValidateCoupon) // Validate coupon for cart
 
-		// Clear cart operation
-		cart.DELETE("/clear", cartHandler.ClearCart) // Clear entire cart
-
-		// Health check for cart service
-		cart.GET("/health", cartHandler.HealthCheck) // Service health
-
-		// Admin operations (should be protected by admin middleware in production)
-		admin := cart.Group("/admin")
+		// Cart migration endpoints (require authentication)
+		authenticated := cart.Group("")
+		authenticated.Use(middleware.FirebaseAuthMiddleware())
 		{
-			admin.POST("/cleanup-duplicates", cartHandler.CleanupDuplicateCarts) // Clean up duplicate carts
+			authenticated.POST("/migrate", sessionCartHandler.MigrateCart) // Migrate session cart to user cart
+			authenticated.POST("/merge", sessionCartHandler.MergeCart)     // Merge session cart with user cart
 		}
 
-		logger.Info("Cart routes registered successfully")
+		logger.Info("Session cart routes registered successfully")
 	} else {
-		// Fallback when cart service is not available
+		// Fallback when session cart service is not available
 		cart.Any("/*path", func(c *gin.Context) {
-			logger.Warn("Cart service unavailable for request", zap.String("path", c.Request.URL.Path))
+			logger.Warn("Session cart service unavailable for request", zap.String("path", c.Request.URL.Path))
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"success": false,
 				"error":   "Cart service temporarily unavailable",
 			})
 		})
 
-		logger.Warn("Cart routes registered with fallback handlers - service unavailable")
+		logger.Warn("Session cart routes registered with fallback handlers - service unavailable")
 	}
 
-	// Checkout routes
+	// Authenticated-only cart routes (require authentication)
 	if cartHandler != nil {
-		checkout := cart.Group("/checkout")
+		authenticatedCart := r.Group("/cart")
+		// Apply cart-specific CORS middleware for authenticated routes too
+		authenticatedCart.Use(middleware.CORSMiddlewareWithConfig(middleware.CartCORSConfig()))
+		authenticatedCart.Use(middleware.FirebaseAuthMiddleware())
+
+		// Advanced cart operations (require authentication)
+		authenticatedCart.GET("/count", cartHandler.GetCartItemCount) // Get item count
+		authenticatedCart.GET("/validate", cartHandler.ValidateCart)  // Validate cart
+
+		// Increment/Decrement operations (require authentication)
+		authenticatedCart.POST("/items/:product_id/increment", cartHandler.IncrementCartItem) // Increment cart item quantity
+		authenticatedCart.POST("/items/:product_id/decrement", cartHandler.DecrementCartItem) // Decrement cart item quantity
+
+		// Health check for cart service
+		authenticatedCart.GET("/health", cartHandler.HealthCheck) // Service health
+
+		// Admin operations (should be protected by admin middleware in production)
+		admin := authenticatedCart.Group("/admin")
+		{
+			admin.POST("/cleanup-duplicates", cartHandler.CleanupDuplicateCarts) // Clean up duplicate carts
+		}
+
+		// Checkout routes (require authentication)
+		checkout := authenticatedCart.Group("/checkout")
 		{
 			checkout.GET("/prepare", cartHandler.PrepareCheckout)
 			checkout.POST("/estimate-shipping", cartHandler.EstimateShipping)
 			checkout.POST("/apply-coupon", cartHandler.ApplyCoupon)
 			checkout.DELETE("/remove-coupon", cartHandler.RemoveCoupon)
 		}
+
+		logger.Info("Authenticated cart routes registered successfully")
 	}
 }

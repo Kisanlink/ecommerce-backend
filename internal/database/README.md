@@ -109,7 +109,7 @@ Required environment variable:
 
 Example:
 ```bash
-export POSTGRES_DSN="host=localhost user=postgres password=password dbname=ecommerce port=5432 sslmode=disable"
+export POSTGRES_DSN="postgresql://neondb_owner:password@ep-your-neon-host.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 ```
 
 ## Migration Order

@@ -202,11 +202,15 @@ func getDatabaseDSN() string {
 	user := getEnvOrDefault("DB_POSTGRES_USER", "postgres")
 	password := getEnvOrDefault("DB_POSTGRES_PASSWORD", "12345678")
 	dbname := getEnvOrDefault("DB_POSTGRES_DBNAME", "DemoDB")
-	sslmode := getEnvOrDefault("DB_POSTGRES_SSLMODE", "disable")
+	sslmode := getEnvOrDefault("DB_POSTGRES_SSLMODE", "require")
+	channelBinding := os.Getenv("DB_POSTGRES_CHANNEL_BINDING")
 
 	// Try Docker Compose configuration first
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s TimeZone=Asia/Kolkata",
 		host, user, password, dbname, port, sslmode)
+	if channelBinding != "" {
+		dsn = fmt.Sprintf("%s channel_binding=%s", dsn, channelBinding)
+	}
 
 	log.Printf("Using database connection: host=%s, port=%s, user=%s, dbname=%s", host, port, user, dbname)
 	return dsn

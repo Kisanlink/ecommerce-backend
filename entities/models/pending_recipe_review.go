@@ -1,8 +1,11 @@
 package models
 
 import (
+	"time"
+
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
+	"github.com/lib/pq"
 )
 
 // PendingRecipeReviewStatus represents the status of a recipe review
@@ -17,27 +20,27 @@ const (
 // PendingRecipeReview represents a recipe submitted by a user that needs admin approval
 type PendingRecipeReview struct {
 	*base.BaseModel `gorm:"embedded"`
-	ReviewID        string                    `json:"review_id" dynamodb:"review_id"` // Primary key
-	UserID          string                    `json:"user_id" dynamodb:"user_id"`     // User who submitted the recipe
-	Status          PendingRecipeReviewStatus `json:"status" dynamodb:"status"`       // pending, approved, rejected
-	SubmittedAt     string                    `json:"submitted_at" dynamodb:"submitted_at"`
-	ReviewedAt      string                    `json:"reviewed_at" dynamodb:"reviewed_at,omitempty"`
-	ReviewedBy      string                    `json:"reviewed_by" dynamodb:"reviewed_by,omitempty"` // Admin who reviewed
-	RejectionReason string                    `json:"rejection_reason" dynamodb:"rejection_reason,omitempty"`
+	ReviewID        string                    `json:"review_id" gorm:"type:varchar(64);uniqueIndex"` // Primary key
+	UserID          string                    `json:"user_id" gorm:"type:varchar(64);index"`         // User who submitted the recipe
+	Status          PendingRecipeReviewStatus `json:"status" gorm:"type:varchar(32);index"`          // pending, approved, rejected
+	SubmittedAt     time.Time                 `json:"submitted_at" gorm:"not null"`
+	ReviewedAt      *time.Time                `json:"reviewed_at,omitempty"` // Nullable timestamp
+	ReviewedBy      string                    `json:"reviewed_by,omitempty"` // Admin who reviewed
+	RejectionReason string                    `json:"rejection_reason,omitempty"`
 
 	// Recipe data (same structure as Recipe model)
-	Name            string            `json:"name" dynamodb:"name"`
-	Category        string            `json:"category" dynamodb:"category"`
-	Description     string            `json:"description" dynamodb:"description"`
-	DemoDescription string            `json:"demo_description" dynamodb:"demo_description"`
-	PrepTime        string            `json:"prep_time" dynamodb:"prep_time"`
-	Servings        int               `json:"servings" dynamodb:"servings"`
-	Difficulty      string            `json:"difficulty" dynamodb:"difficulty"`
-	Image           string            `json:"image" dynamodb:"image"`
-	Ingredients     []string          `json:"ingredients" dynamodb:"ingredients"`
-	Instructions    []string          `json:"instructions" dynamodb:"instructions"`
-	NutritionFacts  map[string]string `json:"nutrition_facts" dynamodb:"nutrition_facts"`
-	ProTips         []string          `json:"pro_tips" dynamodb:"pro_tips"`
+	Name            string            `json:"name"`
+	Category        string            `json:"category"`
+	Description     string            `json:"description" gorm:"type:text"`
+	DemoDescription string            `json:"demo_description" gorm:"type:text"`
+	PrepTime        string            `json:"prep_time"`
+	Servings        int               `json:"servings"`
+	Difficulty      string            `json:"difficulty"`
+	Image           string            `json:"image"`
+	Ingredients     pq.StringArray    `json:"ingredients" gorm:"type:text[]"`
+	Instructions    pq.StringArray    `json:"instructions" gorm:"type:text[]"`
+	NutritionFacts  map[string]string `json:"nutrition_facts" gorm:"type:jsonb;serializer:json"`
+	ProTips         pq.StringArray    `json:"pro_tips" gorm:"type:text[]"`
 }
 
 // NewPendingRecipeReview creates a new pending recipe review
@@ -48,7 +51,7 @@ func NewPendingRecipeReview(userID string, recipe *Recipe) *PendingRecipeReview 
 		ReviewID:        baseModel.GetID(),
 		UserID:          userID,
 		Status:          StatusPending,
-		SubmittedAt:     baseModel.GetCreatedAt().Format("2006-01-02T15:04:05Z07:00"),
+		SubmittedAt:     baseModel.GetCreatedAt(),
 		Name:            recipe.Name,
 		Category:        recipe.Category,
 		Description:     recipe.Description,
@@ -89,17 +92,19 @@ func (prr *PendingRecipeReview) ToRecipe() *Recipe {
 
 // Approve marks the recipe review as approved
 func (prr *PendingRecipeReview) Approve(reviewedBy string) {
+	now := time.Now()
 	prr.Status = StatusApproved
 	prr.ReviewedBy = reviewedBy
-	prr.ReviewedAt = base.NewBaseModel("", hash.Small).GetCreatedAt().Format("2006-01-02T15:04:05Z07:00")
+	prr.ReviewedAt = &now
 }
 
 // Reject marks the recipe review as rejected with a reason
 func (prr *PendingRecipeReview) Reject(reviewedBy, reason string) {
+	now := time.Now()
 	prr.Status = StatusRejected
 	prr.ReviewedBy = reviewedBy
 	prr.RejectionReason = reason
-	prr.ReviewedAt = base.NewBaseModel("", hash.Small).GetCreatedAt().Format("2006-01-02T15:04:05Z07:00")
+	prr.ReviewedAt = &now
 }
 
 // TableName returns the table name for GORM
