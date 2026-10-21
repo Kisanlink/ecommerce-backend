@@ -52,7 +52,8 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 	// Check secret key from environment (for initial setup)
 	adminSecretKey := os.Getenv("ADMIN_SECRET_KEY")
 	if adminSecretKey == "" {
-		adminSecretKey = "amrti-admin-setup-2024" // Default secret key
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Server misconfigured: ADMIN_SECRET_KEY not set"})
+		return
 	}
 
 	if req.SecretKey != adminSecretKey {

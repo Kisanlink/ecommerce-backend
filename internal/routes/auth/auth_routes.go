@@ -10,8 +10,13 @@ import (
 
 // RegisterAuthRoutes registers all authentication related routes
 func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
-	// Firebase Auth Handler with UserService and ProfileService dependency injection
-	firebaseAuth := handlers.NewFirebaseAuthHandler(serviceManager.UserService, serviceManager.ProfileService)
+	// Firebase Auth Handler with UserService, ProfileService, WhatsAppService, and OTPService dependency injection
+	firebaseAuth := handlers.NewFirebaseAuthHandler(
+		serviceManager.UserService,
+		serviceManager.ProfileService,
+		serviceManager.WhatsAppService,
+		serviceManager.OTPService,
+	)
 
 	// Firebase Authentication routes
 	auth := r.Group("/auth")

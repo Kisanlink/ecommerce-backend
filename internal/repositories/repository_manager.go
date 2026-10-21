@@ -29,11 +29,17 @@ type RepositoryManager struct {
 
 	// Database manager for accessing GORM DB instance
 	dbManager db.DBManager
+	pgManager *db.PostgresManager
 }
 
 // GetDBManager returns the database manager
 func (rm *RepositoryManager) GetDBManager() db.DBManager {
 	return rm.dbManager
+}
+
+// GetPostgresManager returns the Postgres manager for direct GORM access
+func (rm *RepositoryManager) GetPostgresManager() *db.PostgresManager {
+	return rm.pgManager
 }
 
 // NewRepositoryManager creates a new repository manager with database manager
@@ -71,6 +77,7 @@ func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager,
 		CouponRepository:              NewCouponRepository(dbManager, logger), // Coupon repository
 		RedisManager:                  redisManager,
 		dbManager:                     dbManager, // Store dbManager for access
+		pgManager:                     pgManager, // Store pgManager for direct GORM access
 	}
 }
 

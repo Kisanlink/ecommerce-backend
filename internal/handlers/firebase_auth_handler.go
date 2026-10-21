@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,15 +22,24 @@ import (
 
 // FirebaseAuthHandler handles Firebase authentication operations
 type FirebaseAuthHandler struct {
-	userService    *services.UserService
-	profileService *services.ProfileService
+	userService     *services.UserService
+	profileService  *services.ProfileService
+	whatsappService *services.WhatsAppService
+	otpService      *services.OTPService
 }
 
 // NewFirebaseAuthHandler creates a new Firebase auth handler
-func NewFirebaseAuthHandler(userService *services.UserService, profileService *services.ProfileService) *FirebaseAuthHandler {
+func NewFirebaseAuthHandler(
+	userService *services.UserService,
+	profileService *services.ProfileService,
+	whatsappService *services.WhatsAppService,
+	otpService *services.OTPService,
+) *FirebaseAuthHandler {
 	return &FirebaseAuthHandler{
-		userService:    userService,
-		profileService: profileService,
+		userService:     userService,
+		profileService:  profileService,
+		whatsappService: whatsappService,
+		otpService:      otpService,
 	}
 }
 
@@ -117,8 +127,7 @@ func (h *FirebaseAuthHandler) Signup(c *gin.Context) {
 
 	userRecord, err := client.CreateUser(ctx, params)
 	if err != nil {
-		// If Firebase creation fails, we should remove the user from local database
-		// For now, we'll just log this error and continue
+		h.userService.SoftDeleteUser(ctx, userID, "system")
 		utils.RespondWithError(c, http.StatusBadRequest, "Failed to create user in Firebase", err)
 		return
 	}
@@ -373,7 +382,7 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 				userByEmailResponse, _ := h.userService.GetUserByEmail(ctx, signInResp.Email)
 				if userByEmailResponse != nil && userByEmailResponse.Success {
 					localUser = userByEmailResponse.Data.(map[string]interface{})
-					userID := localUser["id"].(string)
+					userID, _ := localUser["id"].(string)
 
 					// Ensure profile exists
 					profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
@@ -429,7 +438,7 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 		if userResponse != nil && userResponse.Success {
 			// User exists in local database
 			localUser = userResponse.Data.(map[string]interface{})
-			userID := localUser["id"].(string)
+			userID, _ := localUser["id"].(string)
 
 			// Check if user has a profile, create if not
 			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
@@ -452,7 +461,7 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			if userByEmailResponse != nil && userByEmailResponse.Success {
 				// User exists but may not have Firebase UID linked
 				localUser = userByEmailResponse.Data.(map[string]interface{})
-				userID := localUser["id"].(string)
+				userID, _ := localUser["id"].(string)
 
 				// Link Firebase UID to existing user
 				err = h.userService.UpdateUserFirebaseUID(ctx, userID, userRecord.UID)
@@ -538,7 +547,7 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 			}
 
 			// Check if user has a profile, create if not (fallback path)
-			userID := localUser["id"].(string)
+			userID, _ := localUser["id"].(string)
 			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
 			if profile == nil || profileErr != nil {
 				// Profile doesn't exist, create it
@@ -1013,7 +1022,7 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 			existingUserResponse, _ := h.userService.GetUserByEmail(ctx, googleResponse.Email)
 			if existingUserResponse != nil && existingUserResponse.Success {
 				localUser = existingUserResponse.Data.(map[string]interface{})
-				userID := localUser["id"].(string)
+				userID, _ := localUser["id"].(string)
 				// Update Firebase UID if not set
 				if localUser["firebase_uid"] == "" || localUser["firebase_uid"] == nil {
 					h.userService.UpdateUserFirebaseUID(ctx, userID, googleResponse.LocalId)
@@ -1039,7 +1048,7 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 		} else {
 			if userResponse.Success {
 				localUser = userResponse.Data.(map[string]interface{})
-				userID := localUser["id"].(string)
+				userID, _ := localUser["id"].(string)
 
 				// Automatically create profile for the new Google user
 				profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, googleResponse.Email)
@@ -1057,7 +1066,7 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 		userResponse, _ := h.userService.GetUserByFirebaseUID(ctx, googleResponse.LocalId)
 		if userResponse != nil && userResponse.Success {
 			localUser = userResponse.Data.(map[string]interface{})
-			userID := localUser["id"].(string)
+			userID, _ := localUser["id"].(string)
 
 			// Check if profile exists, create if not
 			profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
@@ -1079,7 +1088,7 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 			if userByEmailResponse != nil && userByEmailResponse.Success {
 				localUser = userByEmailResponse.Data.(map[string]interface{})
 				// Update Firebase UID
-				userID := localUser["id"].(string)
+				userID, _ := localUser["id"].(string)
 				h.userService.UpdateUserFirebaseUID(ctx, userID, googleResponse.LocalId)
 
 				// Check if profile exists, create if not
@@ -1135,7 +1144,7 @@ func (h *FirebaseAuthHandler) handleFirebaseGoogleUser(c *gin.Context, userRecor
 	if userResponse != nil && userResponse.Success {
 		// User exists in local database
 		localUser = userResponse.Data.(map[string]interface{})
-		userID := localUser["id"].(string)
+		userID, _ := localUser["id"].(string)
 
 		// Check if user has a profile, create if not
 		profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)
@@ -1157,7 +1166,7 @@ func (h *FirebaseAuthHandler) handleFirebaseGoogleUser(c *gin.Context, userRecor
 		if userByEmailResponse != nil && userByEmailResponse.Success {
 			// User exists with email but not linked to Firebase UID
 			localUser = userByEmailResponse.Data.(map[string]interface{})
-			userID := localUser["id"].(string)
+			userID, _ := localUser["id"].(string)
 
 			// Update Firebase UID
 			h.userService.UpdateUserFirebaseUID(ctx, userID, userRecord.UID)
@@ -1193,7 +1202,7 @@ func (h *FirebaseAuthHandler) handleFirebaseGoogleUser(c *gin.Context, userRecor
 
 			if userResponse.Success {
 				localUser = userResponse.Data.(map[string]interface{})
-				userID := localUser["id"].(string)
+				userID, _ := localUser["id"].(string)
 
 				// Automatically create profile for the new Google user
 				profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, userRecord.Email)
@@ -1275,15 +1284,15 @@ type FirebasePhoneVerificationResponse struct {
 	IsNewUser    bool   `json:"isNewUser"`
 }
 
-// SendPhoneVerificationCode sends SMS verification code to phone number
-// @Summary Send SMS verification code
-// @Description Send SMS verification code to the provided phone number
+// SendPhoneVerificationCode sends WhatsApp verification code to phone number
+// @Summary Send WhatsApp verification code
+// @Description Send verification code to the provided phone number via WhatsApp
 // @Tags Authentication
 // @Accept json
 // @Produce json
 // @Param request body requests.SendPhoneCodeRequest true "Phone number for verification"
-// @Success 200 {object} map[string]interface{} "SMS code sent successfully"
-// @Failure 400 {object} map[string]interface{} "Invalid request format"
+// @Success 200 {object} map[string]interface{} "Verification code sent successfully"
+// @Failure 400 {object} map[string]interface{} "Invalid request format or cooldown active"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /auth/phone/send-code [post]
 func (h *FirebaseAuthHandler) SendPhoneVerificationCode(c *gin.Context) {
@@ -1293,82 +1302,43 @@ func (h *FirebaseAuthHandler) SendPhoneVerificationCode(c *gin.Context) {
 		return
 	}
 
-	// Get Firebase Web API Key from environment
-	firebaseAPIKey := os.Getenv("FIREBASE_WEB_API_KEY")
-	if firebaseAPIKey == "" {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase Web API Key not configured", nil)
+	normalizedPhone := normalizePhoneE164(req.PhoneNumber)
+	if normalizedPhone == "" {
+		utils.RespondWithError(c, http.StatusBadRequest, "Invalid phone number format. Use E.164 format (e.g. +919876543210)", nil)
 		return
 	}
+	req.PhoneNumber = normalizedPhone
 
-	// Prepare Firebase Auth REST API request
-	phoneReq := FirebasePhoneRequest{
-		PhoneNumber:    req.PhoneNumber,
-		RecaptchaToken: req.RecaptchaToken,
-	}
+	ctx := c.Request.Context()
 
-	jsonData, err := json.Marshal(phoneReq)
+	// Step 1: Generate & save OTP in database
+	sessionInfo, otpCode, err := h.otpService.GenerateAndSaveOTP(ctx, req.PhoneNumber)
 	if err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to prepare phone verification request", err)
-		return
-	}
-
-	// Call Firebase Auth REST API
-	url := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:sendVerificationCode?key=%s", firebaseAPIKey)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to send verification code", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to read verification response", err)
-		return
-	}
-
-	// Handle API errors
-	if resp.StatusCode != http.StatusOK {
-		var firebaseError FirebaseErrorResponse
-		if err := json.Unmarshal(body, &firebaseError); err == nil {
-			errorMessage := "Failed to send verification code"
-			if len(firebaseError.Error.Errors) > 0 {
-				switch firebaseError.Error.Errors[0].Message {
-				case "INVALID_PHONE_NUMBER":
-					errorMessage = "Invalid phone number format"
-				case "TOO_MANY_ATTEMPTS_TRY_LATER":
-					errorMessage = "Too many attempts. Please try again later"
-				case "MISSING_CLIENT_IDENTIFIER":
-					errorMessage = "Missing client identifier. Please ensure reCAPTCHA is properly configured"
-				case "INVALID_RECAPTCHA_TOKEN":
-					errorMessage = "Invalid reCAPTCHA token. Please try again"
-				default:
-					errorMessage = firebaseError.Error.Errors[0].Message
-				}
-			}
-			utils.RespondWithError(c, http.StatusBadRequest, errorMessage, nil)
-		} else {
-			utils.RespondWithError(c, http.StatusInternalServerError, "Failed to send verification code", nil)
+		if errors.Is(err, services.ErrOTPCooldown) {
+			utils.RespondWithError(c, http.StatusTooManyRequests, "Please wait 60 seconds before requesting another code", nil)
+			return
 		}
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to generate verification code", err)
 		return
 	}
 
-	// Parse successful response
-	var phoneResponse FirebasePhoneResponse
-	if err := json.Unmarshal(body, &phoneResponse); err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to parse verification response", err)
+	// Step 2: Send OTP via WhatsApp — roll back the DB record if delivery fails
+	if err := h.whatsappService.SendOTPMessage(ctx, req.PhoneNumber, otpCode); err != nil {
+		h.otpService.DeleteOTP(ctx, sessionInfo)
+		fmt.Printf("⚠️ Failed to send WhatsApp OTP to %s: %v\n", req.PhoneNumber, err)
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to send WhatsApp message. Please check your phone number and try again.", err)
 		return
 	}
 
 	utils.RespondWithSuccess(c, gin.H{
-		"message":      "Verification code sent successfully",
-		"session_info": phoneResponse.SessionInfo,
+		"message":      "Verification code sent via WhatsApp successfully",
+		"session_info": sessionInfo,
 	})
 }
 
-// VerifyPhoneCode verifies SMS code and signs in/up the user
-// @Summary Verify SMS code and authenticate
-// @Description Verify SMS code and sign in or sign up the user
+// VerifyPhoneCode verifies OTP code and signs in/up the user
+// @Summary Verify WhatsApp OTP code and authenticate
+// @Description Verify OTP code and sign in or sign up the user
 // @Tags Authentication
 // @Accept json
 // @Produce json
@@ -1385,109 +1355,63 @@ func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
 		return
 	}
 
-	// Get Firebase Web API Key from environment
-	firebaseAPIKey := os.Getenv("FIREBASE_WEB_API_KEY")
-	if firebaseAPIKey == "" {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase Web API Key not configured", nil)
+	ctx := c.Request.Context()
+
+	// Normalize phone to E.164 so OTP lookup and Firebase both use the same format
+	normalizedPhone := normalizePhoneE164(req.PhoneNumber)
+	if normalizedPhone == "" {
+		utils.RespondWithError(c, http.StatusBadRequest, "Invalid phone number format. Use E.164 format (e.g. +919876543210)", nil)
 		return
 	}
+	req.PhoneNumber = normalizedPhone
 
-	// Use the session info from the request (returned from send-code endpoint)
-	// Prepare Firebase Auth REST API request
-	verifyReq := FirebasePhoneVerificationRequest{
-		SessionInfo: req.SessionInfo, // Use the actual session info from send-code
-		Code:        req.Code,
-	}
-
-	jsonData, err := json.Marshal(verifyReq)
-	if err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to prepare verification request", err)
-		return
-	}
-
-	// Call Firebase Auth REST API
-	url := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPhoneNumber?key=%s", firebaseAPIKey)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to verify code", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to read verification response", err)
-		return
-	}
-
-	// Handle API errors
-	if resp.StatusCode != http.StatusOK {
-		var firebaseError FirebaseErrorResponse
-		if err := json.Unmarshal(body, &firebaseError); err == nil {
-			errorMessage := "Invalid verification code"
-			if len(firebaseError.Error.Errors) > 0 {
-				switch firebaseError.Error.Errors[0].Message {
-				case "INVALID_CODE":
-					errorMessage = "Invalid or expired verification code"
-				case "SESSION_EXPIRED":
-					errorMessage = "Verification session expired. Please request a new code"
-				default:
-					errorMessage = firebaseError.Error.Errors[0].Message
-				}
-			}
-			utils.RespondWithError(c, http.StatusUnauthorized, errorMessage, nil)
-		} else {
-			utils.RespondWithError(c, http.StatusInternalServerError, "Failed to verify code", nil)
+	// Step 1: Verify OTP with OTPService
+	if err := h.otpService.VerifyOTP(ctx, req.PhoneNumber, req.Code, req.SessionInfo); err != nil {
+		switch {
+		case errors.Is(err, services.ErrOTPNotFound):
+			utils.RespondWithError(c, http.StatusBadRequest, "Verification session not found or expired. Please request a new code", nil)
+		case errors.Is(err, services.ErrOTPExpired):
+			utils.RespondWithError(c, http.StatusBadRequest, "Verification code has expired. Please request a new code", nil)
+		case errors.Is(err, services.ErrOTPAlreadyUsed):
+			utils.RespondWithError(c, http.StatusBadRequest, "Verification code has already been used. Please request a new code", nil)
+		case errors.Is(err, services.ErrOTPMaxRetries):
+			utils.RespondWithError(c, http.StatusTooManyRequests, "Too many failed attempts. Please request a new code", nil)
+		case errors.Is(err, services.ErrOTPInvalid):
+			utils.RespondWithError(c, http.StatusUnauthorized, "Invalid verification code. Please check and try again", nil)
+		default:
+			utils.RespondWithError(c, http.StatusInternalServerError, "Verification failed", err)
 		}
 		return
 	}
 
-	// Parse successful response
-	var verifyResponse FirebasePhoneVerificationResponse
-	if err := json.Unmarshal(body, &verifyResponse); err != nil {
-		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to parse verification response", err)
-		return
-	}
-
-	ctx := context.Background()
-
-	// Handle user creation/retrieval in local database
+	// Step 2: Handle user creation/retrieval in NeonDB (local database)
 	var localUser map[string]interface{}
+	isNewUser := false
 
-	// First, try to get existing user from local database
-	userResponse, _ := h.userService.GetUserByPhoneNumber(ctx, verifyResponse.PhoneNumber)
+	userResponse, _ := h.userService.GetUserByPhoneNumber(ctx, req.PhoneNumber)
 	if userResponse != nil && userResponse.Success {
-		// User exists in local database
 		localUser = userResponse.Data.(map[string]interface{})
-		userID := localUser["id"].(string)
+		userID, _ := localUser["id"].(string)
 
-		// Update Firebase UID if not set
-		if localUser["firebase_uid"] == "" {
-			err := h.userService.UpdateUserFirebaseUID(ctx, userID, verifyResponse.LocalId)
-			if err != nil {
-				fmt.Printf("Failed to update Firebase UID for user %s: %v\n", userID, err)
-			}
-			localUser["firebase_uid"] = verifyResponse.LocalId
-		}
-
-		// Check if profile exists for this user, create if it doesn't
-		// This handles the case where user signed up but profile creation failed
-		// Pass empty string for email since phone users don't have email - CreateAutoProfile will handle it
+		// Check if profile exists, create if missing
 		profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, "")
 		if profileErr != nil {
 			if !strings.Contains(profileErr.Error(), "profile already exists") {
 				fmt.Printf("⚠️ Warning: Failed to create profile during phone verification for existing user: %v\n", profileErr)
-			} else {
-				fmt.Printf("ℹ️ Profile already exists for user: %s\n", userID)
 			}
 		} else {
-			fmt.Printf("✅ Profile successfully created in NeonDB during phone verification (existing user): ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
+			fmt.Printf("✅ Profile created for existing user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
 		}
 	} else {
-		// Create new user in local database
+		// New user
+		isNewUser = true
+		userName := req.Name
+		if userName == "" {
+			userName = "User"
+		}
 		phoneSignupReq := requests.PhoneSignupRequest{
-			PhoneNumber: verifyResponse.PhoneNumber,
-			Name:        "User", // Default name, can be updated later
+			PhoneNumber: req.PhoneNumber,
+			Name:        userName,
 		}
 
 		userResponse, err := h.userService.CreatePhoneUser(ctx, &phoneSignupReq)
@@ -1498,42 +1422,120 @@ func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
 
 		if userResponse.Success {
 			localUser = userResponse.Data.(map[string]interface{})
+			userID, _ := localUser["id"].(string)
 
-			// Update Firebase UID for the new user
-			userID := localUser["id"].(string)
-			err = h.userService.UpdateUserFirebaseUID(ctx, userID, verifyResponse.LocalId)
-			if err != nil {
-				fmt.Printf("Failed to update Firebase UID for new user %s: %v\n", userID, err)
-			}
-			localUser["firebase_uid"] = verifyResponse.LocalId
-
-			// Automatically create profile for the new phone user (dedicated profile section)
-			// Pass empty string for email since phone users don't have email - CreateAutoProfile will handle it
 			profile, profileErr := h.profileService.CreateAutoProfile(ctx, userID, "")
 			if profileErr != nil {
 				if !strings.Contains(profileErr.Error(), "profile already exists") {
 					fmt.Printf("⚠️ Warning: Failed to create profile during phone verification: %v\n", profileErr)
 				}
 			} else {
-				fmt.Printf("✅ Profile successfully created in NeonDB during phone verification: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
+				fmt.Printf("✅ Profile created for new user: ProfileID=%s, UserID=%s\n", profile.GetID(), userID)
 			}
 		}
 	}
 
-	// Prepare response
+	// Step 3: Get or create Firebase Auth user for phone number & mint custom token
+	firebaseClient := config.GetFirebaseAuth()
+	if firebaseClient == nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase not initialized", nil)
+		return
+	}
+
+	var firebaseUID string
+	fbUser, fbErr := firebaseClient.GetUserByPhoneNumber(ctx, req.PhoneNumber)
+	if fbErr != nil {
+		// Firebase user does not exist yet — create one with this phone number
+		displayName := req.Name
+		if displayName == "" {
+			displayName = "User"
+		}
+		params := (&auth.UserToCreate{}).
+			PhoneNumber(req.PhoneNumber).
+			DisplayName(displayName)
+		newFbUser, createErr := firebaseClient.CreateUser(ctx, params)
+		if createErr != nil || newFbUser == nil {
+			utils.RespondWithError(c, http.StatusInternalServerError, "Failed to create Firebase user", createErr)
+			return
+		}
+		firebaseUID = newFbUser.UID
+	} else if fbUser != nil {
+		firebaseUID = fbUser.UID
+	}
+
+	if firebaseUID == "" {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to resolve Firebase user", nil)
+		return
+	}
+
+	// Update local user's firebase_uid if not yet linked
+	if localUser != nil {
+		userID, _ := localUser["id"].(string)
+		if localUser["firebase_uid"] == "" || localUser["firebase_uid"] == nil {
+			if err := h.userService.UpdateUserFirebaseUID(ctx, userID, firebaseUID); err != nil {
+				fmt.Printf("⚠️ Warning: Failed to update Firebase UID for user %s: %v\n", userID, err)
+			}
+			localUser["firebase_uid"] = firebaseUID
+		}
+	}
+
+	// Mint Firebase custom token
+	customToken, ctErr := firebaseClient.CustomToken(ctx, firebaseUID)
+	if ctErr != nil || customToken == "" {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to mint authentication token", ctErr)
+		return
+	}
+
+	// Exchange custom token for real id_token & refresh_token via Google Identity Toolkit
+	firebaseAPIKey := os.Getenv("FIREBASE_WEB_API_KEY")
+	if firebaseAPIKey == "" {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase Web API Key not configured", nil)
+		return
+	}
+
+	exchangeReq := map[string]interface{}{
+		"token":             customToken,
+		"returnSecureToken": true,
+	}
+	jsonData, _ := json.Marshal(exchangeReq)
+	exchangeURL := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=%s", firebaseAPIKey)
+	exchangeResp, postErr := http.Post(exchangeURL, "application/json", bytes.NewBuffer(jsonData))
+	if postErr != nil {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to exchange token with Firebase", postErr)
+		return
+	}
+	defer exchangeResp.Body.Close()
+	body, _ := io.ReadAll(exchangeResp.Body)
+	if exchangeResp.StatusCode != http.StatusOK {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Firebase token exchange failed", fmt.Errorf("status %d: %s", exchangeResp.StatusCode, string(body)))
+		return
+	}
+
+	var tokenData struct {
+		IdToken      string `json:"idToken"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	if err := json.Unmarshal(body, &tokenData); err != nil || tokenData.IdToken == "" {
+		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to parse Firebase token response", err)
+		return
+	}
+	idToken := tokenData.IdToken
+	refreshToken := tokenData.RefreshToken
+
+	// Step 4: Construct and return response
+
 	responseData := gin.H{
 		"message":       "Phone authentication successful",
-		"id_token":      verifyResponse.IdToken,
-		"refresh_token": verifyResponse.RefreshToken,
-		"expires_in":    verifyResponse.ExpiresIn,
+		"id_token":      idToken,
+		"refresh_token": refreshToken,
+		"expires_in":    "3600",
 		"user": gin.H{
-			"uid":          verifyResponse.LocalId,
-			"phone_number": verifyResponse.PhoneNumber,
-			"is_new_user":  verifyResponse.IsNewUser,
+			"uid":          firebaseUID,
+			"phone_number": req.PhoneNumber,
+			"is_new_user":  isNewUser,
 		},
 	}
 
-	// Add local database fields if available
 	if localUser != nil {
 		responseData["user"].(gin.H)["id"] = localUser["id"]
 		responseData["user"].(gin.H)["name"] = localUser["name"]
@@ -1611,6 +1613,40 @@ func (h *FirebaseAuthHandler) PhoneSignup(c *gin.Context) {
 			"created_at":   userData["created_at"],
 		},
 	})
+}
+
+// normalizePhoneE164 converts an Indian phone number to E.164 format (+91XXXXXXXXXX).
+// Returns empty string if the input cannot be normalized.
+func normalizePhoneE164(phone string) string {
+	// Strip all non-digit characters except leading +
+	var digits strings.Builder
+	for i, r := range phone {
+		if r == '+' && i == 0 {
+			continue // skip leading + — we'll add it back
+		}
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	d := digits.String()
+	switch len(d) {
+	case 10:
+		// Bare 10-digit Indian number — add +91
+		return "+91" + d
+	case 12:
+		if strings.HasPrefix(d, "91") {
+			return "+" + d
+		}
+	case 13:
+		if strings.HasPrefix(d, "091") {
+			return "+" + d[1:]
+		}
+	}
+	// Already has country code or unknown format — return as-is with + prefix
+	if len(d) >= 11 {
+		return "+" + d
+	}
+	return ""
 }
 
 // Helper function to decode base64url payload from JWT tokens
