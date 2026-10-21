@@ -209,6 +209,8 @@ type WhatsAppEnvConfig struct {
 	BusinessAcctID string
 	WebhookToken   string
 	APIBaseURL     string
+	OTPTemplate    string
+	OrderTemplate  string
 }
 
 // GetWhatsAppEnvConfig returns WhatsApp config from environment variables
@@ -222,6 +224,8 @@ func GetWhatsAppEnvConfig() WhatsAppEnvConfig {
 		BusinessAcctID: os.Getenv("WHATSAPP_BUSINESS_ACCOUNT_ID"),
 		WebhookToken:   os.Getenv("WHATSAPP_WEBHOOK_TOKEN"),
 		APIBaseURL:     getEnvOrDefault("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v22.0"),
+		OTPTemplate:    os.Getenv("WHATSAPP_OTP_TEMPLATE_NAME"),
+		OrderTemplate:  getEnvOrDefault("WHATSAPP_ORDER_TEMPLATE_NAME", "mani_test1"),
 	}
 }
 

@@ -368,14 +368,17 @@ func (w *WhatsAppService) sendOrderConfirmationAmrtiEcomTemplate(ctx context.Con
 
 	url := fmt.Sprintf("%s/%s/messages", w.config.APIBaseURL, w.config.PhoneNumberID)
 
-	// Template structure for mani_test1:
-	// - Body: 4 text parameters (customer name {{1}}, order number {{2}}, tracking URL {{3}}, order items {{4}})
+	templateName := strings.TrimSpace(w.config.OrderTemplate)
+	if templateName == "" {
+		templateName = "mani_test1"
+	}
+
 	requestBody := map[string]interface{}{
 		"messaging_product": "whatsapp",
 		"to":                formattedPhone,
 		"type":              "template",
 		"template": map[string]interface{}{
-			"name": "mani_test1",
+			"name": templateName,
 			"language": map[string]string{
 				"code": "en",
 			},
@@ -928,3 +931,146 @@ func (w *WhatsAppService) extractOrderItems(order *models.Order) string {
 	return formattedItems
 }
 
+// SendOTPMessage sends an OTP verification code via WhatsApp
+func (w *WhatsAppService) SendOTPMessage(ctx context.Context, phoneNumber, otpCode string) error {
+	if !w.config.Enabled {
+		w.logger.Warn("WhatsApp service is disabled, skipping OTP send", zap.String("phone", phoneNumber))
+		return nil
+	}
+
+	formattedPhone := w.formatPhoneNumber(phoneNumber)
+	if formattedPhone == "" {
+		w.logger.Error("Invalid phone number for OTP", zap.String("phone", phoneNumber))
+		return fmt.Errorf("invalid phone number: %s", phoneNumber)
+	}
+
+	templateName := strings.TrimSpace(w.config.OTPTemplate)
+	if templateName == "" {
+		// Text messages only work within a 24-hour user-initiated session window.
+		// In production this will be rejected (Meta error 131026). Only use for local dev.
+		w.logger.Warn("WHATSAPP_OTP_TEMPLATE_NAME not set, falling back to text message (dev only)",
+			zap.String("phone", formattedPhone))
+		return w.sendTextOTP(ctx, formattedPhone, otpCode)
+	}
+
+	// Use configured template
+	return w.sendTemplateOTP(ctx, formattedPhone, templateName, otpCode)
+}
+
+// sendTemplateOTP sends an OTP using a registered Meta message template
+func (w *WhatsAppService) sendTemplateOTP(ctx context.Context, formattedPhone, templateName, otpCode string) error {
+	url := fmt.Sprintf("%s/%s/messages", w.config.APIBaseURL, w.config.PhoneNumberID)
+
+	requestBody := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                formattedPhone,
+		"type":              "template",
+		"template": map[string]interface{}{
+			"name": templateName,
+			"language": map[string]string{
+				"code": "en",
+			},
+			"components": []map[string]interface{}{
+				{
+					"type": "body",
+					"parameters": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": otpCode,
+						},
+					},
+				},
+				{
+					"type":     "button",
+					"sub_type": "url",
+					"index":    "0",
+					"parameters": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": otpCode,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return w.executeWhatsAppRequest(ctx, url, requestBody, formattedPhone, "template:"+templateName)
+}
+
+// sendTextOTP sends an OTP as a standard text message
+func (w *WhatsAppService) sendTextOTP(ctx context.Context, formattedPhone, otpCode string) error {
+	url := fmt.Sprintf("%s/%s/messages", w.config.APIBaseURL, w.config.PhoneNumberID)
+
+	messageText := fmt.Sprintf("Your Amrti verification code is: %s. Valid for 5 minutes. Do not share this code with anyone.", otpCode)
+
+	requestBody := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                formattedPhone,
+		"type":              "text",
+		"text": map[string]interface{}{
+			"preview_url": false,
+			"body":        messageText,
+		},
+	}
+
+	return w.executeWhatsAppRequest(ctx, url, requestBody, formattedPhone, "text_otp")
+}
+
+// executeWhatsAppRequest executes the HTTP request to Meta Cloud API and handles logging/errors
+func (w *WhatsAppService) executeWhatsAppRequest(ctx context.Context, url string, requestBody map[string]interface{}, formattedPhone, messageType string) error {
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		w.logger.Error("Failed to marshal WhatsApp request", zap.String("phone", formattedPhone), zap.Error(err))
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		w.logger.Error("Failed to create WhatsApp request", zap.String("phone", formattedPhone), zap.Error(err))
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.config.AccessToken)
+
+	resp, err := w.client.Do(req)
+	if err != nil {
+		w.logger.Error("WhatsApp API request failed (network error)",
+			zap.String("phone", formattedPhone),
+			zap.String("type", messageType),
+			zap.Error(err),
+		)
+		return fmt.Errorf("WhatsApp network error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		var errResp WhatsAppError
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error.Message != "" {
+			w.logger.Error("WhatsApp API returned error",
+				zap.String("phone", formattedPhone),
+				zap.Int("status", resp.StatusCode),
+				zap.String("message", errResp.Error.Message),
+				zap.Int("code", errResp.Error.Code),
+			)
+			return fmt.Errorf("WhatsApp API error (%d): %s", errResp.Error.Code, errResp.Error.Message)
+		}
+		w.logger.Error("WhatsApp API returned non-200 status",
+			zap.String("phone", formattedPhone),
+			zap.Int("status", resp.StatusCode),
+			zap.String("body", string(bodyBytes)),
+		)
+		return fmt.Errorf("WhatsApp API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	w.logger.Info("WhatsApp OTP sent successfully",
+		zap.String("phone", formattedPhone),
+		zap.String("type", messageType),
+		zap.Int("status", resp.StatusCode),
+	)
+	return nil
+}

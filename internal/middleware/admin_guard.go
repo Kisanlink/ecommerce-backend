@@ -19,7 +19,11 @@ func AdminGuard(repoManager *repositories.RepositoryManager) gin.HandlerFunc {
 			return
 		}
 
-		uid := uidVal.(string)
+		uid, ok := uidVal.(string)
+		if !ok || uid == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid auth context"})
+			return
+		}
 		// Lookup user by firebase_uid and verify role; fallback to email if not linked
 		ctx := context.Background()
 		userRepo := repoManager.UserRepository

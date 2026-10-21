@@ -662,10 +662,10 @@ func createAdminUser(ctx context.Context, database *gorm.DB) error {
 	// Create new admin user
 	adminUser := &models.User{
 		BaseModel:   base.NewBaseModel("USER", hash.Medium),
-		Email:       adminEmail,
+		Email:       &adminEmail,
 		Name:        "Admin User",
 		Password:    "mani1355",
-		FirebaseUID: "",
+		FirebaseUID: nil,
 		Role:        "admin",
 		IsVerified:  true,
 		IsActive:    true,

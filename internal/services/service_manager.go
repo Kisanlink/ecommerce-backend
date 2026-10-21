@@ -22,6 +22,7 @@ type ServiceManager struct {
 	ReviewService          *ReviewService
 	ImageService           ImageServiceInterface
 	WhatsAppService        *WhatsAppService
+	OTPService             *OTPService
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -60,6 +61,9 @@ func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceMana
 	// Create WhatsApp service
 	whatsappService := NewWhatsAppService(logger)
 
+	// Create OTP service
+	otpService := NewOTPService(repoManager.GetPostgresManager(), logger)
+
 	return &ServiceManager{
 		UserService:            userService,
 		ProductService:         NewProductService(repoManager),
@@ -76,5 +80,6 @@ func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceMana
 		ReviewService:          reviewService,
 		ImageService:           imageService,
 		WhatsAppService:        whatsappService,
+		OTPService:             otpService,
 	}
 }
