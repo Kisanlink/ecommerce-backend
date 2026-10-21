@@ -1,0 +1,4 @@
+# Force LF for shell scripts so they can be exec'd inside Linux containers
+# (prevents the "exec ./entrypoint.sh: no such file or directory" CRLF bug on Windows)
+*.sh text eol=lf
+entrypoint.sh text eol=lf

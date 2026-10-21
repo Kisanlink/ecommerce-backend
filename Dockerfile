@@ -38,8 +38,10 @@ COPY --from=builder /app/main .
 # Copy entrypoint script
 COPY entrypoint.sh /app/entrypoint.sh
 
-# Change ownership to non-root user
-RUN chown -R appuser:appgroup /app && \
+# Normalize line endings (strip CR in case entrypoint.sh was checked out as CRLF on Windows),
+# then set ownership and make it executable
+RUN sed -i 's/\r$//' /app/entrypoint.sh && \
+    chown -R appuser:appgroup /app && \
     chmod +x /app/entrypoint.sh
 
 # Switch to non-root user
