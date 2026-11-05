@@ -155,6 +155,12 @@ func (r *CartRepositoryImpl) GetUserCart(ctx context.Context, userID string) (*m
 
 	// Update cache asynchronously for future reads
 	go func() {
+		// SECURITY (#39): a panic in a detached goroutine crashes the whole process; recover it.
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.logger.Error("recovered panic in cart cache refresh goroutine", zap.Any("panic", rec))
+			}
+		}()
 		if cartCache := r.convertCartToCache(dbCart); cartCache != nil {
 			r.SaveCartToCache(context.Background(), cartCache)
 		}
@@ -215,6 +221,12 @@ func (r *CartRepositoryImpl) getUserCartFromDB(ctx context.Context, userID strin
 
 		// Delete the other carts to maintain one cart per user rule
 		go func() {
+			// SECURITY (#39): recover so a panic here cannot crash the process.
+			defer func() {
+				if rec := recover(); rec != nil {
+					r.logger.Error("recovered panic in duplicate-cart cleanup goroutine", zap.Any("panic", rec))
+				}
+			}()
 			for _, c := range carts {
 				if c.ID != cart.ID {
 					r.logger.Info("Deleting duplicate cart",
@@ -307,6 +319,12 @@ func (r *CartRepositoryImpl) UpdateCart(ctx context.Context, cart *models.Cart) 
 
 	// Update cache asynchronously
 	go func() {
+		// SECURITY (#39): recover so a panic here cannot crash the process.
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.logger.Error("recovered panic in post-update cart cache goroutine", zap.Any("panic", rec))
+			}
+		}()
 		if cartCache := r.convertCartToCache(cart); cartCache != nil {
 			r.SaveCartToCache(context.Background(), cartCache)
 		}
@@ -327,6 +345,12 @@ func (r *CartRepositoryImpl) DeleteCart(ctx context.Context, cartID, userID stri
 
 	// Clear cache
 	go func() {
+		// SECURITY (#39): recover so a panic here cannot crash the process.
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.logger.Error("recovered panic in cart cache delete goroutine", zap.Any("panic", rec))
+			}
+		}()
 		r.DeleteCartFromCache(context.Background(), userID)
 	}()
 
