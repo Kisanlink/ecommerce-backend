@@ -2168,7 +2168,18 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		return
 	}
 
-	// Read request body
+	// SECURITY (#30): cap the body size BEFORE reading it. The body is read prior to signature
+	// verification, so without a cap an unauthenticated client could force large allocations.
+	const maxWebhookBodyBytes = 1 << 20 // 1 MiB; Razorpay webhooks are only a few KB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBodyBytes)
+
+	// Event ID for observability / replay diagnostics. We intentionally do NOT reject on event
+	// age: Razorpay legitimately retries webhook delivery for hours, so a timestamp cutoff would
+	// drop valid late events. Replay safety instead comes from the idempotent fulfillment path
+	// (finalizeFulfillment deducts inventory / creates a shipment at most once per order).
+	eventID := c.GetHeader("X-Razorpay-Event-Id")
+
+	// Read request body (bounded by MaxBytesReader above)
 	body, err := c.GetRawData()
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", zap.Error(err))
@@ -2176,7 +2187,7 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify signature + parse
+	// Verify signature + parse. Nothing in the payload is trusted until this succeeds.
 	webhook, err := h.paymentService.ParseWebhook(body, signature)
 	if err != nil {
 		h.logger.Error("Webhook signature/parse failed", zap.Error(err))
@@ -2184,7 +2195,9 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Razorpay webhook received", zap.String("event", webhook.Event))
+	h.logger.Info("Razorpay webhook received",
+		zap.String("event", webhook.Event),
+		zap.String("event_id", eventID))
 
 	// Server-side fulfillment safety net: if the browser never completed /payments/verify, or the
 	// shipment failed there, the webhook independently drives fulfillment. All paths are idempotent.
@@ -2225,8 +2238,9 @@ func (h *PaymentHandler) fulfillFromWebhook(ctx context.Context, rzpOrderID, pay
 		return
 	}
 
-	// Persist the captured payment ID for reconciliation if we don't have it yet.
-	if paymentID != "" && order.RazorpayPaymentID == "" {
+	// Persist the captured payment ID for reconciliation if we don't have it yet. Defense-in-depth:
+	// only accept a well-formed Razorpay payment id, even though the payload is signature-verified.
+	if strings.HasPrefix(paymentID, "pay_") && order.RazorpayPaymentID == "" {
 		order.RazorpayPaymentID = paymentID
 		if uerr := h.orderService.UpdateOrder(ctx, order); uerr != nil {
 			h.logger.Warn("Webhook: failed to persist payment ID",
