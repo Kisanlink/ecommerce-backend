@@ -234,9 +234,20 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Map Firebase UID to internal user ID if needed
+	// Map Firebase UID to internal user ID if needed. Before taking payment we must
+	// resolve a real local user — refuse rather than attach the order to a raw Firebase
+	// UID (#25), which would never match ownership checks and orphan the order.
 	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
-		userID = h.mapFirebaseUIDToInternalUserID(c, userID)
+		resolvedUserID, mapErr := h.mapFirebaseUIDToInternalUserID(c, userID)
+		if mapErr != nil || !strings.HasPrefix(resolvedUserID, "USER") {
+			h.logger.Error("Rejecting payment order: could not resolve caller to a local user",
+				zap.String("request_id", requestID),
+				zap.String("firebase_uid", userID),
+				zap.Error(mapErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "We could not verify your account. Please sign in again and retry."})
+			return
+		}
+		userID = resolvedUserID
 	}
 
 	h.logger.Info("User authenticated for payment order creation",
@@ -626,27 +637,28 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		return
 	}
 
-	// Map Firebase UID to internal user ID
+	// Map Firebase UID to internal user ID. Normally the user already exists (it was
+	// resolved/created at create-order), so this resolves on the first lookup. We must
+	// NOT fall back to the raw Firebase UID as the order owner (#25) — that pollutes
+	// ownership. If resolution genuinely fails (near-impossible after a successful
+	// create-order), do not silently mis-own the order: report that the captured payment
+	// will be reconciled (the order.paid/payment.captured webhook, bound to the
+	// server-set notes.user_id, remains the safety net).
 	internalUserID := userID
 	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
-		// This is likely a Firebase UID, map it to internal user ID
-		userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
-		if err == nil && userResponse != nil && userResponse.Data != nil {
-			// Extract the internal user ID from the response
-			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
-				if id, ok := userMap["id"].(string); ok {
-					internalUserID = id
-					h.logger.Info("Mapped Firebase UID to internal user ID for payment verification",
-						zap.String("firebase_uid", userID),
-						zap.String("internal_id", internalUserID))
-				}
-			}
-		} else {
-			h.logger.Error("Failed to map Firebase UID to internal user ID in VerifyPayment",
+		resolved, mapErr := h.mapFirebaseUIDToInternalUserID(c, userID)
+		if mapErr != nil || !strings.HasPrefix(resolved, "USER") {
+			h.logger.Error("VerifyPayment: could not resolve caller to a local user; refusing to own the order with a Firebase UID",
+				zap.String("request_id", requestID),
 				zap.String("firebase_uid", userID),
-				zap.Error(err))
-			// Continue with Firebase UID as fallback
+				zap.Error(mapErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment received. We could not finalize your order automatically; it will be reconciled shortly."})
+			return
 		}
+		internalUserID = resolved
+		h.logger.Info("Mapped Firebase UID to internal user ID for payment verification",
+			zap.String("firebase_uid", userID),
+			zap.String("internal_id", internalUserID))
 	}
 
 	var req VerifyPaymentRequest
@@ -2707,13 +2719,19 @@ func (h *PaymentHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID s
 	return false
 }
 
-func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebaseUID string) string {
+// mapFirebaseUIDToInternalUserID resolves a Firebase UID to the internal USER… id,
+// auto-creating/linking a local user when needed. It returns an error rather than
+// falling back to the Firebase UID (#25): attaching an order/payment to a raw Firebase
+// UID pollutes ownership (it never matches the internal id ownership checks compare
+// against). Callers must treat an error as "could not identify the account" and refuse
+// to proceed, not silently continue with a non-user id.
+func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebaseUID string) (string, error) {
 	// Try to get user by Firebase UID
 	userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
 	if err == nil && userResponse != nil && userResponse.Data != nil {
 		if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
 			if id, ok := userMap["id"].(string); ok {
-				return id
+				return id, nil
 			}
 		}
 	}
@@ -2722,13 +2740,13 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 	firebaseClient := config.GetFirebaseAuth()
 	if firebaseClient == nil {
 		h.logger.Error("Firebase client not initialized", zap.String("firebase_uid", firebaseUID))
-		return firebaseUID // Return as-is (fallback)
+		return "", fmt.Errorf("firebase client not initialized")
 	}
 
 	firebaseUser, firebaseErr := firebaseClient.GetUser(c.Request.Context(), firebaseUID)
 	if firebaseErr != nil {
 		h.logger.Error("Failed to get user from Firebase", zap.String("firebase_uid", firebaseUID), zap.Error(firebaseErr))
-		return firebaseUID
+		return "", fmt.Errorf("failed to look up firebase user: %w", firebaseErr)
 	}
 
 	// Check for existing user by email or phone
@@ -2750,7 +2768,7 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 		internalID := existingUser["id"].(string)
 		h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalID, firebaseUID)
 		h.logger.Info("Linked Firebase UID to existing user", zap.String("firebase_uid", firebaseUID), zap.String("internal_id", internalID))
-		return internalID
+		return internalID, nil
 	}
 
 	// Create new user
@@ -2767,7 +2785,7 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 				if id, ok := userData["id"].(string); ok {
 					h.userService.UpdateUserFirebaseUID(c.Request.Context(), id, firebaseUID)
 					h.logger.Info("Auto-created phone user", zap.String("firebase_uid", firebaseUID), zap.String("internal_id", id))
-					return id
+					return id, nil
 				}
 			}
 		}
@@ -2778,14 +2796,14 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 			if userData, ok := createResponse.Data.(map[string]interface{}); ok {
 				if id, ok := userData["id"].(string); ok {
 					h.logger.Info("Auto-created Google user", zap.String("firebase_uid", firebaseUID), zap.String("internal_id", id))
-					return id
+					return id, nil
 				}
 			}
 		}
 	}
 
 	h.logger.Error("Failed to auto-create user", zap.String("firebase_uid", firebaseUID))
-	return firebaseUID
+	return "", fmt.Errorf("failed to resolve or create a local user for firebase uid")
 }
 
 // CreateMagicCheckoutOrder creates a Razorpay order specifically for Magic Checkout
