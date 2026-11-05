@@ -16,6 +16,9 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		serviceManager.ProfileService,
 		serviceManager.WhatsAppService,
 		serviceManager.OTPService,
+		serviceManager.CartService,
+		serviceManager.AddressService,
+		serviceManager.FavoriteService,
 	)
 
 	// Firebase Authentication routes

@@ -33,6 +33,10 @@ type FirebaseAuthHandler struct {
 	profileService  *services.ProfileService
 	whatsappService *services.WhatsAppService
 	otpService      *services.OTPService
+	// #37: used to cascade local cleanup when an account is deleted.
+	cartService     services.CartServiceInterface
+	addressService  services.AddressServiceInterface
+	favoriteService *services.FavoriteService
 }
 
 // NewFirebaseAuthHandler creates a new Firebase auth handler
@@ -41,12 +45,18 @@ func NewFirebaseAuthHandler(
 	profileService *services.ProfileService,
 	whatsappService *services.WhatsAppService,
 	otpService *services.OTPService,
+	cartService services.CartServiceInterface,
+	addressService services.AddressServiceInterface,
+	favoriteService *services.FavoriteService,
 ) *FirebaseAuthHandler {
 	return &FirebaseAuthHandler{
 		userService:     userService,
 		profileService:  profileService,
 		whatsappService: whatsappService,
 		otpService:      otpService,
+		cartService:     cartService,
+		addressService:  addressService,
+		favoriteService: favoriteService,
 	}
 }
 
@@ -755,15 +765,91 @@ func (h *FirebaseAuthHandler) DeleteAccount(c *gin.Context) {
 		return
 	}
 
+	// Resolve the internal user id BEFORE deleting the Firebase user, so we can
+	// cascade local cleanup afterwards (#37).
+	var internalUserID string
+	if resp, rerr := h.userService.GetUserByFirebaseUID(ctx, uid.(string)); rerr == nil && resp != nil && resp.Success {
+		if data, ok := resp.Data.(map[string]interface{}); ok {
+			if id, ok := data["id"].(string); ok {
+				internalUserID = id
+			}
+		}
+	}
+
 	err := client.DeleteUser(ctx, uid.(string))
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to delete user", err)
 		return
 	}
 
+	// #37: cascade local cleanup. The Firebase user is already gone, so these steps are
+	// best-effort: a failure is logged but does not fail the request (the account is
+	// already unusable for sign-in). Orders are intentionally RETAINED for accounting/audit.
+	if internalUserID != "" {
+		h.cascadeDeleteLocalUserData(ctx, internalUserID)
+	} else {
+		fmt.Printf("⚠️ DeleteAccount: could not resolve internal user id for firebase_uid; local data not purged\n")
+	}
+
 	utils.RespondWithSuccess(c, gin.H{
 		"message": "Account deleted successfully",
 	})
+}
+
+// cascadeDeleteLocalUserData purges the user's cart, saved addresses, favorites and
+// profile, then soft-deletes the local user record. Orders are RETAINED (#37). Each step
+// is best-effort and logged on failure; the account is already removed from Firebase.
+func (h *FirebaseAuthHandler) cascadeDeleteLocalUserData(ctx context.Context, userID string) {
+	// Cart
+	if h.cartService != nil {
+		if err := h.cartService.ClearCart(ctx, userID); err != nil {
+			fmt.Printf("⚠️ DeleteAccount: failed to clear cart for %s: %v\n", userID, err)
+		}
+	}
+
+	// Addresses (delete each saved address)
+	if h.addressService != nil {
+		if addrs, err := h.addressService.GetUserAddresses(ctx, userID); err == nil {
+			for _, a := range addrs {
+				if a == nil {
+					continue
+				}
+				if derr := h.addressService.DeleteAddress(ctx, userID, a.GetID()); derr != nil {
+					fmt.Printf("⚠️ DeleteAccount: failed to delete address %s for %s: %v\n", a.GetID(), userID, derr)
+				}
+			}
+		} else {
+			fmt.Printf("⚠️ DeleteAccount: failed to list addresses for %s: %v\n", userID, err)
+		}
+	}
+
+	// Favorites (remove each)
+	if h.favoriteService != nil {
+		if favs, _, err := h.favoriteService.GetUserFavorites(ctx, userID); err == nil {
+			for _, f := range favs {
+				if f == nil {
+					continue
+				}
+				if rerr := h.favoriteService.RemoveFavorite(ctx, userID, f.ProductID); rerr != nil {
+					fmt.Printf("⚠️ DeleteAccount: failed to remove favorite %s for %s: %v\n", f.ProductID, userID, rerr)
+				}
+			}
+		} else {
+			fmt.Printf("⚠️ DeleteAccount: failed to list favorites for %s: %v\n", userID, err)
+		}
+	}
+
+	// Profile
+	if h.profileService != nil {
+		if err := h.profileService.SoftDeleteProfileByUserID(ctx, userID, "self"); err != nil {
+			fmt.Printf("⚠️ DeleteAccount: failed to soft-delete profile for %s: %v\n", userID, err)
+		}
+	}
+
+	// Local user record (soft delete; orders keep their user_id for audit)
+	if _, err := h.userService.SoftDeleteUser(ctx, userID, "self"); err != nil {
+		fmt.Printf("⚠️ DeleteAccount: failed to soft-delete local user %s: %v\n", userID, err)
+	}
 }
 
 // Logout revokes the user's refresh tokens (server-side) and returns success.
