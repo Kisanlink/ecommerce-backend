@@ -647,7 +647,10 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	// Create shipment request
 	shipmentReq := requests.NewShipmentRequest(s.config.WarehouseName)
 
-	uniqueOrderID := fmt.Sprintf("%s_%d", order.ID, time.Now().Unix())
+	// #9 dedupe: use a DETERMINISTIC courier reference (the order ID) rather than appending a
+	// timestamp. A stable reference lets Delhivery reject a duplicate manifest for the same order,
+	// a second line of defense against double shipments on top of the atomic shipment claim.
+	uniqueOrderID := order.ID
 
 	// Use the address string we built (from OrderAddress, Address, or parsed string)
 	// Include phone number subtly in the address - not highlighted, just there if needed

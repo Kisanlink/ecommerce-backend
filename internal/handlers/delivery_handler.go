@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	authctx "github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
@@ -219,8 +220,35 @@ func (h *DeliveryHandler) CreateOrderShipment(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
 	}
+
+	// #11: never overwrite an existing shipment. If the order already has a waybill, refuse rather
+	// than creating a second parcel at the courier and losing the first AWB from the record.
+	if strings.TrimSpace(order.DelhiveryWaybill) != "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"message": "order already has a shipment",
+			"waybill": order.DelhiveryWaybill,
+		})
+		return
+	}
+
+	// #9: atomically claim the order so an admin double-click, or a concurrent webhook/verify,
+	// cannot both create a shipment. The admin claim permits retrying shipment_failed /
+	// needs_manual orders (e.g. after fixing the address) but still refuses a fulfilled order or
+	// one with an attempt in progress.
+	claimed, claimErr := h.orderService.ClaimOrderForShipmentAdmin(c.Request.Context(), orderID)
+	if claimErr != nil {
+		h.logger.Error("Failed to claim order for admin shipment", zap.Error(claimErr), zap.String("order_id", orderID))
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "could not lock order for shipment"})
+		return
+	}
+	if !claimed {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": "a shipment for this order is already in progress or completed"})
+		return
+	}
+
 	res, err := h.deliveryService.CreateShipment(c.Request.Context(), order, items)
-	if err != nil || res == nil || !res.Success {
+	if err != nil || res == nil || !res.Success || res.Waybill == "" {
 		msg := "shipment creation failed"
 		if res != nil && res.Message != "" {
 			msg = res.Message
@@ -228,22 +256,44 @@ func (h *DeliveryHandler) CreateOrderShipment(c *gin.Context) {
 		if err != nil {
 			h.logger.Error("Create shipment error", zap.Error(err), zap.String("order_id", orderID))
 		}
+		// Release the claim (shipment_failed is retryable) so it can be re-attempted after a fix.
+		_ = h.orderService.MarkFulfillmentStatus(c.Request.Context(), orderID, models.FulfillmentShipmentFailed, msg)
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": msg})
 		return
 	}
-	// Update order with shipment details
-	order.DelhiveryWaybill = res.Waybill
-	order.DelhiveryStatus = res.Status
-	order.TrackingURL = res.TrackingURL
-	if uerr := h.orderService.UpdateOrder(c.Request.Context(), order); uerr != nil {
-		h.logger.Warn("Failed to persist order shipment fields", zap.Error(uerr), zap.String("order_id", orderID))
+
+	trackingURL := res.TrackingURL
+	if trackingURL == "" {
+		trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", res.Waybill)
 	}
+
+	// Persist the waybill, advance the order to shipped, and mark fulfilled — one write.
+	if aerr := h.orderService.ApplyShipmentSuccess(c.Request.Context(), orderID, res.Waybill, trackingURL, res.Status); aerr != nil {
+		// #10: the parcel exists at the courier but we could not persist it — flag for manual
+		// reconciliation (NOT shipment_failed) so it is never automatically re-shipped.
+		h.logger.Error("Shipment created but DB update failed (admin path)",
+			zap.Error(aerr), zap.String("order_id", orderID), zap.String("waybill", res.Waybill))
+		_ = h.orderService.MarkFulfillmentStatus(c.Request.Context(), orderID, models.FulfillmentNeedsManual,
+			fmt.Sprintf("shipment created at courier (waybill %s) but DB update failed: %s — reconcile manually, do NOT re-ship", res.Waybill, aerr.Error()))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "shipment created but could not be saved; recorded for manual reconciliation",
+			"waybill": res.Waybill,
+		})
+		return
+	}
+
+	// Deduct inventory exactly once (idempotent; non-fatal).
+	if invErr := h.orderService.DeductInventoryForOrder(c.Request.Context(), orderID); invErr != nil {
+		h.logger.Warn("Inventory deduction failed (admin path)", zap.Error(invErr), zap.String("order_id", orderID))
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success":      true,
 		"order_id":     order.ID,
 		"waybill":      res.Waybill,
 		"status":       res.Status,
-		"tracking_url": res.TrackingURL,
+		"tracking_url": trackingURL,
 	})
 }
 

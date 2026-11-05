@@ -43,6 +43,7 @@ type OrderServiceInterface interface {
 	MarkFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error
 	DeductInventoryForOrder(ctx context.Context, orderID string) error
 	ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error)
+	ClaimOrderForShipmentAdmin(ctx context.Context, orderID string) (bool, error)
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
@@ -920,6 +921,14 @@ func (s *OrderService) ClaimOrderForShipment(ctx context.Context, orderID string
 		return false, fmt.Errorf("order repository unavailable")
 	}
 	return s.orderRepo.ClaimOrderForShipment(ctx, orderID)
+}
+
+// ClaimOrderForShipmentAdmin is the admin/manual-retry claim (see the repository method).
+func (s *OrderService) ClaimOrderForShipmentAdmin(ctx context.Context, orderID string) (bool, error) {
+	if s.orderRepo == nil {
+		return false, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ClaimOrderForShipmentAdmin(ctx, orderID)
 }
 
 func (s *OrderService) ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error {

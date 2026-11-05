@@ -664,6 +664,32 @@ func (r *OrderRepository) ClaimOrderForShipment(ctx context.Context, orderID str
 	return res.RowsAffected == 1, nil
 }
 
+// ClaimOrderForShipmentAdmin is the manual/admin-retry counterpart of ClaimOrderForShipment. It is
+// more permissive — it also allows re-attempting orders in shipment_failed or needs_manual_fulfillment
+// (e.g. after an admin corrects the address) — but it still refuses to claim an order that already
+// has a waybill, is fulfilled, or has an automated attempt in progress, so it can never create a
+// duplicate shipment.
+func (r *OrderRepository) ClaimOrderForShipmentAdmin(ctx context.Context, orderID string) (bool, error) {
+	if r.pgManager == nil {
+		return false, fmt.Errorf("postgres manager unavailable for shipment claim")
+	}
+	gdb, err := r.pgManager.GetDB(ctx, false)
+	if err != nil {
+		return false, fmt.Errorf("failed to get db for shipment claim: %w", err)
+	}
+
+	blocked := []string{models.FulfillmentFulfilled, models.FulfillmentShipmentInProgress}
+	res := gdb.WithContext(ctx).
+		Model(&models.Order{}).
+		Where("id = ? AND (delhivery_waybill IS NULL OR delhivery_waybill = '') AND (fulfillment_status IS NULL OR fulfillment_status NOT IN ?)",
+			orderID, blocked).
+		Update("fulfillment_status", models.FulfillmentShipmentInProgress)
+	if res.Error != nil {
+		return false, fmt.Errorf("failed to claim order for admin shipment: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // isDuplicateKeyError checks if an error is a duplicate key constraint violation
 func isDuplicateKeyError(err error) bool {
 	if err == nil {
