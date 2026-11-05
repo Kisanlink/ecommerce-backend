@@ -327,7 +327,10 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		return nil, fmt.Errorf("failed to load cart: %w", err)
 	}
 
-	if cart.TotalItems <= 0 {
+	// GetUserCart can return (nil, nil) when the user has no cart yet; guard before
+	// dereferencing it (#24) so an estimate for an empty cart returns a clean error
+	// instead of panicking.
+	if cart == nil || cart.TotalItems <= 0 {
 		return nil, fmt.Errorf("cart is empty; add items before estimating shipping")
 	}
 
