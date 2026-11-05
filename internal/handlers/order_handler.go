@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,19 +19,21 @@ import (
 
 // OrderHandler handles order-related HTTP requests
 type OrderHandler struct {
-	orderService services.OrderServiceInterface
-	userService  *services.UserService
-	authContext  *auth.AuthContext
-	logger       *zap.Logger
+	orderService   services.OrderServiceInterface
+	paymentService services.PaymentServiceInterface
+	userService    *services.UserService
+	authContext    *auth.AuthContext
+	logger         *zap.Logger
 }
 
 // NewOrderHandler creates a new order handler
-func NewOrderHandler(orderService services.OrderServiceInterface, userService *services.UserService, logger *zap.Logger) *OrderHandler {
+func NewOrderHandler(orderService services.OrderServiceInterface, paymentService services.PaymentServiceInterface, userService *services.UserService, logger *zap.Logger) *OrderHandler {
 	return &OrderHandler{
-		orderService: orderService,
-		userService:  userService,
-		authContext:  auth.NewAuthContext(),
-		logger:       logger,
+		orderService:   orderService,
+		paymentService: paymentService,
+		userService:    userService,
+		authContext:    auth.NewAuthContext(),
+		logger:         logger,
 	}
 }
 
@@ -767,7 +770,14 @@ func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
 		return
 	}
 	if err := h.orderService.UpdateOrderStatus(c.Request.Context(), orderID, models.OrderStatus(req.Status)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
+		switch {
+		case errors.Is(err, services.ErrUnknownOrderStatus):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown order status"})
+		case errors.Is(err, services.ErrInvalidStatusTransition):
+			c.JSON(http.StatusConflict, gin.H{"error": "Illegal order status transition"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Order status updated"})
@@ -789,7 +799,37 @@ func (h *OrderHandler) UpdatePayment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "payment_status is required"})
 		return
 	}
+
+	// SECURITY (#21): marking a payment paid/successful by hand must correspond to a real
+	// Razorpay capture — otherwise an admin (or a compromised admin token) could flip an
+	// unpaid order to paid and trigger fulfillment. Require a payment_id that Razorpay
+	// reports as "captured" (reusing the #12 capture gate). Other payment states
+	// (failed/refunded/pending) carry no such risk and are not gated here.
+	if req.PaymentStatus == "paid" || req.PaymentStatus == "successful" {
+		if h.paymentService == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verification unavailable"})
+			return
+		}
+		if strings.TrimSpace(req.PaymentID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "payment_id is required to mark an order paid"})
+			return
+		}
+		rzpPayment, err := h.paymentService.GetPaymentStatus(c.Request.Context(), req.PaymentID)
+		if err != nil || rzpPayment == nil || rzpPayment.Status != "captured" {
+			h.logger.Warn("Rejecting admin mark-paid: payment not captured",
+				zap.String("order_id", orderID),
+				zap.String("payment_id", req.PaymentID),
+				zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Payment is not captured; cannot mark order as paid"})
+			return
+		}
+	}
+
 	if err := h.orderService.UpdatePaymentStatus(c.Request.Context(), orderID, req.PaymentStatus, req.PaymentID); err != nil {
+		if errors.Is(err, services.ErrInvalidPaymentStatus) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payment status"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update payment status"})
 		return
 	}

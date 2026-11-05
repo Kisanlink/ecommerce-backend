@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -592,21 +593,87 @@ func (s *OrderService) GetUserOrders(ctx context.Context, userID string) ([]mode
 	return orders, nil
 }
 
-// UpdateOrderStatus updates the status of an order
+// Status-transition errors (#21). Handlers map these to 400/409 instead of a
+// blanket 500. Only the admin endpoints reach the validation below; the internal
+// payment-verify and fulfillment paths write through orderRepo / the Atomic
+// helpers directly and are intentionally not gated by it.
+var (
+	// ErrUnknownOrderStatus is returned for a status string outside the known set.
+	ErrUnknownOrderStatus = errors.New("unknown order status")
+	// ErrInvalidStatusTransition is returned for a known but illegal status move
+	// (e.g. delivered → pending, or skipping pending → delivered).
+	ErrInvalidStatusTransition = errors.New("invalid order status transition")
+	// ErrInvalidPaymentStatus is returned for a payment status outside the allowlist.
+	ErrInvalidPaymentStatus = errors.New("invalid payment status")
+)
+
+// allowedOrderStatusTransitions lists the only forward moves permitted along
+// pending → confirmed → shipped → delivered. Re-setting a status to itself is
+// also allowed (idempotent no-op); every other move, including any backward one,
+// is rejected.
+var allowedOrderStatusTransitions = map[models.OrderStatus]map[models.OrderStatus]bool{
+	models.OrderStatusPending:   {models.OrderStatusConfirmed: true},
+	models.OrderStatusConfirmed: {models.OrderStatusShipped: true},
+	models.OrderStatusShipped:   {models.OrderStatusDelivered: true},
+	models.OrderStatusDelivered: {},
+}
+
+func isKnownOrderStatus(s models.OrderStatus) bool {
+	switch s {
+	case models.OrderStatusPending, models.OrderStatusConfirmed, models.OrderStatusShipped, models.OrderStatusDelivered:
+		return true
+	}
+	return false
+}
+
+// allowedPaymentStatuses is the set an admin may set a payment to (#21).
+var allowedPaymentStatuses = map[string]bool{
+	"pending":    true,
+	"paid":       true,
+	"successful": true,
+	"failed":     true,
+	"refunded":   true,
+}
+
+// UpdateOrderStatus updates the status of an order, enforcing the allowed
+// forward-only state machine (#21). Rejects unknown statuses (ErrUnknownOrderStatus)
+// and illegal transitions (ErrInvalidStatusTransition) before touching the DB.
 func (s *OrderService) UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error {
+	if !isKnownOrderStatus(status) {
+		return fmt.Errorf("%w: %q", ErrUnknownOrderStatus, string(status))
+	}
+
+	current, err := s.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to load order for status update: %w", err)
+	}
+
+	if current.Status != status {
+		if !allowedOrderStatusTransitions[current.Status][status] {
+			return fmt.Errorf("%w: %s → %s", ErrInvalidStatusTransition, string(current.Status), string(status))
+		}
+	}
+
 	if err := s.orderRepo.UpdateOrderStatus(ctx, orderID, status); err != nil {
 		return fmt.Errorf("failed to update order status: %w", err)
 	}
 
 	s.logger.Info("Order status updated",
 		zap.String("order_id", orderID),
+		zap.String("from_status", string(current.Status)),
 		zap.String("status", string(status)))
 
 	return nil
 }
 
-// UpdatePaymentStatus updates the payment status and payment ID of an order
+// UpdatePaymentStatus updates the payment status and payment ID of an order.
+// The payment status must be in the allowlist (#21); callers in the internal
+// verify/webhook paths already pass allowlisted values ("successful"/"failed").
 func (s *OrderService) UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error {
+	if !allowedPaymentStatuses[paymentStatus] {
+		return fmt.Errorf("%w: %q", ErrInvalidPaymentStatus, paymentStatus)
+	}
+
 	if err := s.orderRepo.UpdatePaymentStatus(ctx, orderID, paymentStatus, paymentID); err != nil {
 		return fmt.Errorf("failed to update payment status: %w", err)
 	}
