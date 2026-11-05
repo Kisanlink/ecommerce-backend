@@ -574,6 +574,25 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 // @Failure 403 {object} map[string]interface{} "Access denied"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /orders/{id}/status [get]
+// callerOwnsOrder reports whether the authenticated caller owns an order with the given
+// owner id. Order.UserID holds the internal USER… id, so a Firebase-authenticated caller
+// (whose GetAuthenticatedUserID is a Firebase UID) must be mapped to the internal id before
+// comparison (#26) — otherwise legitimate owners are wrongly denied with 403.
+func (h *OrderHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return false
+	}
+	if ownerUserID == callerID {
+		return true
+	}
+	if !strings.HasPrefix(callerID, "USER") && h.userService != nil {
+		if internalID := h.mapFirebaseUIDToInternalUserID(c, callerID); internalID != "" && internalID == ownerUserID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -593,8 +612,8 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 		return
 	}
 
-	// Verify the order belongs to the authenticated user
-	if order.UserID != userID {
+	// Verify the order belongs to the authenticated user (resolves Firebase UID → internal id)
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
@@ -637,8 +656,8 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 		return
 	}
 
-	// Verify the order belongs to the authenticated user
-	if order.UserID != userID {
+	// Verify the order belongs to the authenticated user (resolves Firebase UID → internal id)
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
