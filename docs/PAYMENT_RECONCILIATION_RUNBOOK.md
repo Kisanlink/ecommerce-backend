@@ -20,15 +20,23 @@ Search logs for the quoted strings.
 |---|---------|-------------|-------------------|-----------------|----------------|
 | A | **Cart swap** — cart total exceeds amount paid at verify | `409 CART_AMOUNT_MISMATCH` | `Cart-swap guard: cart total exceeds amount paid` / `Rejecting verify: cart total exceeds amount paid (possible cart swap)` | Maybe (if the widget captured) | **No** |
 | B | **Gateway lookup failed** at verify, no existing order | `503 GATEWAY_LOOKUP_FAILED` | `Rejecting verify: Razorpay order lookup failed and no existing order` | Maybe | **No** |
-| C | **Paid, verify never ran** (closed tab) and the webhook can't rebuild the order | — (no client) | `Webhook: paid order has no matching DB order - needs manual reconciliation` | **Yes** | **No** |
+| C | **Paid, verify never ran** (closed tab) AND no cart snapshot exists to rebuild from | — (no client) | `Webhook: paid order has no matching DB order and no cart snapshot - needs manual reconciliation` or `failed to rebuild paid order from cart snapshot` | **Yes** | **No** |
 | D | **User-binding mismatch** at verify | `403` | `Rejecting verify: Razorpay order user binding missing or mismatched` | Maybe | **No** |
 | E | **Placeholder address** — paid order can't ship | — | `refusing shipment to placeholder/invalid address` / `shipping address is placeholder/invalid - needs manual fulfillment` | **Yes** | **Yes** (unshipped) |
 
 A, B and D are *pre-order* refusals: an order is **not** created and the cart is **not**
 cleared, so the customer can simply retry checkout (which mints a fresh Razorpay order for
 the current cart). The only open question is whether their **first** attempt actually
-captured money that now has no order. C is the classic "paid but no order". E is a paid
-order that is stuck unshipped (see the separate order-recovery runbook).
+captured money that now has no order. C is the classic "paid but no order" — but it is now
+**rebuilt automatically**: at create-order a durable cart snapshot (Postgres table
+`payment_cart_snapshots`, keyed by `razorpay_order_id`) is written, and when the webhook
+sees a captured payment with no order it rebuilds the confirmed order from that snapshot
+and fulfils it. The snapshot survives a process restart / host idle-sleep, so the rebuild
+works even when the server slept between payment and webhook. Case C therefore only lands
+here as a **manual** case when the snapshot is genuinely missing (a payment from before
+this shipped, or the snapshot write failed at create-order) or the rebuild errored — both
+log loudly. E is a paid order that is stuck unshipped (see the separate order-recovery
+runbook).
 
 ---
 
@@ -91,10 +99,11 @@ nothing delivered.
 - **Case B (gateway lookup failed):** if frequent, check Razorpay status / our outbound
   connectivity. These usually self-heal on retry or via the webhook; refund only the ones that
   stayed captured with no order.
-- **Case C (paid, no order):** the durable fix (persist a cart snapshot at create-order so the
-  webhook can rebuild the order) is a **known open item** — until it ships, case C is handled
-  manually here. Make sure the webhook is registered in the Razorpay dashboard so these at
-  least alert.
+- **Case C (paid, no order):** the durable fix has **shipped** — a cart snapshot is persisted at
+  create-order and the webhook rebuilds + fulfils the order from it, surviving restarts/idle-sleep.
+  A case C alert now means the snapshot was missing or the rebuild failed; reconcile manually and
+  check the `payment_cart_snapshots` row for that `razorpay_order_id`. The rebuild only fires if the
+  webhook reaches us, so the webhook MUST be registered in the Razorpay dashboard.
 - **Case E (placeholder address):** follow the order-recovery runbook; fix the address and ship,
   do not refund.
 
