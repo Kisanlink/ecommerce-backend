@@ -202,8 +202,10 @@ func (s *PaymentService) CreateOrder(ctx context.Context, userID string, amount 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		s.logger.Error("Razorpay API error", zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// SECURITY (#27): do not log the raw upstream body (may echo customer/payment
+		// details); log only the status and the body length.
+		s.logger.Error("Razorpay API error", zap.Int("status", resp.StatusCode), zap.Int("body_len", len(body)))
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
 	var order RazorpayOrder
@@ -321,11 +323,12 @@ func (s *PaymentService) CreateOrderWithOptions(ctx context.Context, orderOption
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// SECURITY (#27): do not log the raw upstream body; log only status + length.
 		s.logger.Error("Razorpay API error",
 			zap.Int("status", resp.StatusCode),
-			zap.String("body", string(body)),
+			zap.Int("body_len", len(body)),
 			zap.String("key_id_prefix", keyIDPrefix))
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
 	var order RazorpayOrder
@@ -372,14 +375,13 @@ func (s *PaymentService) VerifyPayment(ctx context.Context, orderID, paymentID, 
 			zap.String("payment_id", paymentID),
 			zap.String("message", message))
 	} else {
-		s.logger.Warn("Payment signature verification FAILED - detailed debug info",
+		// SECURITY (#27): never log the expected/received signatures or secret material —
+		// they are the HMAC output over order|payment with the key secret, and logging them
+		// aids forgery/correlation. Log only the (non-secret) ids and a boolean.
+		s.logger.Warn("Payment signature verification failed",
 			zap.String("order_id", orderID),
 			zap.String("payment_id", paymentID),
-			zap.String("message", message),
-			zap.String("expected_signature", expectedSignature),
-			zap.String("received_signature", signature),
-			zap.String("key_secret_length", fmt.Sprintf("%d", len(s.config.KeySecret))),
-			zap.Bool("signatures_equal", expectedSignature == signature))
+			zap.Bool("signatures_equal", false))
 	}
 
 	return isValid, nil
@@ -409,39 +411,21 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// SECURITY (#27): do not echo the raw upstream body to logs or callers.
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
-
-	// Log raw response for debugging Magic Checkout customer_details
-	s.logger.Info("Razorpay GetPaymentStatus RAW response",
-		zap.String("payment_id", paymentID),
-		zap.String("raw_response", string(body)))
 
 	var payment RazorpayPayment
 	if err := json.Unmarshal(body, &payment); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Log customer details if present (Magic Checkout payments)
+	// SECURITY (#27): never log Razorpay customer_details (email/contact/shipping
+	// address are PII). Log only whether they are present, for diagnostics.
 	if payment.CustomerDetails != nil {
 		s.logger.Info("Payment has customer_details (Magic Checkout)",
 			zap.String("payment_id", paymentID),
-			zap.String("email", payment.CustomerDetails.Email),
-			zap.String("contact", payment.CustomerDetails.Contact),
 			zap.Bool("has_shipping_address", payment.CustomerDetails.ShippingAddress != nil))
-
-		if payment.CustomerDetails.ShippingAddress != nil {
-			addr := payment.CustomerDetails.ShippingAddress
-			s.logger.Info("Magic Checkout shipping address from payment",
-				zap.String("payment_id", paymentID),
-				zap.String("name", addr.Name),
-				zap.String("line1", addr.Line1),
-				zap.String("line2", addr.Line2),
-				zap.String("city", addr.City),
-				zap.String("state", addr.State),
-				zap.String("zipcode", addr.Zipcode),
-				zap.String("country", addr.Country))
-		}
 	}
 
 	return &payment, nil
@@ -473,39 +457,20 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// SECURITY (#27): do not echo the raw upstream body to logs or callers.
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
-
-	// Log raw response for debugging Magic Checkout customer_details
-	s.logger.Info("Razorpay GetOrder RAW response",
-		zap.String("order_id", orderID),
-		zap.String("raw_response", string(body)))
 
 	var order RazorpayOrder
 	if err := json.Unmarshal(body, &order); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Log customer details if present (Magic Checkout orders)
+	// SECURITY (#27): never log Razorpay customer_details (PII). Log presence only.
 	if order.CustomerDetails != nil {
 		s.logger.Info("Razorpay order has customer_details (Magic Checkout)",
 			zap.String("order_id", orderID),
-			zap.String("email", order.CustomerDetails.Email),
-			zap.String("contact", order.CustomerDetails.Contact),
 			zap.Bool("has_shipping_address", order.CustomerDetails.ShippingAddress != nil))
-
-		if order.CustomerDetails.ShippingAddress != nil {
-			addr := order.CustomerDetails.ShippingAddress
-			s.logger.Info("Magic Checkout shipping address from order",
-				zap.String("order_id", orderID),
-				zap.String("name", addr.Name),
-				zap.String("line1", addr.Line1),
-				zap.String("line2", addr.Line2),
-				zap.String("city", addr.City),
-				zap.String("state", addr.State),
-				zap.String("zipcode", addr.Zipcode),
-				zap.String("country", addr.Country))
-		}
 	} else {
 		s.logger.Info("Razorpay order does NOT have customer_details",
 			zap.String("order_id", orderID),

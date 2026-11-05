@@ -793,25 +793,13 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.Any("notes", rzpOrder.Notes))
 
 			if rzpOrder.CustomerDetails != nil {
+				// SECURITY (#27): log presence only, never customer PII (email/contact/address).
 				h.logger.Info("DEBUG: Razorpay CustomerDetails found",
 					zap.String("request_id", requestID),
-					zap.String("email", rzpOrder.CustomerDetails.Email),
-					zap.String("contact", rzpOrder.CustomerDetails.Contact),
 					zap.Bool("has_shipping_address", rzpOrder.CustomerDetails.ShippingAddress != nil),
 					zap.Bool("has_billing_address", rzpOrder.CustomerDetails.BillingAddress != nil))
 
-				if rzpOrder.CustomerDetails.ShippingAddress != nil {
-					addr := rzpOrder.CustomerDetails.ShippingAddress
-					h.logger.Info("DEBUG: Razorpay ShippingAddress found",
-						zap.String("request_id", requestID),
-						zap.String("name", addr.Name),
-						zap.String("line1", addr.Line1),
-						zap.String("line2", addr.Line2),
-						zap.String("city", addr.City),
-						zap.String("state", addr.State),
-						zap.String("zipcode", addr.Zipcode),
-						zap.String("country", addr.Country))
-				} else {
+				if rzpOrder.CustomerDetails.ShippingAddress == nil {
 					h.logger.Warn("DEBUG: CustomerDetails exists but ShippingAddress is NULL",
 						zap.String("request_id", requestID))
 				}
@@ -839,12 +827,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// Priority 1: Check if Razorpay order has customer_details from Magic Checkout
 		var magicCheckoutAddress map[string]interface{}
 		if rzpOrder != nil && rzpOrder.CustomerDetails != nil && rzpOrder.CustomerDetails.ShippingAddress != nil {
+			// SECURITY (#27): log presence only, never customer PII.
 			h.logger.Info("Found customer_details from Magic Checkout in Razorpay order",
 				zap.String("request_id", requestID),
-				zap.String("razorpay_order_id", req.OrderID),
-				zap.String("email", rzpOrder.CustomerDetails.Email),
-				zap.String("contact", rzpOrder.CustomerDetails.Contact),
-				zap.Any("shipping_address", rzpOrder.CustomerDetails.ShippingAddress))
+				zap.String("razorpay_order_id", req.OrderID))
 
 			// Extract customer details from Magic Checkout
 			email = rzpOrder.CustomerDetails.Email
@@ -874,13 +860,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				"contact": shippingAddr.Contact,
 			}
 
+			// SECURITY (#27): confirm extraction without logging the address PII.
 			h.logger.Info("Extracted Magic Checkout address from Razorpay order",
 				zap.String("request_id", requestID),
-				zap.String("customer_name", shippingAddr.Name),
-				zap.String("address_line1", shippingAddr.Line1),
-				zap.String("city", shippingAddr.City),
-				zap.String("state", shippingAddr.State),
-				zap.String("zipcode", shippingAddr.Zipcode))
+				zap.Bool("has_address_line1", shippingAddr.Line1 != ""),
+				zap.Bool("has_zipcode", shippingAddr.Zipcode != ""))
 
 			// Also update shipping fee from order if available
 			if rzpOrder.ShippingFee > 0 {
@@ -979,41 +963,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Extract customer details from payment entity (Magic Checkout stores them here)
 		if rzpPayment != nil {
-			// Log all payment metadata for debugging
+			// SECURITY (#27): log presence/method only, never notes/contact/email PII.
 			h.logger.Info("Razorpay Payment Full Details",
 				zap.String("request_id", requestID),
-				zap.Any("payment_notes", rzpPayment.Notes),
-				zap.String("payment_contact", rzpPayment.Contact),
-				zap.String("payment_email", rzpPayment.Email),
 				zap.Any("payment_method", rzpPayment.Method),
+				zap.Bool("has_notes", len(rzpPayment.Notes) > 0),
+				zap.Bool("has_contact", rzpPayment.Contact != ""),
+				zap.Bool("has_email", rzpPayment.Email != ""),
 				zap.Bool("has_customer_details", rzpPayment.CustomerDetails != nil))
 
 			if rzpPayment.Contact != "" {
 				mobile = rzpPayment.Contact
-				h.logger.Info("Using contact from payment entity",
-					zap.String("request_id", requestID),
-					zap.String("contact", mobile))
 			}
 			if rzpPayment.Email != "" {
 				email = rzpPayment.Email
-				h.logger.Info("Email from payment entity",
-					zap.String("request_id", requestID),
-					zap.String("email", rzpPayment.Email))
 			}
 
 			// PRIORITY: Check for customer_details in payment (Magic Checkout)
 			// This is the most reliable source for shipping address after payment
 			if rzpPayment.CustomerDetails != nil && rzpPayment.CustomerDetails.ShippingAddress != nil {
 				addr := rzpPayment.CustomerDetails.ShippingAddress
+				// SECURITY (#27): presence only, no address PII.
 				h.logger.Info("Found customer_details.shipping_address in payment (Magic Checkout)",
 					zap.String("request_id", requestID),
-					zap.String("name", addr.Name),
-					zap.String("line1", addr.Line1),
-					zap.String("line2", addr.Line2),
-					zap.String("city", addr.City),
-					zap.String("state", addr.State),
-					zap.String("zipcode", addr.Zipcode),
-					zap.String("country", addr.Country))
+					zap.Bool("has_line1", addr.Line1 != ""),
+					zap.Bool("has_zipcode", addr.Zipcode != ""))
 
 				// Convert to map for consistent processing
 				magicCheckoutAddress = map[string]interface{}{
@@ -1036,37 +1010,36 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 							lastName = strings.Join(nameParts[1:], " ")
 						}
 					}
+					// SECURITY (#27): confirm extraction without logging the name.
 					h.logger.Info("Extracted customer name from payment.customer_details",
 						zap.String("request_id", requestID),
-						zap.String("firstName", firstName),
-						zap.String("lastName", lastName))
+						zap.Bool("has_name", firstName != ""))
 				}
 			}
 
 			// Magic Checkout stores shipping address in payment metadata
 			// Check for shipping_address in payment notes/metadata (fallback)
 			if magicCheckoutAddress == nil && rzpPayment.Notes != nil {
-				// Log all notes to understand structure
-				for key, value := range rzpPayment.Notes {
-					h.logger.Info("Payment note field",
-						zap.String("request_id", requestID),
-						zap.String("key", key),
-						zap.Any("value", value),
-						zap.String("value_type", fmt.Sprintf("%T", value)))
+				// SECURITY (#27): log only the note keys present, not their values (PII).
+				noteKeys := make([]string, 0, len(rzpPayment.Notes))
+				for key := range rzpPayment.Notes {
+					noteKeys = append(noteKeys, key)
 				}
+				h.logger.Info("Payment notes present",
+					zap.String("request_id", requestID),
+					zap.Strings("note_keys", noteKeys))
 
 				// Try to extract Magic Checkout shipping address
 				if shippingAddr, ok := rzpPayment.Notes["shipping_address"].(map[string]interface{}); ok {
 					magicCheckoutAddress = shippingAddr
 					h.logger.Info("Found Magic Checkout shipping address in payment notes",
-						zap.String("request_id", requestID),
-						zap.Any("address", shippingAddr))
+						zap.String("request_id", requestID))
 				} else if addrNote, ok := rzpPayment.Notes["address"].(string); ok && addrNote != "" {
 					// Fallback to string address
 					shippingAddress = addrNote
 					h.logger.Info("Using address string from payment notes",
 						zap.String("request_id", requestID),
-						zap.String("address", shippingAddress))
+						zap.Bool("has_address", shippingAddress != ""))
 				}
 			}
 
@@ -1075,9 +1048,9 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				// Check for billing address in card details
 				if methodData, ok := rzpPayment.Notes["method"].(map[string]interface{}); ok {
 					if cardData, ok := methodData["card"].(map[string]interface{}); ok {
+						// SECURITY (#27): never log card data; presence only.
 						h.logger.Info("Found card data in payment method",
-							zap.String("request_id", requestID),
-							zap.Any("card_data", cardData))
+							zap.String("request_id", requestID))
 						// Extract billing address from card data
 						magicCheckoutAddress = cardData
 					}
@@ -1210,11 +1183,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					if len(nameParts) > 1 {
 						lastName = strings.Title(strings.Join(nameParts[1:], " "))
 					}
+					// SECURITY (#27): confirm extraction without logging email/name PII.
 					h.logger.Info("Extracted name from email",
 						zap.String("request_id", requestID),
-						zap.String("email", email),
-						zap.String("firstName", firstName),
-						zap.String("lastName", lastName))
+						zap.Bool("has_name", firstName != ""))
 				}
 			}
 		}
@@ -1240,21 +1212,20 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		var userAddressID string // To store saved address ID for user
 
 		// DEBUG: Log what address data we have from all sources
+		// SECURITY (#27): log source presence only, never the address map (PII).
 		h.logger.Info("ADDRESS DATA SUMMARY - All Sources",
 			zap.String("request_id", requestID),
-			zap.Bool("has_magic_checkout_address", magicCheckoutAddress != nil && len(magicCheckoutAddress) > 0),
+			zap.Bool("has_magic_checkout_address", len(magicCheckoutAddress) > 0),
 			zap.Bool("has_rzp_order", rzpOrder != nil),
 			zap.Bool("has_rzp_order_customer_details", rzpOrder != nil && rzpOrder.CustomerDetails != nil),
 			zap.Bool("has_rzp_payment", rzpPayment != nil),
 			zap.Bool("has_rzp_payment_customer_details", rzpPayment != nil && rzpPayment.CustomerDetails != nil),
-			zap.Any("magic_checkout_address", magicCheckoutAddress),
 			zap.String("razorpay_order_id", req.OrderID))
 
 		// Priority 1: Check for Magic Checkout address data from payment
-		if magicCheckoutAddress != nil && len(magicCheckoutAddress) > 0 {
+		if len(magicCheckoutAddress) > 0 {
 			h.logger.Info("Processing Magic Checkout address",
-				zap.String("request_id", requestID),
-				zap.Any("magic_checkout_address", magicCheckoutAddress))
+				zap.String("request_id", requestID))
 
 			// Extract address fields from Magic Checkout data
 			addressLine1 := ""
@@ -1272,25 +1243,24 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					if len(nameParts) > 1 {
 						lastName = strings.Join(nameParts[1:], " ")
 					}
+					// SECURITY (#27): no name PII in logs.
 					h.logger.Info("Extracted customer name from Magic Checkout address",
 						zap.String("request_id", requestID),
-						zap.String("name", name),
-						zap.String("firstName", firstName),
-						zap.String("lastName", lastName))
+						zap.Bool("has_name", firstName != ""))
 				}
 			}
 
 			// Try to extract phone from Magic Checkout address (if available)
 			if phone, ok := magicCheckoutAddress["phone"].(string); ok && phone != "" && mobile == "" {
 				mobile = strings.TrimSpace(phone)
+				// SECURITY (#27): no phone PII in logs.
 				h.logger.Info("Extracted phone from Magic Checkout address",
-					zap.String("request_id", requestID),
-					zap.String("phone", mobile))
+					zap.String("request_id", requestID))
 			} else if contact, ok := magicCheckoutAddress["contact"].(string); ok && contact != "" && mobile == "" {
 				mobile = strings.TrimSpace(contact)
+				// SECURITY (#27): no contact PII in logs.
 				h.logger.Info("Extracted contact from Magic Checkout address",
-					zap.String("request_id", requestID),
-					zap.String("contact", mobile))
+					zap.String("request_id", requestID))
 			}
 
 			// Magic Checkout may send fields like: line1, line2, city, state, zipcode, country
@@ -1406,11 +1376,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					"name":    addr.Name,
 					"contact": addr.Contact,
 				}
+				// SECURITY (#27): presence only, no address PII.
 				h.logger.Info("FALLBACK SUCCESS: Extracted address from Razorpay order customer_details",
 					zap.String("request_id", requestID),
-					zap.String("line1", addr.Line1),
-					zap.String("city", addr.City),
-					zap.String("zipcode", addr.Zipcode))
+					zap.Bool("has_line1", addr.Line1 != ""),
+					zap.Bool("has_zipcode", addr.Zipcode != ""))
 			} else if rzpPayment != nil && rzpPayment.CustomerDetails != nil && rzpPayment.CustomerDetails.ShippingAddress != nil {
 				// Try payment customer_details as final fallback
 				addr := rzpPayment.CustomerDetails.ShippingAddress
@@ -1424,11 +1394,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					"name":    addr.Name,
 					"contact": addr.Contact,
 				}
+				// SECURITY (#27): presence only, no address PII.
 				h.logger.Info("FALLBACK SUCCESS: Extracted address from Razorpay payment customer_details",
 					zap.String("request_id", requestID),
-					zap.String("line1", addr.Line1),
-					zap.String("city", addr.City),
-					zap.String("zipcode", addr.Zipcode))
+					zap.Bool("has_line1", addr.Line1 != ""),
+					zap.Bool("has_zipcode", addr.Zipcode != ""))
 			} else {
 				// CRITICAL: Log why we don't have address data
 				h.logger.Error("NO MAGIC CHECKOUT ADDRESS DATA FOUND - Address will NOT be saved!",
@@ -2921,10 +2891,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 				// User exists, just link the Firebase UID
 				internalUserID = existingUser["id"].(string)
 				h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalUserID, userID)
+				// SECURITY (#27): no email/phone PII in logs.
 				h.logger.Info("Linked Firebase UID to existing user",
 					zap.String("firebase_uid", userID),
-					zap.String("email", firebaseUser.Email),
-					zap.String("phone", firebaseUser.PhoneNumber),
 					zap.String("internal_id", internalUserID))
 			} else {
 				// Create new user in local database based on auth type
@@ -2952,9 +2921,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 							}
 						}
 					}
+					// SECURITY (#27): don't log the phone number.
 					h.logger.Info("Creating phone user in local database",
-						zap.String("firebase_uid", userID),
-						zap.String("phone", firebaseUser.PhoneNumber))
+						zap.String("firebase_uid", userID))
 				} else {
 					// Email/Google user - use CreateGoogleUser
 					signupReq := requests.SignupRequest{
@@ -2963,9 +2932,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 						Password: "", // Google/Firebase users don't have passwords
 					}
 					createResponse, createErr = h.userService.CreateGoogleUser(c.Request.Context(), &signupReq, userID)
+					// SECURITY (#27): don't log the email.
 					h.logger.Info("Creating Google/email user in local database",
-						zap.String("firebase_uid", userID),
-						zap.String("email", firebaseUser.Email))
+						zap.String("firebase_uid", userID))
 				}
 
 				if createErr != nil || createResponse == nil || !createResponse.Success {
@@ -2977,10 +2946,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 					alreadyExists := (createErr == nil && createResponse != nil && !createResponse.Success)
 
 					if alreadyExists {
+						// SECURITY (#27): don't log email/phone PII.
 						h.logger.Info("User already exists when auto-creating for Magic Checkout, fetching existing user instead",
-							zap.String("firebase_uid", userID),
-							zap.String("email", firebaseUser.Email),
-							zap.String("phone", firebaseUser.PhoneNumber))
+							zap.String("firebase_uid", userID))
 
 						// Try by email first
 						if firebaseUser.Email != "" {
@@ -3006,26 +2974,23 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 						}
 
 						if internalUserID == "" {
+							// SECURITY (#27): no email/phone PII in logs.
 							h.logger.Error("Failed to resolve existing user after duplicate error during auto-create",
-								zap.String("firebase_uid", userID),
-								zap.String("email", firebaseUser.Email),
-								zap.String("phone", firebaseUser.PhoneNumber))
+								zap.String("firebase_uid", userID))
 							c.JSON(http.StatusInternalServerError, gin.H{
 								"error": "Failed to resolve user account",
 							})
 							return
 						}
 
+						// SECURITY (#27): no email/phone PII in logs.
 						h.logger.Info("Resolved existing user after duplicate error during auto-create",
 							zap.String("firebase_uid", userID),
-							zap.String("email", firebaseUser.Email),
-							zap.String("phone", firebaseUser.PhoneNumber),
 							zap.String("internal_id", internalUserID))
 					} else {
+						// SECURITY (#27): no email/phone PII in logs.
 						h.logger.Error("Failed to auto-create user in local database",
 							zap.String("firebase_uid", userID),
-							zap.String("email", firebaseUser.Email),
-							zap.String("phone", firebaseUser.PhoneNumber),
 							zap.Error(createErr))
 						c.JSON(http.StatusInternalServerError, gin.H{
 							"error": "Failed to create user account",
@@ -3038,10 +3003,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 							internalUserID = id
 						}
 					}
+					// SECURITY (#27): no email/phone PII in logs.
 					h.logger.Info("Auto-created user in local database from Firebase",
 						zap.String("firebase_uid", userID),
-						zap.String("email", firebaseUser.Email),
-						zap.String("phone", firebaseUser.PhoneNumber),
 						zap.String("internal_id", internalUserID))
 				}
 			}
@@ -3094,12 +3058,13 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 				if phone, ok := userMap["phone_number"].(string); ok {
 					userPhone = phone
 				}
+				// SECURITY (#27): no name/email/phone PII in logs.
 				h.logger.Info("Retrieved user information for Magic Checkout notes",
 					zap.String("request_id", requestID),
 					zap.String("user_id", internalUserID),
-					zap.String("name", userName),
-					zap.String("email", userEmail),
-					zap.String("phone", userPhone))
+					zap.Bool("has_name", userName != ""),
+					zap.Bool("has_email", userEmail != ""),
+					zap.Bool("has_phone", userPhone != ""))
 			}
 		} else {
 			h.logger.Warn("Failed to get user information for notes",
