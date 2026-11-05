@@ -456,19 +456,29 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 				}
 			}
 		} else {
+			// SECURITY (#5 account takeover): only link/resolve a local account by email when the
+			// Firebase identity's email is verified. An unverified email/password account must never
+			// be able to claim an existing local record by email.
+			if !userRecord.EmailVerified {
+				utils.RespondWithError(c, http.StatusForbidden, "Email not verified",
+					fmt.Errorf("verify your email before signing in with this method"))
+				return
+			}
+
 			// Try to get user by email
 			userByEmailResponse, _ := h.userService.GetUserByEmail(ctx, userRecord.Email)
 			if userByEmailResponse != nil && userByEmailResponse.Success {
-				// User exists but may not have Firebase UID linked
-				localUser = userByEmailResponse.Data.(map[string]interface{})
-				userID, _ := localUser["id"].(string)
+				candidate := userByEmailResponse.Data.(map[string]interface{})
+				userID, _ := candidate["id"].(string)
 
-				// Link Firebase UID to existing user
-				err = h.userService.UpdateUserFirebaseUID(ctx, userID, userRecord.UID)
-				if err != nil {
-					// Log error but continue with login
-					fmt.Printf("Failed to update Firebase UID for user %s: %v\n", userID, err)
+				// Link Firebase UID to the existing user. UpdateUserFirebaseUID refuses to overwrite
+				// a DIFFERENT firebase_uid already on the record, so a second identity cannot hijack
+				// an account that is already linked to someone else.
+				if err = h.userService.UpdateUserFirebaseUID(ctx, userID, userRecord.UID); err != nil {
+					utils.RespondWithError(c, http.StatusConflict, "Account is linked to a different sign-in identity", err)
+					return
 				}
+				localUser = candidate
 
 				// Check if user has a profile, create if not
 				profile, profileErr := h.profileService.GetProfileByUserID(ctx, userID)

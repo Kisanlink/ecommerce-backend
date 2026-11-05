@@ -278,6 +278,13 @@ func (s *UserService) UpdateUserFirebaseUID(ctx context.Context, userID, firebas
 		return fmt.Errorf("user not found: %w", err)
 	}
 
+	// SECURITY (#5 account takeover): never overwrite an existing, DIFFERENT Firebase UID. If the
+	// record is already linked to another identity, refuse — re-linking must be an explicit,
+	// authenticated migration, not an automatic side effect of someone signing in with the email.
+	if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != firebaseUID {
+		return fmt.Errorf("user %s is already linked to a different firebase identity", userID)
+	}
+
 	user.FirebaseUID = &firebaseUID
 	user.SetUpdatedBy("system")
 

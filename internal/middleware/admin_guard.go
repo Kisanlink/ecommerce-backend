@@ -24,18 +24,14 @@ func AdminGuard(repoManager *repositories.RepositoryManager) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid auth context"})
 			return
 		}
-		// Lookup user by firebase_uid and verify role; fallback to email if not linked
+		// SECURITY (#5 account takeover): resolve admin strictly by the verified, linked
+		// firebase_uid. The previous email fallback granted admin to any token whose email matched
+		// a local admin record even without a linked UID, which (combined with unverified-email
+		// account linking) was an admin-takeover path. There is deliberately no email fallback:
+		// an admin must be linked by firebase_uid.
 		ctx := context.Background()
 		userRepo := repoManager.UserRepository
 		user, err := userRepo.GetByFirebaseUID(ctx, uid)
-		if err != nil || user == nil {
-			// Try by email from token claims (set by FirebaseAuthMiddleware)
-			if emailVal, ok := c.Get("firebase_email"); ok {
-				if emailStr, ok2 := emailVal.(string); ok2 && emailStr != "" {
-					user, err = userRepo.GetUserByEmail(ctx, emailStr)
-				}
-			}
-		}
 		if err != nil || user == nil || !strings.EqualFold(strings.TrimSpace(user.Role), "admin") {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			return
