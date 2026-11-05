@@ -1262,6 +1262,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 // a concurrent duplicate (and route to idempotent reuse) without importing repositories.
 var ErrDuplicateOrder = repositories.ErrDuplicateOrder
 
+// ErrCartAmountMismatch is returned when the cart total at verify is materially higher
+// than what the customer actually paid — i.e. the cart was changed (items added) between
+// create-order and verify. Confirming it would hand the customer more goods than they
+// paid for, so the order is refused and must be re-checked out against a fresh payment.
+var ErrCartAmountMismatch = errors.New("cart total exceeds amount paid")
+
 // ConfirmedOrderParams carries everything needed to create a fully-confirmed, paid
 // order in one shot from the payment-verify path.
 type ConfirmedOrderParams struct {
@@ -1276,6 +1282,10 @@ type ConfirmedOrderParams struct {
 	CustomerLastName  string
 	CustomerPhone     string
 	CustomerPhoneAlt  string
+	// ExpectedAmountPaisa is the amount actually captured by the payment gateway, in paisa.
+	// When > 0, CreateConfirmedOrder refuses to confirm if the current cart total exceeds it
+	// beyond a tiny rounding tolerance (cart-swap guard). Zero disables the check.
+	ExpectedAmountPaisa int
 }
 
 // CreateConfirmedOrder creates a fully-confirmed, paid order transactionally (#13/#14/#32).
@@ -1300,6 +1310,24 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 	cartTotal := cart.GetTotalAmount()
 	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
 	totalAmount := utils.AddShippingCharges(discountedCartTotal, p.ShippingCharges)
+
+	// Cart-swap guard: the Razorpay order was created for a fixed amount from the cart as it
+	// stood at create-order. If the cart now totals MORE than what was actually captured, the
+	// cart was changed (items added) between create-order and verify — confirming it would give
+	// the customer more goods than they paid for. Refuse (fail closed). We only reject when the
+	// cart EXCEEDS the paid amount beyond a 1-rupee rounding tolerance; a cart total at or below
+	// the captured amount is fine (the caller reconciles the order total up to what was paid).
+	if p.ExpectedAmountPaisa > 0 {
+		const tolerancePaisa = 100 // ₹1 for rounding differences
+		cartTotalPaisa := utils.RupeesToPaisa(totalAmount)
+		if cartTotalPaisa > p.ExpectedAmountPaisa+tolerancePaisa {
+			s.logger.Error("Cart-swap guard: cart total exceeds amount paid - refusing to confirm order",
+				zap.String("razorpay_order_id", p.RazorpayOrderID),
+				zap.Int("cart_total_paisa", cartTotalPaisa),
+				zap.Int("paid_paisa", p.ExpectedAmountPaisa))
+			return nil, fmt.Errorf("%w: cart %d paisa vs paid %d paisa", ErrCartAmountMismatch, cartTotalPaisa, p.ExpectedAmountPaisa)
+		}
+	}
 
 	// Normalized customer + address first (reuse the PK-collision retry). These are
 	// harmless normalized records; the security-critical atomic unit is order + items.

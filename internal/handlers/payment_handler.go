@@ -1746,19 +1746,42 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// commits order+items atomically, and clears the cart ONLY after that commit. The
 		// order is created with Status=confirmed / PaymentStatus=successful and the customer
 		// shipment fields set up front — no separate swallowed UpdateOrder is needed.
+		// Cart-swap guard (#1): pass the amount actually captured so CreateConfirmedOrder
+		// refuses to confirm if the current cart totals more than what was paid.
+		expectedAmountPaisa := 0
+		if rzpOrder != nil && rzpOrder.Amount > 0 {
+			expectedAmountPaisa = rzpOrder.Amount
+		}
 		order, err := h.orderService.CreateConfirmedOrder(c.Request.Context(), services.ConfirmedOrderParams{
-			UserID:            internalUserID,
-			Customer:          customerData,
-			Address:           addressData,
-			PaymentMethod:     "razorpay",
-			ShippingCharges:   shippingCharges,
-			RazorpayOrderID:   req.OrderID,
-			RazorpayPaymentID: req.PaymentID,
-			CustomerFirstName: firstName,
-			CustomerLastName:  lastName,
-			CustomerPhone:     mobile,
-			CustomerPhoneAlt:  mobileSecondary,
+			UserID:              internalUserID,
+			Customer:            customerData,
+			Address:             addressData,
+			PaymentMethod:       "razorpay",
+			ShippingCharges:     shippingCharges,
+			RazorpayOrderID:     req.OrderID,
+			RazorpayPaymentID:   req.PaymentID,
+			CustomerFirstName:   firstName,
+			CustomerLastName:    lastName,
+			CustomerPhone:       mobile,
+			CustomerPhoneAlt:    mobileSecondary,
+			ExpectedAmountPaisa: expectedAmountPaisa,
 		})
+		if errors.Is(err, services.ErrCartAmountMismatch) {
+			// The cart was changed (items added) after the payment was created. Do NOT confirm
+			// or ship. The captured payment is logged with the razorpay ids for reconciliation
+			// (refund / manual review); the customer must re-checkout against a fresh payment.
+			h.logger.Error("Rejecting verify: cart total exceeds amount paid (possible cart swap)",
+				zap.String("request_id", requestID),
+				zap.Error(err),
+				zap.String("user_id", userID),
+				zap.String("payment_id", req.PaymentID),
+				zap.String("razorpay_order_id", req.OrderID))
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "Your cart changed after payment was started. This payment was not applied; please contact support to reconcile it or retry checkout.",
+				"code":  "CART_AMOUNT_MISMATCH",
+			})
+			return
+		}
 		if errors.Is(err, services.ErrDuplicateOrder) {
 			// A concurrent verify for the same razorpay_order_id created the order between the
 			// idempotency lookup above and this insert. Reuse that order instead of failing;
