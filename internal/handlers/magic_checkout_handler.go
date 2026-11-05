@@ -510,7 +510,7 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 
 	// Always send as fixed_amount in paise - Razorpay will deduct this from total
 	promotion["value_type"] = "fixed_amount"
-	promotion["value"] = int(discountAmount * 100) // Convert rupees to paise
+	promotion["value"] = services.RupeesToPaisa(discountAmount) // Convert rupees to paise (rounded)
 
 	h.logger.Info("Coupon discount calculated",
 		zap.String("code", req.Code),
@@ -519,7 +519,7 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		zap.Float64("discount_value_in_rule", bestRule.DiscountValue),
 		zap.Float64("calculated_discount_rupees", calculatedDiscount),
 		zap.Float64("final_discount_rupees", discountAmount),
-		zap.Int("final_discount_paise", int(discountAmount*100)))
+		zap.Int("final_discount_paise", services.RupeesToPaisa(discountAmount)))
 
 	h.logger.Info("Coupon promotion response prepared",
 		zap.String("code", req.Code),
@@ -1014,14 +1014,14 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 					charges = 40.0 + (float64(weight)/500.0)*10.0 // Base ₹40 + ₹10 per 500g
 				}
 
-				// Convert to paise
-				addressResult["shipping_fee"] = int(charges * 100)
+				// Convert to paise (rounded)
+				addressResult["shipping_fee"] = services.RupeesToPaisa(charges)
 
 				h.logger.Info("Shipping charges calculated",
 					zap.String("zipcode", zipcode),
 					zap.Float64("cart_total", cartTotal),
 					zap.Float64("charges_rupees", charges),
-					zap.Int("charges_paise", int(charges*100)),
+					zap.Int("charges_paise", services.RupeesToPaisa(charges)),
 					zap.String("note", "Add ₹500+ to cart for free delivery"))
 			}
 

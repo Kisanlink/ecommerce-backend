@@ -3131,7 +3131,7 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	lineItemsTotal := 0
 
 	for _, item := range cart.Items {
-		itemTotal := int(item.UnitPrice * float64(item.Quantity) * 100) // Convert to paise
+		itemTotal := utils.RupeesToPaisa(item.UnitPrice * float64(item.Quantity)) // Convert to paise (rounded)
 		lineItemsTotal += itemTotal
 
 		// Fetch product details for proper display
@@ -3184,8 +3184,8 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 		lineItem := map[string]interface{}{
 			"sku":         item.ProductID,
 			"name":        productName,
-			"price":       int(item.UnitPrice * 100), // in paise
-			"offer_price": int(item.UnitPrice * 100), // same as price for now
+			"price":       utils.RupeesToPaisa(item.UnitPrice), // in paise (rounded)
+			"offer_price": utils.RupeesToPaisa(item.UnitPrice), // same as price for now
 			"tax_amount":  0,
 			"quantity":    item.Quantity,
 			"description": productDescription,
@@ -3263,7 +3263,7 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	}
 
 	orderOptions := map[string]interface{}{
-		"amount":           int(discountedTotal * 100), // Convert to paise
+		"amount":           utils.RupeesToPaisa(discountedTotal), // Convert to paise (rounded)
 		"currency":         "INR",
 		"receipt":          receipt,
 		"notes":            notes,
