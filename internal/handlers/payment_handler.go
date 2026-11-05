@@ -804,10 +804,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// IMPORTANT: Fetch the complete order details from Razorpay API
 		// After Magic Checkout completes, the order will contain customer_details with addresses
 		rzpOrder, getErr := h.paymentService.GetOrder(c.Request.Context(), req.OrderID)
-		if getErr != nil {
-			h.logger.Warn("Failed to fetch Razorpay order metadata - proceeding without metadata",
+		if getErr != nil || rzpOrder == nil {
+			// SECURITY (fail closed): the Razorpay order is REQUIRED to verify both the charged
+			// amount (cart-swap guard) and the user binding (notes.user_id) before creating a
+			// NEW order. If the lookup fails (e.g. a gateway outage), we must NOT fall through
+			// and build an order from the current cart unchecked — a cart swap during the outage
+			// would otherwise ship. If an order already exists for this razorpay_order_id, the
+			// idempotent-reuse path below completes it (it needs no live lookup). Otherwise return
+			// 503 so the client retries and/or the webhook fulfils it once the gateway recovers.
+			if existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID); lookupErr != nil || existing == nil {
+				h.logger.Error("Rejecting verify: Razorpay order lookup failed and no existing order - cannot verify amount/ownership",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.String("payment_id", req.PaymentID),
+					zap.String("razorpay_order_id", req.OrderID),
+					zap.Error(getErr))
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": "Could not verify your payment with the gateway right now. Your payment is safe; if it was charged, your order will be completed automatically. Please retry shortly.",
+					"code":  "GATEWAY_LOOKUP_FAILED",
+				})
+				return
+			}
+			h.logger.Warn("Razorpay order lookup failed but an existing order was found - proceeding to idempotent reuse",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
+				zap.String("razorpay_order_id", req.OrderID),
 				zap.Error(getErr))
 		}
 
