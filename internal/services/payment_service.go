@@ -544,17 +544,19 @@ func (s *PaymentService) handlePaymentCaptured(ctx context.Context, payment Razo
 	return nil
 }
 
-// handlePaymentFailed processes failed payment
+// handlePaymentFailed processes failed payment.
+//
+// NOTE (#35): this service-level webhook switch (ProcessWebhook above) has no callers —
+// the live webhook route is served by PaymentHandler.ProcessWebhook, which updates the
+// order's payment status to "failed" via markPaymentFailedFromWebhook. This method is kept
+// only as a stub for the unused service path; if that path is ever wired up it must call the
+// order service the same way (it does not currently hold an order-repo dependency).
 func (s *PaymentService) handlePaymentFailed(ctx context.Context, payment RazorpayPayment) error {
 	s.logger.Warn("Payment failed",
 		zap.String("payment_id", payment.ID),
 		zap.String("order_id", payment.OrderID),
 		zap.String("error_code", payment.ErrorCode),
 		zap.String("error_description", payment.ErrorDescription))
-
-	// TODO: Update order status to failed
-	// TODO: Send failure notification
-	// TODO: Restore cart if needed
 
 	return nil
 }

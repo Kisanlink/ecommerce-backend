@@ -2267,15 +2267,48 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		}
 		h.fulfillFromWebhook(c.Request.Context(), rzpOrderID, paymentID)
 	case "payment.failed":
-		h.logger.Warn("Razorpay payment.failed webhook",
-			zap.String("payment_id", webhook.Payload.Payment.Entity.ID),
-			zap.String("razorpay_order_id", webhook.Payload.Payment.Entity.OrderID))
+		// SECURITY/CORRECTNESS (#35): record the failure on the order so it is queryable
+		// and does not look perpetually "pending". Idempotent; no shipment side effects.
+		h.markPaymentFailedFromWebhook(c.Request.Context(),
+			webhook.Payload.Payment.Entity.OrderID,
+			webhook.Payload.Payment.Entity.ID)
 	default:
 		h.logger.Info("Unhandled Razorpay webhook event", zap.String("event", webhook.Event))
 	}
 
 	// Always ack 2xx so Razorpay does not retry indefinitely; failures are recorded on the order.
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+// markPaymentFailedFromWebhook records a Razorpay payment.failed event on the matching
+// order. It is idempotent (re-marking an already-failed order is a no-op at the repo level)
+// and has no shipment side effects. (#35)
+func (h *PaymentHandler) markPaymentFailedFromWebhook(ctx context.Context, rzpOrderID, paymentID string) {
+	if rzpOrderID == "" {
+		h.logger.Warn("payment.failed webhook has no Razorpay order ID - cannot update order",
+			zap.String("payment_id", paymentID))
+		return
+	}
+	order, err := h.orderService.GetOrderByRazorpayOrderID(ctx, rzpOrderID)
+	if err != nil || order == nil {
+		h.logger.Warn("payment.failed webhook: no matching DB order",
+			zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+		return
+	}
+	// Do not overwrite a successful/paid order (a later failed event for a superseded
+	// attempt must not undo a capture).
+	if order.PaymentStatus == "paid" || order.PaymentStatus == "successful" {
+		h.logger.Info("payment.failed webhook ignored - order already paid",
+			zap.String("order_id", order.ID), zap.String("payment_status", order.PaymentStatus))
+		return
+	}
+	if err := h.orderService.UpdatePaymentStatus(ctx, order.ID, "failed", paymentID); err != nil {
+		h.logger.Error("payment.failed webhook: failed to update order payment status",
+			zap.Error(err), zap.String("order_id", order.ID))
+		return
+	}
+	h.logger.Info("payment.failed recorded on order",
+		zap.String("order_id", order.ID), zap.String("razorpay_order_id", rzpOrderID))
 }
 
 // fulfillFromWebhook completes fulfillment for a paid Razorpay order from the webhook.
