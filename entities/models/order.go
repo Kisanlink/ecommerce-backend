@@ -15,6 +15,16 @@ const (
 	OrderStatusDelivered OrderStatus = "delivered"
 )
 
+// Fulfillment status values track the post-payment lifecycle (order + shipment + inventory),
+// independent of the courier-reported delivery Status above. Used to find and recover
+// paid-but-unshipped orders.
+const (
+	FulfillmentPendingShipment = "pending_shipment"         // paid, shipment not yet created
+	FulfillmentShipmentFailed  = "shipment_failed"          // shipment attempt failed (see ShipmentError)
+	FulfillmentNeedsManual     = "needs_manual_fulfillment" // paid but order could not be built (e.g. cart gone)
+	FulfillmentFulfilled       = "fulfilled"                // order + shipment + inventory all done
+)
+
 // OrderCustomer represents customer information captured at order time
 type OrderCustomer struct {
 	*base.BaseModel `gorm:"embedded"`
@@ -59,6 +69,7 @@ type Order struct {
 	Notes             string `json:"notes"`
 	// Payment metadata (Razorpay)
 	RazorpayOrderID     string `json:"razorpay_order_id" gorm:"index;unique"`
+	RazorpayPaymentID   string `json:"razorpay_payment_id" gorm:"index"` // Captured pay_... ID, for reconciliation
 	RazorpayReceipt     string `json:"razorpay_receipt"`
 	RazorpayAmountPaisa int    `json:"razorpay_amount_paisa"`
 	RazorpayNotesJSON   string `json:"razorpay_notes_json"`
@@ -73,6 +84,12 @@ type Order struct {
 	DelhiveryWaybill string `json:"delhivery_waybill" gorm:"index"` // AWB number
 	DelhiveryStatus  string `json:"delhivery_status"`               // Shipment status
 	TrackingURL      string `json:"tracking_url"`                   // Direct tracking link
+
+	// Fulfillment state (for recovery/visibility of paid-but-unshipped orders)
+	// Values: "" | "pending_shipment" | "shipment_failed" | "needs_manual_fulfillment" | "fulfilled"
+	FulfillmentStatus string `json:"fulfillment_status" gorm:"index"`
+	ShipmentError     string `json:"shipment_error"`                          // Last shipment failure reason (for support)
+	InventoryDeducted bool   `json:"inventory_deducted" gorm:"default:false"` // Idempotency guard for stock decrement
 
 	// Invoice metadata
 	InvoiceURL string `json:"invoice_url"`
