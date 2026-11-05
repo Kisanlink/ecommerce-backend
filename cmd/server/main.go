@@ -296,8 +296,9 @@ func main() {
 		&models.Profile{},
 		&models.Favorite{},
 		&models.Coupon{},             // Add Coupon model for auto-migration
-		&models.CouponRule{},         // Add CouponRule model for auto-migration
-		&models.PhoneVerification{},  // WhatsApp OTP sessions
+		&models.CouponRule{},            // Add CouponRule model for auto-migration
+		&models.PhoneVerification{},     // WhatsApp OTP sessions
+		&models.PaymentCartSnapshot{},   // Frozen cart for webhook-driven order rebuild (paid-but-no-order)
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate models: %v", err)

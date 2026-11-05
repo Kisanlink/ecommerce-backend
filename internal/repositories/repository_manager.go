@@ -25,6 +25,7 @@ type RepositoryManager struct {
 	ImageRepository               ImageRepositoryInterface     // Image repository
 	InventoryRepository           InventoryRepositoryInterface // Inventory repository
 	CouponRepository              CouponRepositoryInterface    // Coupon repository
+	PaymentCartSnapshotRepository *PaymentCartSnapshotRepository // Cart snapshots for webhook order rebuild
 	RedisManager                  *database.RedisManager       // Redis manager for cart operations
 
 	// Database manager for accessing GORM DB instance
@@ -75,6 +76,7 @@ func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager,
 		ImageRepository:               NewImageRepository(dbManager),          // Image repository
 		InventoryRepository:           NewInventoryRepository(dbManager),      // Inventory repository
 		CouponRepository:              NewCouponRepository(dbManager, logger), // Coupon repository
+		PaymentCartSnapshotRepository: NewPaymentCartSnapshotRepository(pgManager, logger),
 		RedisManager:                  redisManager,
 		dbManager:                     dbManager, // Store dbManager for access
 		pgManager:                     pgManager, // Store pgManager for direct GORM access
