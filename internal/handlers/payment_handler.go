@@ -1676,8 +1676,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				notesUserID = strings.TrimSpace(v)
 			}
 		}
-		if notesUserID != "" && notesUserID != internalUserID && notesUserID != userID {
-			h.logger.Warn("Rejecting verify: Razorpay order belongs to a different user",
+		// Fail closed (#4): when we have the Razorpay order, its notes.user_id is set by the
+		// server at create-order (both the normal and Magic Checkout paths) and MUST be present
+		// and match the caller. A blank value is no longer skipped — a missing or mismatched
+		// binding means this (order, payment, signature) triple was not issued to this user.
+		// (When the order fetch itself failed, rzpOrder is nil and the captured-payment check
+		// plus the existing-order ownership check below remain the guards.)
+		if rzpOrder != nil && (notesUserID == "" || (notesUserID != internalUserID && notesUserID != userID)) {
+			h.logger.Warn("Rejecting verify: Razorpay order user binding missing or mismatched",
 				zap.String("request_id", requestID),
 				zap.String("caller_internal_id", internalUserID),
 				zap.String("caller_uid", userID),
