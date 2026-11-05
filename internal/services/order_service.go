@@ -23,6 +23,7 @@ type OrderServiceInterface interface {
 	CreateOrder(ctx context.Context, userID string, customerData *models.OrderCustomer, addressData *models.OrderAddress, paymentMethod string, shippingCharges float64) (*models.Order, error)
 	GetUserCart(ctx context.Context, userID string) (*models.Cart, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
+	CreateConfirmedOrder(ctx context.Context, params ConfirmedOrderParams) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error)
 	GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error)
@@ -1161,6 +1162,101 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 		zap.Float64("total_amount", totalAmount),
 		zap.Int("item_count", len(orderItems)))
 
+	return order, nil
+}
+
+// ErrDuplicateOrder is re-exported from the repository layer so handlers can detect
+// a concurrent duplicate (and route to idempotent reuse) without importing repositories.
+var ErrDuplicateOrder = repositories.ErrDuplicateOrder
+
+// ConfirmedOrderParams carries everything needed to create a fully-confirmed, paid
+// order in one shot from the payment-verify path.
+type ConfirmedOrderParams struct {
+	UserID            string
+	Customer          *models.OrderCustomer
+	Address           *models.OrderAddress
+	PaymentMethod     string
+	ShippingCharges   float64
+	RazorpayOrderID   string
+	RazorpayPaymentID string
+	CustomerFirstName string
+	CustomerLastName  string
+	CustomerPhone     string
+	CustomerPhoneAlt  string
+}
+
+// CreateConfirmedOrder creates a fully-confirmed, paid order transactionally (#13/#14/#32).
+// It fetches the cart (failing if empty — no zero-item orders), creates the normalized
+// customer + address records, then creates the order (bound to razorpay_order_id AT
+// INSERT so concurrent verifies dedup via the unique index) together with ALL its items
+// in ONE DB transaction, and clears the cart ONLY after that transaction commits. A
+// concurrent duplicate returns ErrDuplicateOrder so the caller can reuse the existing order.
+func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrderParams) (*models.Order, error) {
+	if s.orderRepo == nil || s.cartService == nil {
+		return nil, fmt.Errorf("order service not fully initialized")
+	}
+
+	cart, err := s.cartService.GetUserCart(ctx, p.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
+	}
+	if cart == nil || len(cart.Items) == 0 {
+		return nil, fmt.Errorf("cart is empty")
+	}
+
+	cartTotal := cart.GetTotalAmount()
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
+	totalAmount := utils.AddShippingCharges(discountedCartTotal, p.ShippingCharges)
+
+	// Normalized customer + address first (reuse the PK-collision retry). These are
+	// harmless normalized records; the security-critical atomic unit is order + items.
+	if err := s.createOrderCustomerWithRetry(ctx, p.Customer); err != nil {
+		return nil, fmt.Errorf("failed to create order customer: %w", err)
+	}
+	if err := s.createOrderAddressWithRetry(ctx, p.Address); err != nil {
+		return nil, fmt.Errorf("failed to create order address: %w", err)
+	}
+
+	order := models.NewOrder(p.UserID, p.Customer.ID, p.Address.ID, totalAmount, p.PaymentMethod, models.OrderStatusConfirmed, "successful")
+	order.RazorpayOrderID = p.RazorpayOrderID
+	order.RazorpayPaymentID = p.RazorpayPaymentID
+	order.FulfillmentStatus = models.FulfillmentPendingShipment
+	order.ShippingCarrier = "Delhivery"
+	order.ShippingMode = "Surface"
+	order.ShippingCharge = p.ShippingCharges
+	order.CustomerFirstName = p.CustomerFirstName
+	order.CustomerLastName = p.CustomerLastName
+	order.CustomerPhone = p.CustomerPhone
+	order.CustomerPhoneAlt = p.CustomerPhoneAlt
+	if cart.CouponCode != "" {
+		order.CouponCode = cart.CouponCode
+		order.DiscountAmount = cart.DiscountAmount
+	}
+	if p.ShippingCharges > 0 {
+		order.Notes = fmt.Sprintf("Shipping: %.2f", p.ShippingCharges)
+	}
+
+	items := make([]models.OrderItem, 0, len(cart.Items))
+	for _, ci := range cart.Items {
+		items = append(items, *models.NewOrderItem(order.ID, ci.ProductID, ci.Quantity, ci.UnitPrice))
+	}
+
+	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+		// May be ErrDuplicateOrder — surfaced unchanged for the caller to reuse.
+		return nil, err
+	}
+
+	// Cart cleared ONLY after the order+items commit (#32). Non-fatal if it fails:
+	// the order is committed; a stale cart is a minor UX issue, not a correctness one.
+	if err := s.ClearUserCart(ctx, p.UserID); err != nil {
+		s.logger.Error("Failed to clear cart after confirmed order creation",
+			zap.Error(err), zap.String("user_id", p.UserID))
+	}
+
+	s.logger.Info("Confirmed order created transactionally",
+		zap.String("order_id", order.ID),
+		zap.String("razorpay_order_id", p.RazorpayOrderID),
+		zap.Int("item_count", len(items)))
 	return order, nil
 }
 

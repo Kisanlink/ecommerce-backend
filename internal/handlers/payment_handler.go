@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"regexp"
@@ -1719,16 +1720,46 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			return
 		}
 
-		// Create order (no existing order for this razorpay_order_id — first verify for it)
-		order, err := h.orderService.CreateOrder(
-			c.Request.Context(),
-			internalUserID,
-			customerData,
-			addressData,
-			"razorpay",
-			shippingCharges,
-		)
-		if err != nil {
+		// Create the confirmed, paid order transactionally (#13/#14/#32): CreateConfirmedOrder
+		// fetches the cart and REFUSES an empty one (no zero-item orders), binds the order to
+		// razorpay_order_id AT INSERT (so a concurrent verify dedups via the unique index),
+		// commits order+items atomically, and clears the cart ONLY after that commit. The
+		// order is created with Status=confirmed / PaymentStatus=successful and the customer
+		// shipment fields set up front — no separate swallowed UpdateOrder is needed.
+		order, err := h.orderService.CreateConfirmedOrder(c.Request.Context(), services.ConfirmedOrderParams{
+			UserID:            internalUserID,
+			Customer:          customerData,
+			Address:           addressData,
+			PaymentMethod:     "razorpay",
+			ShippingCharges:   shippingCharges,
+			RazorpayOrderID:   req.OrderID,
+			RazorpayPaymentID: req.PaymentID,
+			CustomerFirstName: firstName,
+			CustomerLastName:  lastName,
+			CustomerPhone:     mobile,
+			CustomerPhoneAlt:  mobileSecondary,
+		})
+		if errors.Is(err, services.ErrDuplicateOrder) {
+			// A concurrent verify for the same razorpay_order_id created the order between the
+			// idempotency lookup above and this insert. Reuse that order instead of failing;
+			// the metadata + finalizeFulfillment steps below are idempotent and keyed on its ID.
+			h.logger.Info("Concurrent verify already created the order; reusing it",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", req.OrderID))
+			existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID)
+			if lookupErr != nil || existing == nil {
+				h.logger.Error("Duplicate order reported but lookup failed",
+					zap.String("request_id", requestID),
+					zap.Error(lookupErr),
+					zap.String("razorpay_order_id", req.OrderID))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verified but failed to load order"})
+				return
+			}
+			order = existing
+		} else if err != nil {
+			// Includes an empty cart (#14): a captured payment with no cart is a recoverable
+			// state the webhook / manual reconciliation handles, not a reason to lose the order
+			// silently — it is logged with the razorpay ids so it can be found.
 			h.logger.Error("Failed to create database order after payment verification",
 				zap.String("request_id", requestID),
 				zap.Error(err),
@@ -1740,36 +1771,6 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			return
 		}
 
-		// Update the order with Razorpay order ID, payment details, and customer info
-		order.RazorpayOrderID = req.OrderID
-		order.RazorpayPaymentID = req.PaymentID // persist pay_... for reconciliation
-		order.PaymentStatus = "paid"
-		order.Status = models.OrderStatusConfirmed
-		order.FulfillmentStatus = models.FulfillmentPendingShipment
-
-		// CRITICAL: Set customer fields on order for Delhivery shipment
-		order.CustomerFirstName = firstName
-		order.CustomerLastName = lastName
-		order.CustomerPhone = mobile
-		order.CustomerPhoneAlt = mobileSecondary
-
-		h.logger.Info("Setting customer details on order for shipment",
-			zap.String("request_id", requestID),
-			zap.String("order_id", order.ID),
-			zap.String("customer_first_name", firstName),
-			zap.String("customer_last_name", lastName),
-			zap.String("customer_phone", mobile))
-
-		if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
-			h.logger.Error("Failed to update order with Razorpay details",
-				zap.String("request_id", requestID),
-				zap.Error(err),
-				zap.String("user_id", userID),
-				zap.String("order_id", order.ID),
-				zap.String("razorpay_order_id", req.OrderID))
-			// Don't fail the entire operation, just log the error
-		}
-
 		h.logger.Info("Database order created successfully after payment verification",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
@@ -1777,41 +1778,6 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID),
 			zap.Float64("total_amount", order.TotalAmount))
-
-		// Update order with payment details and confirm the order
-		if err := h.orderService.UpdatePaymentStatusAndOrderStatus(c.Request.Context(), order.ID, "successful", req.PaymentID, models.OrderStatusConfirmed); err != nil {
-			h.logger.Error("Failed to update payment and order status",
-				zap.String("request_id", requestID),
-				zap.Error(err),
-				zap.String("order_id", order.ID),
-				zap.String("payment_id", req.PaymentID),
-				zap.String("error_type", "status_update_error"))
-			// Don't fail the verification, but log the error
-		} else {
-			h.logger.Info("Order status updated after successful payment",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("payment_id", req.PaymentID),
-				zap.String("order_status", "confirmed"),
-				zap.String("payment_status", "successful"))
-
-			// Fetch the updated order to get the current status
-			updatedOrder, err := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
-			if err != nil {
-				h.logger.Error("Failed to fetch updated order",
-					zap.String("request_id", requestID),
-					zap.Error(err),
-					zap.String("order_id", order.ID),
-					zap.String("error_type", "order_fetch_error"))
-			} else {
-				order = updatedOrder // Use the updated order with correct status
-				h.logger.Info("Updated order fetched successfully",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("payment_status", order.PaymentStatus),
-					zap.String("order_status", string(order.Status)))
-			}
-		}
 
 		// Persist full payment and shipping metadata on order and notes
 		if rzpOrder != nil {

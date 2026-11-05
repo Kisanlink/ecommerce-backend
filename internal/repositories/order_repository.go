@@ -2,12 +2,19 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
+	"gorm.io/gorm"
 )
+
+// ErrDuplicateOrder is returned when an order already exists for a given
+// razorpay_order_id. Callers use it to route to idempotent reuse instead of
+// creating a second order.
+var ErrDuplicateOrder = errors.New("order already exists for razorpay order id")
 
 // Additional methods for OrderRepository beyond the base repository
 // The OrderRepository is already defined in repository_manager.go
@@ -576,6 +583,43 @@ func (r *OrderRepository) GetOrderByWaybill(ctx context.Context, waybill string)
 	}
 
 	return orders[0], nil
+}
+
+// CreateOrderWithItemsTx creates an order and ALL its items inside a single DB
+// transaction. Either the order and every item commit together, or nothing does —
+// so a partial failure can never leave a zero-item order (#14) or an orphan order
+// (#32). The order must carry its razorpay_order_id so the unique index dedups
+// concurrent verifies; a duplicate returns ErrDuplicateOrder (#13). An empty items
+// slice is refused.
+func (r *OrderRepository) CreateOrderWithItemsTx(ctx context.Context, order *models.Order, items []models.OrderItem) error {
+	if r.pgManager == nil {
+		return fmt.Errorf("postgres manager unavailable for transactional order creation")
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("refusing to create an order with no items")
+	}
+
+	// Defense-in-depth pre-check; the unique index on razorpay_order_id is the real guard.
+	if order.RazorpayOrderID != "" {
+		if existing, _ := r.GetOrderByRazorpayOrderID(ctx, order.RazorpayOrderID); existing != nil {
+			return ErrDuplicateOrder
+		}
+	}
+
+	return r.pgManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).Create(order).Error; err != nil {
+			if isDuplicateKeyError(err) {
+				return ErrDuplicateOrder
+			}
+			return fmt.Errorf("failed to create order: %w", err)
+		}
+		for i := range items {
+			if err := tx.WithContext(ctx).Create(&items[i]).Error; err != nil {
+				return fmt.Errorf("failed to create order item for product %s: %w", items[i].ProductID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // CreateOrderAtomic creates an order and its items atomically to prevent duplicate orders
