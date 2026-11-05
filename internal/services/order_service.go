@@ -12,6 +12,7 @@ import (
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // OrderServiceInterface defines the contract for order operations
@@ -426,32 +427,27 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 	return order, nil
 }
 
-// updateInventoryForOrderItems decrements stock for each ordered product
+// updateInventoryForOrderItems decrements stock for each ordered product using an
+// atomic per-item UPDATE (no read-modify-write, so concurrent deductions can't lose
+// updates). An oversell (stock below the ordered quantity) is logged rather than
+// silently hidden; stock is still floored at zero since a paid item can't be un-sold.
 func (s *OrderService) updateInventoryForOrderItems(ctx context.Context, items []models.OrderItem) error {
 	if s.productRepo == nil {
 		return fmt.Errorf("product repository unavailable")
 	}
 	var firstErr error
 	for _, it := range items {
-		var prod models.Product
-		res, err := s.productRepo.GetByID(ctx, it.ProductID, &prod)
-		if err != nil || res == nil {
+		oversold, err := s.productRepo.DecrementStockAtomic(ctx, nil, it.ProductID, it.Quantity)
+		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("product %s not found: %w", it.ProductID, err)
+				firstErr = fmt.Errorf("failed to decrement stock for %s: %w", it.ProductID, err)
 			}
 			continue
 		}
-		// Decrement stock but not below zero
-		newStock := prod.Stock - it.Quantity
-		if newStock < 0 {
-			newStock = 0
-		}
-		prod.Stock = newStock
-		if newStock <= 0 {
-			prod.StockStatus = "Out of Stock"
-		}
-		if err := s.productRepo.Update(ctx, &prod); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("failed to update stock for %s: %w", it.ProductID, err)
+		if oversold {
+			s.logger.Warn("Inventory oversold (stock floored to zero)",
+				zap.String("product_id", it.ProductID),
+				zap.Int("quantity", it.Quantity))
 		}
 	}
 	return firstErr
@@ -962,19 +958,66 @@ func (s *OrderService) DeductInventoryForOrder(ctx context.Context, orderID stri
 		return fmt.Errorf("order %s not found", orderID)
 	}
 	if order.InventoryDeducted {
-		// Already deducted — nothing to do.
+		// Fast path — already deducted, nothing to do. (The authoritative guard is
+		// the conditional claim inside the transaction below.)
 		return nil
 	}
 	if len(items) == 0 {
 		return fmt.Errorf("order %s has no items", orderID)
 	}
-
-	if err := s.updateInventoryForOrderItems(ctx, items); err != nil {
-		return fmt.Errorf("failed to deduct inventory: %w", err)
+	if s.productRepo == nil {
+		return fmt.Errorf("product repository unavailable")
 	}
 
-	if err := s.orderRepo.SetInventoryDeducted(ctx, orderID, true); err != nil {
-		return fmt.Errorf("failed to mark inventory deducted: %w", err)
+	pg := s.orderRepo.GetPostgresManager()
+	if pg == nil {
+		return fmt.Errorf("postgres manager unavailable for inventory deduction")
+	}
+
+	// Deduct every item's stock AND flip the inventory_deducted guard in ONE
+	// transaction, so a partial failure can't leave stock decremented with the
+	// guard still false (which a retry would then double-count). The guard flip is
+	// a conditional claim — only the first caller to set it from false proceeds to
+	// decrement, so concurrent verify/webhook/admin calls can't double-deduct.
+	var (
+		claimed     bool
+		oversoldIDs []string
+	)
+	txErr := pg.WithTransaction(ctx, func(tx *gorm.DB) error {
+		claim := tx.WithContext(ctx).
+			Model(&models.Order{}).
+			Where("id = ? AND (inventory_deducted = ? OR inventory_deducted IS NULL)", orderID, false).
+			Update("inventory_deducted", true)
+		if claim.Error != nil {
+			return fmt.Errorf("failed to claim inventory deduction: %w", claim.Error)
+		}
+		if claim.RowsAffected == 0 {
+			// Another call already claimed and deducted — no-op.
+			return nil
+		}
+		claimed = true
+		for _, it := range items {
+			oversold, derr := s.productRepo.DecrementStockAtomic(ctx, tx, it.ProductID, it.Quantity)
+			if derr != nil {
+				// Roll back the claim and every prior decrement in this tx.
+				return derr
+			}
+			if oversold {
+				oversoldIDs = append(oversoldIDs, it.ProductID)
+			}
+		}
+		return nil
+	})
+	if txErr != nil {
+		return fmt.Errorf("failed to deduct inventory: %w", txErr)
+	}
+	if !claimed {
+		return nil
+	}
+	if len(oversoldIDs) > 0 {
+		s.logger.Warn("Inventory oversold on paid order (stock floored to zero)",
+			zap.String("order_id", orderID),
+			zap.Strings("oversold_product_ids", oversoldIDs))
 	}
 
 	s.logger.Info("Inventory deducted for order", zap.String("order_id", orderID), zap.Int("item_count", len(items)))

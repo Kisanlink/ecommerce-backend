@@ -63,7 +63,7 @@ func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager,
 
 	return &RepositoryManager{
 		UserRepository:                NewUserRepository(dbManager),
-		ProductRepository:             NewProductRepository(dbManager),
+		ProductRepository:             NewProductRepository(dbManager, pgManager),
 		OrderRepository:               NewOrderRepository(dbManager, pgManager),
 		CartRepository:                NewCartRepository(dbManager, redisManager, logger), // Use new cart repository
 		AddressRepository:             NewAddressRepository(dbManager),

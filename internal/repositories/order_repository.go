@@ -6,6 +6,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
+	"github.com/Kisanlink/kisanlink-db/pkg/db"
 )
 
 // Additional methods for OrderRepository beyond the base repository
@@ -615,6 +616,13 @@ func (r *OrderRepository) SetFulfillmentStatus(ctx context.Context, orderID, sta
 	}
 
 	return nil
+}
+
+// GetPostgresManager exposes the Postgres manager for callers that need to run
+// multi-statement atomic transactions (e.g. inventory deduction) spanning tables
+// this repository does not own.
+func (r *OrderRepository) GetPostgresManager() *db.PostgresManager {
+	return r.pgManager
 }
 
 // SetInventoryDeducted flips the inventory-deducted idempotency guard on the order.
