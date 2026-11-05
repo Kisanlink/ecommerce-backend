@@ -423,44 +423,29 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Bool("has_shipping_cost", req.ShippingCost > 0),
 			zap.Bool("has_subtotal", req.Subtotal > 0))
 
-		// Calculate from provided subtotal or get dynamic shipping charges
-		subtotal := req.Subtotal
-		if subtotal > 0 {
-			shippingCharges = subtotal - discountedCartTotal
-			if shippingCharges < 0 {
-				shippingCharges = 0
-			}
-			finalAmount = subtotal
-			shippingSource = "subtotal_calculation"
-			h.logger.Info("Using provided subtotal",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.Float64("provided_subtotal", subtotal),
-				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Float64("calculated_shipping", shippingCharges))
-		} else if req.ShippingCost > 0 {
-			// Use provided shipping cost from estimate-shipping endpoint
-			shippingCharges = req.ShippingCost
-			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
-			shippingSource = "estimate_api"
-			h.logger.Info("Using provided shipping cost from estimate-shipping",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.Float64("provided_shipping_cost", req.ShippingCost),
-				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Float64("final_amount", finalAmount))
-		} else {
-			// Get shipping charges dynamically from delivery service API with robust fallback
-			shippingSource = "dynamic_calculation"
-			h.logger.Warn("No shipping cost provided from estimate-shipping endpoint, using dynamic calculation",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Int("item_count", len(cart.Items)),
-				zap.String("recommendation", "Frontend should pass shipping_cost from estimate-shipping response"))
+		// SECURITY (#1 amount integrity): the goods subtotal is ALWAYS the discounted
+		// server cart total, and shipping is ALWAYS recomputed server-side. Client-supplied
+		// req.Subtotal / req.ShippingCost are treated as display hints only and never
+		// determine the charge, so a tampered subtotal or shipping value cannot reduce the
+		// amount actually charged (previously `finalAmount = req.Subtotal` let a client pay
+		// any amount they liked for the real cart).
+		shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
+		finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
+		shippingSource = "server_calculation"
 
-			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
-			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
+		if req.ShippingCost > 0 && math.Abs(req.ShippingCost-shippingCharges) > 0.01 {
+			h.logger.Warn("Client shipping_cost differs from server calculation; using server value",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("client_shipping_cost", req.ShippingCost),
+				zap.Float64("server_shipping", shippingCharges))
+		}
+		if req.Subtotal > 0 && math.Abs(req.Subtotal-finalAmount) > 0.01 {
+			h.logger.Warn("Client subtotal differs from server-computed amount; ignoring client value",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("client_subtotal", req.Subtotal),
+				zap.Float64("server_final_amount", finalAmount))
 		}
 
 		h.logger.Info("Shipping charges calculated",
