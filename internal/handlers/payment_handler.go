@@ -2082,15 +2082,67 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		return
 	}
 
-	// Process webhook
-	if err := h.paymentService.ProcessWebhook(c.Request.Context(), body, signature); err != nil {
-		h.logger.Error("Webhook processing failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Webhook processing failed"})
+	// Verify signature + parse
+	webhook, err := h.paymentService.ParseWebhook(body, signature)
+	if err != nil {
+		h.logger.Error("Webhook signature/parse failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook"})
 		return
 	}
 
-	h.logger.Info("Webhook processed successfully")
-	c.JSON(http.StatusOK, gin.H{"message": "Webhook processed successfully"})
+	h.logger.Info("Razorpay webhook received", zap.String("event", webhook.Event))
+
+	// Server-side fulfillment safety net: if the browser never completed /payments/verify, or the
+	// shipment failed there, the webhook independently drives fulfillment. All paths are idempotent.
+	switch webhook.Event {
+	case "order.paid", "payment.captured":
+		rzpOrderID := webhook.Payload.Order.Entity.ID
+		if rzpOrderID == "" {
+			rzpOrderID = webhook.Payload.Payment.Entity.OrderID
+		}
+		paymentID := webhook.Payload.Payment.Entity.ID
+		if rzpOrderID == "" {
+			h.logger.Warn("Webhook has no Razorpay order ID - cannot fulfill",
+				zap.String("event", webhook.Event))
+			break
+		}
+		h.fulfillFromWebhook(c.Request.Context(), rzpOrderID, paymentID)
+	case "payment.failed":
+		h.logger.Warn("Razorpay payment.failed webhook",
+			zap.String("payment_id", webhook.Payload.Payment.Entity.ID),
+			zap.String("razorpay_order_id", webhook.Payload.Payment.Entity.OrderID))
+	default:
+		h.logger.Info("Unhandled Razorpay webhook event", zap.String("event", webhook.Event))
+	}
+
+	// Always ack 2xx so Razorpay does not retry indefinitely; failures are recorded on the order.
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+// fulfillFromWebhook completes fulfillment for a paid Razorpay order from the webhook.
+// It repairs orders that exist but were left unshipped (the common production failure), and
+// loudly flags orders that were never created (which cannot be safely rebuilt from the webhook
+// payload alone, since cart/line-items are not included) for manual reconciliation.
+func (h *PaymentHandler) fulfillFromWebhook(ctx context.Context, rzpOrderID, paymentID string) {
+	order, err := h.orderService.GetOrderByRazorpayOrderID(ctx, rzpOrderID)
+	if err != nil || order == nil {
+		h.logger.Error("Webhook: paid order has no matching DB order - needs manual reconciliation",
+			zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+		return
+	}
+
+	// Persist the captured payment ID for reconciliation if we don't have it yet.
+	if paymentID != "" && order.RazorpayPaymentID == "" {
+		order.RazorpayPaymentID = paymentID
+		if uerr := h.orderService.UpdateOrder(ctx, order); uerr != nil {
+			h.logger.Warn("Webhook: failed to persist payment ID",
+				zap.Error(uerr), zap.String("order_id", order.ID))
+		}
+	}
+
+	// Idempotent: completes the shipment if verify failed or never ran, advances status,
+	// and deducts inventory exactly once.
+	h.finalizeFulfillment(ctx, order.ID)
 }
 
 // GetPaymentStatus retrieves payment status from Razorpay

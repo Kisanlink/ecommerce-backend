@@ -23,6 +23,7 @@ type PaymentServiceInterface interface {
 	CreateOrderWithOptions(ctx context.Context, orderOptions map[string]interface{}) (*RazorpayOrder, error)
 	VerifyPayment(ctx context.Context, orderID, paymentID, signature string) (bool, error)
 	ProcessWebhook(ctx context.Context, body []byte, signature string) error
+	ParseWebhook(body []byte, signature string) (*RazorpayWebhookPayload, error)
 	GetPaymentStatus(ctx context.Context, paymentID string) (*RazorpayPayment, error)
 	GetOrder(ctx context.Context, orderID string) (*RazorpayOrder, error)
 }
@@ -47,50 +48,50 @@ func NewPaymentService(logger *zap.Logger) PaymentServiceInterface {
 
 // RazorpayOrder represents Razorpay order response
 type RazorpayOrder struct {
-	ID               string                 `json:"id"`
-	Entity           string                 `json:"entity"`
-	Amount           int                    `json:"amount"`      // Amount in paisa
-	AmountPaid       int                    `json:"amount_paid"` // Amount paid in paisa
-	AmountDue        int                    `json:"amount_due"`  // Amount due in paisa
-	Currency         string                 `json:"currency"`
-	Receipt          string                 `json:"receipt"`
-	OfferID          string                 `json:"offer_id,omitempty"`
-	Status           string                 `json:"status"`
-	Attempts         int                    `json:"attempts"`
-	Notes            map[string]interface{} `json:"notes"`
-	CreatedAt        int64                  `json:"created_at"`
-	Description      string                 `json:"description,omitempty"`
-	Checkout         map[string]interface{} `json:"checkout,omitempty"`
-	Promotions       []map[string]interface{} `json:"promotions,omitempty"`
-	CODFee           int                    `json:"cod_fee,omitempty"`
-	ShippingFee      int                    `json:"shipping_fee,omitempty"`
-	LineItemsTotal   int                    `json:"line_items_total,omitempty"`
-	TaxDetails       map[string]interface{} `json:"tax_details,omitempty"`
+	ID             string                   `json:"id"`
+	Entity         string                   `json:"entity"`
+	Amount         int                      `json:"amount"`      // Amount in paisa
+	AmountPaid     int                      `json:"amount_paid"` // Amount paid in paisa
+	AmountDue      int                      `json:"amount_due"`  // Amount due in paisa
+	Currency       string                   `json:"currency"`
+	Receipt        string                   `json:"receipt"`
+	OfferID        string                   `json:"offer_id,omitempty"`
+	Status         string                   `json:"status"`
+	Attempts       int                      `json:"attempts"`
+	Notes          map[string]interface{}   `json:"notes"`
+	CreatedAt      int64                    `json:"created_at"`
+	Description    string                   `json:"description,omitempty"`
+	Checkout       map[string]interface{}   `json:"checkout,omitempty"`
+	Promotions     []map[string]interface{} `json:"promotions,omitempty"`
+	CODFee         int                      `json:"cod_fee,omitempty"`
+	ShippingFee    int                      `json:"shipping_fee,omitempty"`
+	LineItemsTotal int                      `json:"line_items_total,omitempty"`
+	TaxDetails     map[string]interface{}   `json:"tax_details,omitempty"`
 	// Customer details from Magic Checkout
-	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
+	CustomerDetails *CustomerDetails `json:"customer_details,omitempty"`
 }
 
 // CustomerDetails represents customer details from Magic Checkout
 type CustomerDetails struct {
-	Email           string          `json:"email"`
-	Contact         string          `json:"contact"`
-	BillingAddress  *MagicAddress   `json:"billing_address,omitempty"`
-	ShippingAddress *MagicAddress   `json:"shipping_address,omitempty"`
+	Email           string        `json:"email"`
+	Contact         string        `json:"contact"`
+	BillingAddress  *MagicAddress `json:"billing_address,omitempty"`
+	ShippingAddress *MagicAddress `json:"shipping_address,omitempty"`
 }
 
 // MagicAddress represents address from Magic Checkout
 type MagicAddress struct {
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Name     string `json:"name"`
-	Contact  string `json:"contact,omitempty"`
-	Line1    string `json:"line1"`
-	Line2    string `json:"line2,omitempty"`
-	City     string `json:"city"`
-	State    string `json:"state"`
-	Country  string `json:"country"`
-	Zipcode  string `json:"zipcode"`
-	Tag      string `json:"tag,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Name    string `json:"name"`
+	Contact string `json:"contact,omitempty"`
+	Line1   string `json:"line1"`
+	Line2   string `json:"line2,omitempty"`
+	City    string `json:"city"`
+	State   string `json:"state"`
+	Country string `json:"country"`
+	Zipcode string `json:"zipcode"`
+	Tag     string `json:"tag,omitempty"`
 }
 
 // RazorpayPayment represents Razorpay payment response
@@ -121,7 +122,7 @@ type RazorpayPayment struct {
 	ErrorDescription string                 `json:"error_description,omitempty"`
 	CreatedAt        int64                  `json:"created_at"`
 	// Magic Checkout fields - customer details with shipping address
-	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
+	CustomerDetails *CustomerDetails `json:"customer_details,omitempty"`
 }
 
 // RazorpayWebhookPayload represents webhook event payload
@@ -518,21 +519,29 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 	return &order, nil
 }
 
-// ProcessWebhook processes Razorpay webhook events
-func (s *PaymentService) ProcessWebhook(ctx context.Context, body []byte, signature string) error {
-	// Verify webhook signature
+// ParseWebhook verifies the webhook signature and returns the parsed payload.
+// Fulfillment is driven by the handler (which has the order/delivery dependencies); this keeps
+// signature verification and parsing in one place.
+func (s *PaymentService) ParseWebhook(body []byte, signature string) (*RazorpayWebhookPayload, error) {
 	expectedSignature := s.generateSignature(string(body), s.config.WebhookSecret)
 	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
 		s.logger.Error("Webhook signature verification failed",
-			zap.String("expected", expectedSignature),
 			zap.String("received", signature))
-		return fmt.Errorf("invalid webhook signature")
+		return nil, fmt.Errorf("invalid webhook signature")
 	}
 
-	// Parse webhook payload
 	var webhook RazorpayWebhookPayload
 	if err := json.Unmarshal(body, &webhook); err != nil {
-		return fmt.Errorf("failed to parse webhook: %w", err)
+		return nil, fmt.Errorf("failed to parse webhook: %w", err)
+	}
+	return &webhook, nil
+}
+
+// ProcessWebhook processes Razorpay webhook events
+func (s *PaymentService) ProcessWebhook(ctx context.Context, body []byte, signature string) error {
+	webhook, err := s.ParseWebhook(body, signature)
+	if err != nil {
+		return err
 	}
 
 	s.logger.Info("Processing Razorpay webhook",
