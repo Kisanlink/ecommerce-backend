@@ -644,50 +644,9 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// GetOrderDetailsDebug is a debug endpoint to retrieve order details without authentication
-// GET /api/v1/debug/order/:id
-// @Summary Debug order details (no auth)
-// @Description Get order details without authentication - for debugging only
-// @Tags Debug
-// @Accept json
-// @Produce json
-// @Param id path string true "Order ID"
-// @Success 200 {object} map[string]interface{} "Order details retrieved successfully (debug endpoint)"
-// @Failure 400 {object} map[string]interface{} "Order ID is required"
-// @Failure 500 {object} map[string]interface{} "Internal server error"
-// @Router /debug/order/{id} [get]
-func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
-	orderID := c.Param("id")
-
-	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
-		return
-	}
-
-	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
-		return
-	}
-
-	response := responses.NewGetOrderDetailsDebugResponse(order)
-	// Add debug note to the response
-	debugResponse := gin.H{
-		"order_id":         response.OrderID,
-		"user_id":          response.UserID,
-		"status":           response.Status,
-		"payment_status":   response.PaymentStatus,
-		"total_amount":     response.TotalAmount,
-		"shipping_address": response.ShippingAddress,
-		"waybill":          response.Waybill,
-		"tracking_url":     response.TrackingURL,
-		"created_at":       response.CreatedAt,
-		"updated_at":       response.UpdatedAt,
-		"debug_note":       "This is a debug endpoint without authentication",
-	}
-
-	c.JSON(http.StatusOK, debugResponse)
-}
+// GetOrderDetailsDebug (removed, #6): the unauthenticated order-details debug endpoint leaked
+// order PII (user_id, shipping address, waybill, total) for any guessable order ID. Authenticated,
+// ownership-checked order reads are available via GetOrderDetails.
 
 // ==========================
 // Admin Order Management
