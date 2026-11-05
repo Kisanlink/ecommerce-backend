@@ -26,6 +26,7 @@ type PaymentServiceInterface interface {
 	ParseWebhook(body []byte, signature string) (*RazorpayWebhookPayload, error)
 	GetPaymentStatus(ctx context.Context, paymentID string) (*RazorpayPayment, error)
 	GetOrder(ctx context.Context, orderID string) (*RazorpayOrder, error)
+	VerifyMagicCheckoutSignature(body []byte, signature string) (configured bool, valid bool)
 }
 
 // PaymentService implements payment business logic with Razorpay
@@ -610,6 +611,23 @@ func (s *PaymentService) generateSignature(message, secret string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(message))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifyMagicCheckoutSignature verifies a Magic Checkout (1CC) callback signature.
+//
+// It returns configured=false when no 1CC secret is set — verification is DORMANT and
+// the caller should skip enforcement (the callbacks keep their other #7 protections).
+// When configured=true, valid reports whether the supplied X-Razorpay-Signature equals
+// HMAC-SHA256(rawBody, 1CC secret), hex-encoded — the same construction as the webhook
+// check (generateSignature), but with the dedicated Magic Checkout secret
+// (RAZORPAY_MAGIC_CHECKOUT_SECRET), which is distinct from the webhook secret.
+func (s *PaymentService) VerifyMagicCheckoutSignature(body []byte, signature string) (configured bool, valid bool) {
+	secret := s.config.MagicCheckoutSecret
+	if secret == "" {
+		return false, false
+	}
+	expected := s.generateSignature(string(body), secret)
+	return true, hmac.Equal([]byte(expected), []byte(signature))
 }
 
 // Helper function to convert paisa to rupees

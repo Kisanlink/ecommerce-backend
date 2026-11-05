@@ -188,6 +188,47 @@ func NewMagicCheckoutHandler(
 	}
 }
 
+// readAndVerifyCallback reads the raw request body once and, when the 1CC HMAC secret
+// is configured, enforces the Razorpay Magic Checkout callback signature (#7): a missing
+// or invalid X-Razorpay-Signature is rejected with 403 and ok=false. When the secret is
+// unset the check is DORMANT — the body is returned and the caller proceeds with its
+// other server-side protections (server-only discounts, bounded caches, the #1 verify-time
+// amount check). Callers must use the returned bytes (json.Unmarshal) because the gin body
+// is consumed here; ShouldBindJSON would read empty afterward.
+//
+// To confirm the exact scheme before relying on it: set RAZORPAY_MAGIC_CHECKOUT_SECRET in
+// a test environment and run one Magic Checkout checkout — a correctly-signed callback
+// passes, a wrong secret/scheme yields 403. No signature material is logged (see #27).
+func (h *MagicCheckoutHandler) readAndVerifyCallback(c *gin.Context) ([]byte, bool) {
+	raw, err := c.GetRawData()
+	if err != nil {
+		h.logger.Error("Magic Checkout: failed to read callback body",
+			zap.String("path", c.FullPath()), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"code": "INVALID_REQUEST", "description": "Invalid request body"},
+		})
+		return nil, false
+	}
+
+	signature := c.GetHeader("X-Razorpay-Signature")
+	configured, valid := h.paymentService.VerifyMagicCheckoutSignature(raw, signature)
+	if configured && !valid {
+		h.logger.Warn("Magic Checkout: rejecting callback with invalid/missing signature",
+			zap.String("path", c.FullPath()),
+			zap.Bool("signature_present", signature != ""))
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{"code": "INVALID_SIGNATURE", "description": "Signature verification failed"},
+		})
+		return nil, false
+	}
+	if !configured {
+		h.logger.Debug("Magic Checkout: callback signature verification dormant (secret unset)",
+			zap.String("path", c.FullPath()),
+			zap.Bool("signature_present", signature != ""))
+	}
+	return raw, true
+}
+
 // GetPromotions returns available coupons for Magic Checkout
 // POST /api/v1/magic-checkout/get-promotions
 func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
@@ -199,7 +240,11 @@ func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
 		Amount          float64 `json:"amount"` // Cart amount in paise
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	body, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		h.logger.Error("Invalid get promotions request", zap.Error(err))
 		c.JSON(http.StatusOK, gin.H{"promotions": []interface{}{}})
 		return
@@ -278,7 +323,11 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		// authoritative server-side total, never from the caller's figure.
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	body, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		h.logger.Error("Invalid apply promotion request", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{
@@ -485,8 +534,10 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 // UpdateAddresses handles address updates from Magic Checkout
 // POST /api/v1/magic-checkout/addresses-callback
 func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
-	// Read raw body for debugging
-	rawBody, _ := c.GetRawData()
+	rawBody, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
 	h.logger.Info("RAW addresses-callback request body from Razorpay",
 		zap.String("raw_body", string(rawBody)),
 		zap.Int("body_length", len(rawBody)))
@@ -642,8 +693,10 @@ func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
 // GetShippingInfo calculates shipping for given addresses
 // POST /api/v1/magic-checkout/shipping-info
 func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
-	// Read raw body first for debugging
-	rawBody, _ := c.GetRawData()
+	rawBody, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
 	h.logger.Info("RAW shipping-info request body from Razorpay",
 		zap.String("raw_body", string(rawBody)),
 		zap.Int("body_length", len(rawBody)))

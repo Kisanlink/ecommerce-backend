@@ -12,7 +12,13 @@ type RazorpayConfig struct {
 	AccountID     string
 	BaseURL       string
 	WebhookSecret string
-	IsLive        bool
+	// MagicCheckoutSecret is the dedicated 1CC HMAC secret from the Magic Checkout
+	// page in the Razorpay Dashboard (distinct from WebhookSecret). It is OPTIONAL:
+	// when empty, Magic Checkout callback signature verification stays dormant and
+	// the callbacks rely on their other protections (#7). When set, callbacks must
+	// carry a valid X-Razorpay-Signature. Never required to boot, even in live mode.
+	MagicCheckoutSecret string
+	IsLive              bool
 }
 
 // GetRazorpayConfig returns Razorpay config from environment variables.
@@ -63,6 +69,9 @@ func GetRazorpayConfig() RazorpayConfig {
 		AccountID:     os.Getenv("RAZORPAY_ACCOUNT_ID"),
 		BaseURL:       getEnvOrDefault("RAZORPAY_BASE_URL", "https://api.razorpay.com/v1"),
 		WebhookSecret: webhookSecret,
-		IsLive:        isLive,
+		// Optional 1CC secret; dormant when unset (see field doc). Not fail-fast
+		// in live mode because callbacks have their own server-side protections.
+		MagicCheckoutSecret: os.Getenv("RAZORPAY_MAGIC_CHECKOUT_SECRET"),
+		IsLive:              isLive,
 	}
 }
