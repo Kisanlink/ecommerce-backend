@@ -111,6 +111,28 @@ func (r *OrderRepository) UpdatePaymentStatus(ctx context.Context, orderID strin
 	return nil
 }
 
+// UpdateInvoiceURL writes only the invoice_url column (#33). The invoice is generated
+// after a slow GetOrderWithDetails + PDF build, so a full-row Save here would risk
+// clobbering any column a concurrent request changed in the meantime. A column-scoped
+// UPDATE touches only invoice_url and leaves every other field untouched.
+func (r *OrderRepository) UpdateInvoiceURL(ctx context.Context, orderID, url string) error {
+	if r.pgManager == nil {
+		return fmt.Errorf("postgres manager unavailable for invoice update")
+	}
+	gdb, err := r.pgManager.GetDB(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to get db for invoice update: %w", err)
+	}
+	res := gdb.WithContext(ctx).
+		Model(&models.Order{}).
+		Where("id = ?", orderID).
+		Update("invoice_url", url)
+	if res.Error != nil {
+		return fmt.Errorf("failed to update invoice url: %w", res.Error)
+	}
+	return nil
+}
+
 // UpdateOrderNotes updates the notes of an order
 func (r *OrderRepository) UpdateOrderNotes(ctx context.Context, orderID string, notes string) error {
 	var order models.Order

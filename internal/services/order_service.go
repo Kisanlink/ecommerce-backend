@@ -561,9 +561,10 @@ func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID str
 		return "", fmt.Errorf("failed to generate PDF invoice: %w", err)
 	}
 
-	// Update order with invoice URL
+	// Update order with invoice URL. #33: write only the invoice_url column so this
+	// post-PDF save cannot clobber fields a concurrent request changed meanwhile.
 	order.InvoiceURL = url
-	if err := s.orderRepo.Update(ctx, order); err != nil {
+	if err := s.orderRepo.UpdateInvoiceURL(ctx, orderID, url); err != nil {
 		s.logger.Error("Failed to update order with invoice URL",
 			zap.String("order_id", orderID),
 			zap.String("invoice_url", url),
