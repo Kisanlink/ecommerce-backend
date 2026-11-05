@@ -86,14 +86,20 @@ type VerifyPaymentRequest struct {
 
 // VerifyPaymentResponse represents payment verification response
 type VerifyPaymentResponse struct {
-	Success          bool   `json:"success"`
-	Message          string `json:"message"`
-	PaymentID        string `json:"payment_id,omitempty"`
-	OrderID          string `json:"order_id,omitempty"`
-	AWBNumber        string `json:"awb_number,omitempty"`
-	TrackingURL      string `json:"tracking_url,omitempty"`
-	InvoiceURL       string `json:"invoice_url,omitempty"`
-	WhatsAppMessage  string `json:"whatsapp_message,omitempty"`
+	Success         bool   `json:"success"`
+	Message         string `json:"message"`
+	PaymentID       string `json:"payment_id,omitempty"`
+	OrderID         string `json:"order_id,omitempty"`
+	AWBNumber       string `json:"awb_number,omitempty"`
+	TrackingURL     string `json:"tracking_url,omitempty"`
+	InvoiceURL      string `json:"invoice_url,omitempty"`
+	WhatsAppMessage string `json:"whatsapp_message,omitempty"`
+	// FulfillmentStatus reflects the post-payment shipment state ("fulfilled",
+	// "pending_shipment", "shipment_failed", "needs_manual_fulfillment"). ShipmentPending is
+	// true whenever a shipment/tracking is not yet available, so the client can reassure the
+	// customer ("payment received, arranging delivery") without implying the payment failed.
+	FulfillmentStatus string `json:"fulfillment_status,omitempty"`
+	ShipmentPending   bool   `json:"shipment_pending"`
 }
 
 // CheckoutPage serves a minimal Razorpay Checkout HTML to initiate payment
@@ -1745,125 +1751,17 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			_ = h.orderService.UpdateOrderNotes(c.Request.Context(), order.ID, notesStr)
 		}
 
-		// Create shipment immediately to get tracking URL
-		h.logger.Info("Creating shipment to get tracking URL",
-			zap.String("request_id", requestID),
-			zap.String("order_id", order.ID),
-			zap.String("user_id", userID))
+		// Create the Delhivery shipment, decrement inventory, and advance the order.
+		// finalizeFulfillment is idempotent and *records* its outcome on the order
+		// (FulfillmentStatus / ShipmentError) instead of silently swallowing failures, so a
+		// paid order that could not be shipped stays queryable and recoverable (via the
+		// Razorpay webhook or the manual retry endpoint). A captured payment is never failed
+		// because of a shipment problem.
+		h.finalizeFulfillment(c.Request.Context(), order.ID)
 
-		// Get order with items for shipment creation
-		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
-		if getOrderErr != nil {
-			h.logger.Error("Failed to get order items for shipment",
-				zap.String("request_id", requestID),
-				zap.Error(getOrderErr),
-				zap.String("order_id", order.ID),
-				zap.String("user_id", userID))
-		} else if len(orderItems) > 0 {
-			// CRITICAL FIX: Ensure customer and address data is set on orderWithItems for shipment creation
-			// The order object has the latest data, but orderWithItems might not
-			// because it was fetched from DB before the updates were committed
-
-			// Set CustomerID from customerData if empty (ensures Priority 1 lookup in CreateShipment works)
-			if orderWithItems.CustomerID == "" && customerData != nil && customerData.ID != "" {
-				orderWithItems.CustomerID = customerData.ID
-				h.logger.Info("Set CustomerID from customerData for shipment creation",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("customer_id", customerData.ID))
-			}
-
-			// Set legacy customer fields as fallback
-			if orderWithItems.CustomerFirstName == "" && firstName != "" {
-				orderWithItems.CustomerFirstName = firstName
-			}
-			if orderWithItems.CustomerLastName == "" && lastName != "" {
-				orderWithItems.CustomerLastName = lastName
-			}
-			if orderWithItems.CustomerPhone == "" && mobile != "" {
-				orderWithItems.CustomerPhone = mobile
-			}
-			if orderWithItems.CustomerPhoneAlt == "" && mobileSecondary != "" {
-				orderWithItems.CustomerPhoneAlt = mobileSecondary
-			}
-
-			// Set ShippingAddressID from addressData if empty (ensures Priority 1 lookup in CreateShipment works)
-			// IMPORTANT: Use addressData.ID (OADR prefix), NOT the legacy shippingAddressID (ADDR prefix)
-			// The legacy shippingAddressID comes from notes["shipping_addr_id"] and points to the old 'addresses' table
-			// The new ShippingAddressID should point to 'order_addresses' table with OADR prefix
-			if orderWithItems.ShippingAddressID == "" && addressData != nil && addressData.ID != "" {
-				orderWithItems.ShippingAddressID = addressData.ID
-				h.logger.Info("Set ShippingAddressID from addressData for shipment creation",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("shipping_address_id", addressData.ID))
-			} else if orderWithItems.ShippingAddressID == "" {
-				// Log warning if we couldn't set ShippingAddressID - this will cause Priority 1 in CreateShipment to be skipped
-				h.logger.Warn("ShippingAddressID is empty and no addressData available - shipment will use fallback address resolution",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("legacy_shipping_addr_id", shippingAddressID),
-					zap.Bool("has_address_data", addressData != nil))
-			}
-
-			// Set legacy shipping address string as fallback
-			if orderWithItems.ShippingAddr == "" && shippingAddress != "" {
-				orderWithItems.ShippingAddr = shippingAddress
-			}
-
-			// Log order details before shipment creation
-			h.logger.Info("Attempting to create shipment with order details",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("shipping_address", orderWithItems.ShippingAddr),
-				zap.String("shipping_address_id", orderWithItems.ShippingAddressID),
-				zap.String("customer_name", fmt.Sprintf("%s %s", orderWithItems.CustomerFirstName, orderWithItems.CustomerLastName)),
-				zap.String("customer_phone", orderWithItems.CustomerPhone),
-				zap.Int("item_count", len(orderItems)))
-
-			// Create shipment to get tracking URL
-			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
-			if shipmentErr != nil {
-				h.logger.Error("Shipment creation failed - detailed error",
-					zap.String("request_id", requestID),
-					zap.Error(shipmentErr),
-					zap.String("order_id", order.ID),
-					zap.String("error_details", fmt.Sprintf("%+v", shipmentErr)))
-			} else if shipmentResult != nil && shipmentResult.Success && shipmentResult.Waybill != "" {
-				// Update order with shipment details
-				awbNumber := shipmentResult.Waybill
-				trackingURL := shipmentResult.TrackingURL
-				if trackingURL == "" {
-					trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
-				}
-
-				// Update order with shipment details
-				if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
-					c.Request.Context(),
-					order.ID,
-					awbNumber,
-					trackingURL,
-					shipmentResult.Status,
-				); updateErr != nil {
-					h.logger.Warn("Failed to update order with shipment details",
-						zap.String("request_id", requestID),
-						zap.Error(updateErr),
-						zap.String("order_id", order.ID))
-				} else {
-					h.logger.Info("Order updated with shipment details",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("waybill", awbNumber),
-						zap.String("tracking_url", trackingURL))
-
-					// Note: WhatsApp notification will be sent later with order_management_amrti template
-					h.logger.Info("Shipment created successfully, WhatsApp notification will be sent with payment confirmation",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("waybill", awbNumber),
-						zap.String("tracking_url", trackingURL))
-				}
-			}
+		// Reload so the response and the WhatsApp step below reflect the shipment outcome.
+		if refreshed, rerr := h.orderService.GetOrderByID(c.Request.Context(), order.ID); rerr == nil && refreshed != nil {
+			order = refreshed
 		}
 
 		// Generate invoice
@@ -1931,7 +1829,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				}()))
 
 			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(updatedOrder)
-			
+
 			// Log the extracted phone number
 			h.logger.Info("Customer phone number extracted for WhatsApp",
 				zap.String("request_id", requestID),
@@ -2027,15 +1925,22 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			whatsAppStatus = "WhatsApp service disabled"
 		}
 
+		shipmentPending := strings.TrimSpace(order.DelhiveryWaybill) == ""
+		if shipmentPending {
+			responseMessage += " Your order is confirmed; we're arranging delivery and tracking will appear shortly."
+		}
+
 		response = VerifyPaymentResponse{
-			Success:         true,
-			Message:         responseMessage,
-			PaymentID:       req.PaymentID,
-			OrderID:         order.ID,
-			AWBNumber:       order.DelhiveryWaybill,
-			TrackingURL:     order.TrackingURL,
-			InvoiceURL:      order.InvoiceURL,
-			WhatsAppMessage: whatsAppStatus,
+			Success:           true,
+			Message:           responseMessage,
+			PaymentID:         req.PaymentID,
+			OrderID:           order.ID,
+			AWBNumber:         order.DelhiveryWaybill,
+			TrackingURL:       order.TrackingURL,
+			InvoiceURL:        order.InvoiceURL,
+			WhatsAppMessage:   whatsAppStatus,
+			FulfillmentStatus: order.FulfillmentStatus,
+			ShipmentPending:   shipmentPending,
 		}
 
 		// Comprehensive success logging
@@ -2071,6 +1976,83 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// finalizeFulfillment creates the Delhivery shipment for an already-paid order (if one does not
+// exist yet), decrements inventory exactly once, advances the order to shipped on success, and
+// records the outcome on the order (FulfillmentStatus / ShipmentError). It is idempotent and
+// safe to call from payment verification, the Razorpay webhook, and the manual retry path.
+//
+// It deliberately returns nothing: a captured payment must never be failed because a shipment
+// could not be created. Instead, failures are persisted so the order can be found and recovered.
+func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string) {
+	orderWithItems, orderItems, err := h.orderService.GetOrderWithItems(ctx, orderID)
+	if err != nil || orderWithItems == nil {
+		h.logger.Error("finalizeFulfillment: failed to load order",
+			zap.Error(err), zap.String("order_id", orderID))
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual, "could not load order/items")
+		return
+	}
+
+	// Idempotent: if a shipment already exists, just ensure inventory + fulfilled flag are set.
+	if strings.TrimSpace(orderWithItems.DelhiveryWaybill) != "" {
+		if invErr := h.orderService.DeductInventoryForOrder(ctx, orderID); invErr != nil {
+			h.logger.Warn("finalizeFulfillment: inventory deduction (already-shipped path) failed",
+				zap.Error(invErr), zap.String("order_id", orderID))
+		}
+		if mErr := h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentFulfilled, ""); mErr != nil {
+			h.logger.Warn("finalizeFulfillment: failed to mark fulfilled (already-shipped path)",
+				zap.Error(mErr), zap.String("order_id", orderID))
+		}
+		return
+	}
+
+	if len(orderItems) == 0 {
+		h.logger.Error("finalizeFulfillment: order has no items - cannot ship",
+			zap.String("order_id", orderID))
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual, "order has no items")
+		return
+	}
+
+	shipmentResult, shipmentErr := h.deliveryService.CreateShipment(ctx, orderWithItems, orderItems)
+	if shipmentErr != nil || shipmentResult == nil || !shipmentResult.Success || shipmentResult.Waybill == "" {
+		reason := "shipment creation failed"
+		if shipmentResult != nil && shipmentResult.Message != "" {
+			reason = shipmentResult.Message
+		}
+		if shipmentErr != nil {
+			reason = shipmentErr.Error()
+		}
+		h.logger.Error("finalizeFulfillment: shipment failed - order needs recovery",
+			zap.String("order_id", orderID), zap.String("reason", reason))
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentShipmentFailed, reason)
+		return
+	}
+
+	awb := shipmentResult.Waybill
+	trackingURL := shipmentResult.TrackingURL
+	if trackingURL == "" {
+		trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awb)
+	}
+
+	if err := h.orderService.ApplyShipmentSuccess(ctx, orderID, awb, trackingURL, shipmentResult.Status); err != nil {
+		// The shipment exists at the courier but we failed to persist it — flag for recovery
+		// rather than losing it.
+		h.logger.Error("finalizeFulfillment: shipment created but DB update failed",
+			zap.Error(err), zap.String("order_id", orderID), zap.String("waybill", awb))
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentShipmentFailed,
+			"shipment created but DB update failed: "+err.Error())
+		return
+	}
+
+	// Delivery is set; deduct inventory (non-fatal — the order is already fulfilled for the customer).
+	if invErr := h.orderService.DeductInventoryForOrder(ctx, orderID); invErr != nil {
+		h.logger.Warn("finalizeFulfillment: inventory deduction failed",
+			zap.Error(invErr), zap.String("order_id", orderID))
+	}
+
+	h.logger.Info("finalizeFulfillment: order shipped",
+		zap.String("order_id", orderID), zap.String("waybill", awb))
 }
 
 // ProcessWebhook handles Razorpay webhook events
