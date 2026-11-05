@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -906,44 +905,12 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 			return
 		}
 
-		// Check if it's a clock skew error
-		errStr := err.Error()
-		if strings.Contains(errStr, "future timestamp") || strings.Contains(errStr, "issued at") {
-			fmt.Printf("⚠️ Clock skew detected in Google auth: %v\n", err)
-
-			// Try to extract UID from token manually
-			parts := strings.Split(req.IDToken, ".")
-			if len(parts) == 3 {
-				payload := parts[1]
-				// Add padding if needed
-				if len(payload)%4 != 0 {
-					payload += strings.Repeat("=", 4-len(payload)%4)
-				}
-				// Base64 decode
-				decoded, decodeErr := decodeBase64URLPayload(payload)
-				if decodeErr == nil {
-					var claims map[string]interface{}
-					if json.Unmarshal(decoded, &claims) == nil {
-						uid := ""
-						if u, ok := claims["user_id"].(string); ok && u != "" {
-							uid = u
-						} else if u, ok := claims["sub"].(string); ok && u != "" {
-							uid = u
-						}
-						if uid != "" {
-							// Try to get user record
-							userRecord, err := client.GetUser(ctx, uid)
-							if err == nil {
-								fmt.Printf("✅ Retrieved user despite clock skew: %s\n", uid)
-								h.handleFirebaseGoogleUser(c, userRecord, req.IDToken)
-								return
-							}
-						}
-					}
-				}
-			}
-		}
-		// If verification fails, try the original Google OAuth flow below
+		// SECURITY (#19): removed the clock-skew fallback that decoded the ID token
+		// payload and trusted user_id/sub WITHOUT verifying the signature — that was
+		// a forged-token auth bypass. A token is accepted only if VerifyIDToken
+		// succeeds above; otherwise fall through to the legitimate Google OAuth REST
+		// flow below (or its error). Genuine clock skew is fixed by syncing the
+		// server clock, never by trusting an unverified payload.
 	}
 
 	// Fallback: Try to use it as a Google OAuth token with Firebase REST API
@@ -1659,19 +1626,3 @@ func normalizePhoneE164(phone string) string {
 	return ""
 }
 
-// Helper function to decode base64url payload from JWT tokens
-func decodeBase64URLPayload(s string) ([]byte, error) {
-	// Replace URL-safe characters
-	s = strings.ReplaceAll(s, "-", "+")
-	s = strings.ReplaceAll(s, "_", "/")
-
-	// Add padding
-	switch len(s) % 4 {
-	case 2:
-		s += "=="
-	case 3:
-		s += "="
-	}
-
-	return base64.StdEncoding.DecodeString(s)
-}
