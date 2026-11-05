@@ -593,6 +593,49 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		zap.String("user_id", userID),
 		zap.Int("amount_paisa", razorpayOrder.Amount))
 
+	// Persist a durable cart snapshot for paid-but-no-order recovery (#13). Written BEFORE
+	// the customer pays: if they close the tab before /verify runs, fulfillFromWebhook
+	// rebuilds the order from this row. Unlike an in-memory cache it survives a process
+	// restart / host idle-sleep (e.g. Render free tier), which is exactly when the webhook,
+	// not the browser, completes the order. Best-effort — a failure here must not break
+	// checkout (the live verify path is unaffected; only the webhook safety net is weakened).
+	snapItems := make([]models.SnapshotLineItem, 0, len(cart.Items))
+	for _, ci := range cart.Items {
+		snapItems = append(snapItems, models.SnapshotLineItem{ProductID: ci.ProductID, Quantity: ci.Quantity, UnitPrice: ci.UnitPrice})
+	}
+	snapParams := services.CartSnapshotParams{
+		RazorpayOrderID:     razorpayOrder.ID,
+		UserID:              userID,
+		Flow:                "standard",
+		Items:               snapItems,
+		CartTotal:           cartTotal,
+		DiscountAmount:      cart.DiscountAmount,
+		CouponCode:          cart.CouponCode,
+		ShippingCharge:      shippingCharges,
+		FinalAmount:         finalAmount,
+		ExpectedAmountPaisa: razorpayOrder.Amount,
+		CustomerFirstName:   req.FirstName,
+		CustomerLastName:    req.LastName,
+		CustomerPhone:       req.Mobile,
+		CustomerPhoneAlt:    req.MobileSecondary,
+		ShippingAddressID:   shippingAddressID,
+	}
+	if snapAddr, aerr := h.orderService.GetAddressByID(c.Request.Context(), userID, shippingAddressID); aerr == nil && snapAddr != nil {
+		snapParams.AddressLine1 = snapAddr.AddressLine1
+		snapParams.AddressLine2 = snapAddr.AddressLine2
+		snapParams.City = snapAddr.City
+		snapParams.State = snapAddr.State
+		snapParams.PostalCode = snapAddr.PostalCode
+		snapParams.Country = snapAddr.Country
+	}
+	if serr := h.orderService.SaveCartSnapshot(c.Request.Context(), snapParams); serr != nil {
+		h.logger.Error("Failed to save cart snapshot - webhook order recovery weakened for this payment",
+			zap.String("request_id", requestID),
+			zap.String("razorpay_order_id", razorpayOrder.ID),
+			zap.String("user_id", userID),
+			zap.Error(serr))
+	}
+
 	// Convert amount back to rupees for response
 	amountInRupees := services.PaisaToRupees(razorpayOrder.Amount)
 
@@ -3415,6 +3458,59 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	// Store order data in cache for coupon apply-promotion to retrieve cart total
 	// This is critical because Razorpay sends our receipt ID, not the Razorpay order ID
 	StoreMagicCheckoutOrder(razorpayOrder.Receipt, razorpayOrder.ID, cartTotal, userID)
+
+	// Persist a durable cart snapshot for paid-but-no-order recovery (#13). Magic Checkout
+	// (1CC) is especially prone to "paid but tab closed", and its in-memory order cache is
+	// wiped on a process restart / host idle-sleep — so a DB snapshot is what lets the
+	// webhook rebuild the order. Keyed to the INTERNAL user id so a rebuilt order passes
+	// ownership checks. The address is the saved/default address known at create-order;
+	// if the customer picked a different one in the widget and never verified, the shipment
+	// guard flags it for manual fulfilment rather than shipping to the wrong place.
+	// Best-effort: a failure must not break checkout.
+	if authenticated && strings.HasPrefix(internalUserID, "USER") {
+		snapItems := make([]models.SnapshotLineItem, 0, len(cart.Items))
+		for _, ci := range cart.Items {
+			snapItems = append(snapItems, models.SnapshotLineItem{ProductID: ci.ProductID, Quantity: ci.Quantity, UnitPrice: ci.UnitPrice})
+		}
+		snapFirst, snapLast := userName, ""
+		if idx := strings.IndexByte(userName, ' '); idx > 0 {
+			snapFirst, snapLast = userName[:idx], strings.TrimSpace(userName[idx+1:])
+		}
+		snapParams := services.CartSnapshotParams{
+			RazorpayOrderID:     razorpayOrder.ID,
+			UserID:              internalUserID,
+			Flow:                "magic",
+			Items:               snapItems,
+			CartTotal:           cartTotal,
+			DiscountAmount:      cart.DiscountAmount,
+			CouponCode:          cart.CouponCode,
+			FinalAmount:         discountedTotal,
+			ExpectedAmountPaisa: razorpayOrder.Amount,
+			CustomerFirstName:   snapFirst,
+			CustomerLastName:    snapLast,
+			CustomerPhone:       userPhone,
+			CustomerEmail:       userEmail,
+		}
+		if savedAddress != nil {
+			snapParams.ShippingAddressID = savedAddress.ID
+			snapParams.AddressLine1 = savedAddress.AddressLine1
+			snapParams.AddressLine2 = savedAddress.AddressLine2
+			snapParams.City = savedAddress.City
+			snapParams.State = savedAddress.State
+			snapParams.PostalCode = savedAddress.PostalCode
+			snapParams.Country = savedAddress.Country
+			if savedAddress.Phone != "" {
+				snapParams.CustomerPhone = savedAddress.Phone
+			}
+		}
+		if serr := h.orderService.SaveCartSnapshot(c.Request.Context(), snapParams); serr != nil {
+			h.logger.Error("Failed to save Magic Checkout cart snapshot - webhook order recovery weakened",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", razorpayOrder.ID),
+				zap.String("user_id", internalUserID),
+				zap.Error(serr))
+		}
+	}
 
 	h.logger.Info("Magic Checkout order created successfully",
 		zap.String("request_id", requestID),

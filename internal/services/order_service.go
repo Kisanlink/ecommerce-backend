@@ -26,6 +26,9 @@ type OrderServiceInterface interface {
 	ValidateCart(ctx context.Context, userID string) (map[string]interface{}, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
 	CreateConfirmedOrder(ctx context.Context, params ConfirmedOrderParams) (*models.Order, error)
+	// SaveCartSnapshot freezes the cart at create-order so the webhook can rebuild a paid
+	// order even after a process restart (paid-but-no-order recovery).
+	SaveCartSnapshot(ctx context.Context, params CartSnapshotParams) error
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error)
 	GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error)
@@ -62,25 +65,27 @@ type OrderServiceInterface interface {
 
 // OrderService implements order business logic
 type OrderService struct {
-	orderRepo   *repositories.OrderRepository
-	cartService CartServiceInterface
-	productRepo repositories.ProductRepositoryInterface
-	addressRepo *repositories.AddressRepository
-	couponRepo  repositories.CouponRepositoryInterface
-	r2Service   *R2Service // Cloudflare R2 storage
-	logger      *zap.Logger
+	orderRepo    *repositories.OrderRepository
+	cartService  CartServiceInterface
+	productRepo  repositories.ProductRepositoryInterface
+	addressRepo  *repositories.AddressRepository
+	couponRepo   repositories.CouponRepositoryInterface
+	snapshotRepo *repositories.PaymentCartSnapshotRepository // frozen cart for webhook order rebuild
+	r2Service    *R2Service                                  // Cloudflare R2 storage
+	logger       *zap.Logger
 }
 
 // NewOrderService creates a new order service
-func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
+func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, snapshotRepo *repositories.PaymentCartSnapshotRepository, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
 	service := &OrderService{
-		orderRepo:   orderRepo,
-		cartService: cartService,
-		productRepo: productRepo,
-		addressRepo: addressRepo,
-		couponRepo:  couponRepo,
-		r2Service:   r2Service,
-		logger:      logger,
+		orderRepo:    orderRepo,
+		cartService:  cartService,
+		productRepo:  productRepo,
+		addressRepo:  addressRepo,
+		couponRepo:   couponRepo,
+		snapshotRepo: snapshotRepo,
+		r2Service:    r2Service,
+		logger:       logger,
 	}
 
 	// Initialize order ID counter from existing database records
@@ -1379,6 +1384,74 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 		zap.String("razorpay_order_id", p.RazorpayOrderID),
 		zap.Int("item_count", len(items)))
 	return order, nil
+}
+
+// CartSnapshotParams carries the frozen cart + customer + address captured at create-order.
+type CartSnapshotParams struct {
+	RazorpayOrderID     string
+	UserID              string
+	Flow                string // "standard" | "magic"
+	Items               []models.SnapshotLineItem
+	CartTotal           float64
+	DiscountAmount      float64
+	CouponCode          string
+	ShippingCharge      float64
+	FinalAmount         float64
+	ExpectedAmountPaisa int
+	CustomerFirstName   string
+	CustomerLastName    string
+	CustomerPhone       string
+	CustomerPhoneAlt    string
+	CustomerEmail       string
+	ShippingAddressID   string
+	AddressLine1        string
+	AddressLine2        string
+	City                string
+	State               string
+	PostalCode          string
+	Country             string
+}
+
+// SaveCartSnapshot persists a frozen copy of the cart + customer + address keyed by the
+// Razorpay order id. It is written synchronously at create-order, BEFORE the customer
+// pays, so that if the browser never reaches /verify (closed tab) the webhook can rebuild
+// the order from durable storage — unlike the in-memory Magic Checkout cache, this
+// survives a process restart / host idle-sleep. Best-effort: the caller must treat a
+// failure here as non-fatal to checkout (the live verify path still works; only the
+// webhook safety net is weakened), and log it.
+func (s *OrderService) SaveCartSnapshot(ctx context.Context, p CartSnapshotParams) error {
+	if s.snapshotRepo == nil {
+		return fmt.Errorf("snapshot repository unavailable")
+	}
+	if p.RazorpayOrderID == "" || p.UserID == "" || len(p.Items) == 0 {
+		return fmt.Errorf("refusing to save snapshot with missing order id, user, or items")
+	}
+	snap := models.NewPaymentCartSnapshot(p.RazorpayOrderID, p.UserID)
+	snap.Flow = p.Flow
+	if err := snap.SetLineItems(p.Items); err != nil {
+		return fmt.Errorf("failed to serialize snapshot items: %w", err)
+	}
+	snap.CartTotal = p.CartTotal
+	snap.DiscountAmount = p.DiscountAmount
+	snap.CouponCode = p.CouponCode
+	snap.ShippingCharge = p.ShippingCharge
+	snap.FinalAmount = p.FinalAmount
+	snap.ExpectedAmountPaisa = p.ExpectedAmountPaisa
+	snap.CustomerFirstName = p.CustomerFirstName
+	snap.CustomerLastName = p.CustomerLastName
+	snap.CustomerPhone = p.CustomerPhone
+	snap.CustomerPhoneAlt = p.CustomerPhoneAlt
+	snap.CustomerEmail = p.CustomerEmail
+	snap.ShippingAddressID = p.ShippingAddressID
+	snap.AddressLine1 = p.AddressLine1
+	snap.AddressLine2 = p.AddressLine2
+	snap.City = p.City
+	snap.State = p.State
+	snap.PostalCode = p.PostalCode
+	if p.Country != "" {
+		snap.Country = p.Country
+	}
+	return s.snapshotRepo.Create(ctx, snap)
 }
 
 // GetOrderDetails retrieves an order with customer, address, and items data including product information
