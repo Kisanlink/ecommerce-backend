@@ -1609,7 +1609,76 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// For now, we store address in the order. To save to user's address book,
 		// we would need to add AddressService to PaymentHandler (can be done later)
 
-		// Create order - simplified approach, always create new order
+		// SECURITY (#2 replay + user binding): a (razorpay_order_id, payment_id, signature)
+		// triple must map to exactly ONE order, owned by exactly the authenticated user.
+		//
+		// (a) Bind the Razorpay order to the caller. The order's notes.user_id (set server-side
+		//     at create-order) must match this user; otherwise a stolen/shared triple could be
+		//     replayed by a different account.
+		notesUserID := ""
+		if rzpOrder != nil && rzpOrder.Notes != nil {
+			if v, ok := rzpOrder.Notes["user_id"].(string); ok {
+				notesUserID = strings.TrimSpace(v)
+			}
+		}
+		if notesUserID != "" && notesUserID != internalUserID && notesUserID != userID {
+			h.logger.Warn("Rejecting verify: Razorpay order belongs to a different user",
+				zap.String("request_id", requestID),
+				zap.String("caller_internal_id", internalUserID),
+				zap.String("caller_uid", userID),
+				zap.String("notes_user_id", notesUserID),
+				zap.String("razorpay_order_id", req.OrderID))
+			c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
+			return
+		}
+
+		// (b) Idempotency: if an order already exists for this razorpay_order_id, reuse it instead
+		//     of creating a second order from the caller's CURRENT cart. This defeats the replay
+		//     where a paid triple is re-submitted after swapping the cart contents.
+		if existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID); lookupErr == nil && existing != nil {
+			if existing.UserID != internalUserID && existing.UserID != userID {
+				h.logger.Warn("Rejecting verify: existing order for this razorpay_order_id belongs to another user",
+					zap.String("request_id", requestID),
+					zap.String("caller_internal_id", internalUserID),
+					zap.String("order_user_id", existing.UserID),
+					zap.String("razorpay_order_id", req.OrderID))
+				c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
+				return
+			}
+
+			h.logger.Info("Idempotent verify: reusing existing order for razorpay_order_id",
+				zap.String("request_id", requestID),
+				zap.String("order_id", existing.ID),
+				zap.String("razorpay_order_id", req.OrderID))
+
+			if strings.TrimSpace(existing.RazorpayPaymentID) == "" {
+				existing.RazorpayPaymentID = req.PaymentID
+				_ = h.orderService.UpdateOrder(c.Request.Context(), existing)
+			}
+
+			// Re-run idempotent fulfillment (completes a shipment that failed the first time; a
+			// no-op once shipped) and respond from the existing order.
+			h.finalizeFulfillment(c.Request.Context(), existing.ID)
+			if refreshed, rerr := h.orderService.GetOrderByID(c.Request.Context(), existing.ID); rerr == nil && refreshed != nil {
+				existing = refreshed
+			}
+
+			shipmentPending := strings.TrimSpace(existing.DelhiveryWaybill) == ""
+			c.JSON(http.StatusOK, VerifyPaymentResponse{
+				Success:           true,
+				Message:           "Payment already verified; your order is confirmed and being fulfilled.",
+				PaymentID:         req.PaymentID,
+				OrderID:           existing.ID,
+				AWBNumber:         existing.DelhiveryWaybill,
+				TrackingURL:       existing.TrackingURL,
+				InvoiceURL:        existing.InvoiceURL,
+				FulfillmentStatus: existing.FulfillmentStatus,
+				ShipmentPending:   shipmentPending,
+			})
+			return
+		}
+
+		// Create order (no existing order for this razorpay_order_id — first verify for it)
 		order, err := h.orderService.CreateOrder(
 			c.Request.Context(),
 			internalUserID,
