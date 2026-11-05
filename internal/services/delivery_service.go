@@ -27,6 +27,7 @@ type DeliveryServiceInterface interface {
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
 	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error)
 	GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error)
+	SyncDeliveryStatus(ctx context.Context, orderID string) (*TrackingInfo, error)
 	GetShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error)
 }
 
@@ -932,6 +933,55 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 }
 
 // GetTrackingInfo retrieves real-time tracking information for a waybill from Delhivery API
+// SyncDeliveryStatus pulls the latest courier status for an order's shipment and reflects it on
+// the order: it refreshes DelhiveryStatus and advances Order.Status to delivered once the courier
+// reports delivery. Safe to call repeatedly (admin action or scheduled job). No-op (returns an
+// error) for orders without a waybill.
+func (s *DeliveryService) SyncDeliveryStatus(ctx context.Context, orderID string) (*TrackingInfo, error) {
+	if s.dbManager == nil {
+		return nil, fmt.Errorf("db manager unavailable")
+	}
+
+	var order models.Order
+	if err := s.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return nil, fmt.Errorf("failed to load order %s: %w", orderID, err)
+	}
+
+	waybill := strings.TrimSpace(order.DelhiveryWaybill)
+	if waybill == "" {
+		return nil, fmt.Errorf("order %s has no shipment/waybill to track", orderID)
+	}
+
+	info, err := s.GetTrackingInfo(ctx, waybill)
+	if err != nil || info == nil {
+		return nil, fmt.Errorf("failed to get tracking info for waybill %s: %w", waybill, err)
+	}
+
+	changed := false
+	if info.Status != "" && info.Status != order.DelhiveryStatus {
+		order.DelhiveryStatus = info.Status
+		changed = true
+	}
+	// Advance the order lifecycle when the courier reports delivery.
+	if strings.Contains(strings.ToLower(info.Status), "delivered") && order.Status != models.OrderStatusDelivered {
+		order.Status = models.OrderStatusDelivered
+		changed = true
+	}
+
+	if changed {
+		if err := s.dbManager.Update(ctx, &order); err != nil {
+			return nil, fmt.Errorf("failed to update order %s delivery status: %w", orderID, err)
+		}
+		s.logger.Info("Synced delivery status",
+			zap.String("order_id", orderID),
+			zap.String("waybill", waybill),
+			zap.String("delhivery_status", order.DelhiveryStatus),
+			zap.String("order_status", string(order.Status)))
+	}
+
+	return info, nil
+}
+
 func (s *DeliveryService) GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error) {
 	if waybill == "" {
 		return nil, fmt.Errorf("waybill cannot be empty")

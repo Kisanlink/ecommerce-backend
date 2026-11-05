@@ -57,6 +57,7 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 		{
 			orders.POST("/shipment", deliveryHandler.CreateOrderShipment)
 			orders.GET("/shipment", deliveryHandler.GetOrderShipment)
+			orders.POST("/sync", deliveryHandler.SyncOrderDeliveryStatus)
 		}
 	}
 

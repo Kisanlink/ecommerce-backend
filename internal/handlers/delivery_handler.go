@@ -247,6 +247,41 @@ func (h *DeliveryHandler) CreateOrderShipment(c *gin.Context) {
 	})
 }
 
+// SyncOrderDeliveryStatus handles POST /delivery/orders/:id/sync
+// @Summary Sync delivery status from courier
+// @Description Pull the latest Delhivery tracking status for an order and advance it to delivered when reported
+// @Tags Delivery
+// @Produce json
+// @Security FirebaseAuth
+// @Param id path string true "Order ID"
+// @Success 200 {object} map[string]interface{} "Delivery status synced"
+// @Failure 400 {object} map[string]interface{} "Invalid order id or no shipment"
+// @Router /delivery/orders/{id}/sync [post]
+func (h *DeliveryHandler) SyncOrderDeliveryStatus(c *gin.Context) {
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order id is required"})
+		return
+	}
+	info, err := h.deliveryService.SyncDeliveryStatus(c.Request.Context(), orderID)
+	if err != nil || info == nil {
+		msg := "failed to sync delivery status"
+		if err != nil {
+			msg = err.Error()
+		}
+		h.logger.Warn("Failed to sync delivery status", zap.Error(err), zap.String("order_id", orderID))
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": msg})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"order_id":     orderID,
+		"status":       info.Status,
+		"tracking_url": info.TrackingURL,
+		"last_update":  info.LastUpdate,
+	})
+}
+
 // GetOrderShipment handles GET /orders/:id/shipment
 // @Summary Get order shipment
 // @Description Get shipment details (waybill, status, tracking URL) for an order
