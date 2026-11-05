@@ -330,11 +330,17 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "A valid shipping address (city, state and a 6-digit pincode) is required before payment."})
 			return
 		}
-		// Confirm the pincode is serviceable. Fail-open on a serviceability-API error so a
-		// transient Delhivery outage does not block checkout, but hard-block a definite "no".
+		// Confirm the pincode is serviceable BEFORE taking payment (#23: fail-closed).
+		// A serviceability-API error is treated the same as "not serviceable" — we do not
+		// charge a customer for an order we cannot confirm we can deliver. (The previous
+		// fail-open let a Delhivery outage pass checkout, producing paid-but-unshippable
+		// orders.) A transient error asks the customer to retry rather than silently proceed.
 		if ok, svcErr := h.deliveryService.CheckServiceability(c.Request.Context(), pincode); svcErr != nil {
-			h.logger.Warn("Serviceability check errored - allowing checkout (fail-open)",
-				zap.String("request_id", requestID), zap.String("pincode", pincode), zap.Error(svcErr))
+			h.logger.Warn("Rejecting payment order: serviceability check errored (fail-closed)",
+				zap.String("request_id", requestID), zap.String("user_id", userID),
+				zap.String("pincode", pincode), zap.Error(svcErr))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "We could not confirm delivery to this pincode right now. Please try again in a few minutes."})
+			return
 		} else if !ok {
 			h.logger.Warn("Rejecting payment order: pincode not serviceable",
 				zap.String("request_id", requestID), zap.String("user_id", userID), zap.String("pincode", pincode))
