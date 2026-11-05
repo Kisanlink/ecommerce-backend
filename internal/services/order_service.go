@@ -23,6 +23,7 @@ type OrderServiceInterface interface {
 	// Create order with customer and address data
 	CreateOrder(ctx context.Context, userID string, customerData *models.OrderCustomer, addressData *models.OrderAddress, paymentMethod string, shippingCharges float64) (*models.Order, error)
 	GetUserCart(ctx context.Context, userID string) (*models.Cart, error)
+	ValidateCart(ctx context.Context, userID string) (map[string]interface{}, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
 	CreateConfirmedOrder(ctx context.Context, params ConfirmedOrderParams) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
@@ -245,6 +246,14 @@ func (s *OrderService) initializeOrderAddressIDCounter() {
 // GetUserCart retrieves the user's cart via cart service
 func (s *OrderService) GetUserCart(ctx context.Context, userID string) (*models.Cart, error) {
 	return s.cartService.GetUserCart(ctx, userID)
+}
+
+// ValidateCart re-validates and re-prices the user's cart against current product
+// data (#34). It returns the validation result map (cart, validation_issues,
+// cart_updated); when cart_updated is true, prices/quantities were stale and the cart
+// was corrected, so the caller should ask the user to re-confirm before charging.
+func (s *OrderService) ValidateCart(ctx context.Context, userID string) (map[string]interface{}, error) {
+	return s.cartService.ValidateCart(ctx, userID)
 }
 
 // CreateOrderFromCart creates a new order from user's cart

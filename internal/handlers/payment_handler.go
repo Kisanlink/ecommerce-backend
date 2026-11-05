@@ -411,6 +411,36 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		zap.String("cart_id", cart.ID),
 		zap.Int("item_count", len(cart.Items)))
 
+	// Step 1b (#34): re-price the cart against current product data BEFORE charging.
+	// ValidateCart resets any stale line price/quantity to the current value and reports
+	// what changed. If anything changed, reject this checkout so the user re-confirms the
+	// new total instead of being charged a stale price. The corrected cart is persisted,
+	// so the client's retry will see and confirm the updated prices.
+	if validation, verr := h.orderService.ValidateCart(c.Request.Context(), userID); verr != nil {
+		h.logger.Error("Failed to validate cart before checkout",
+			zap.String("request_id", requestID), zap.Error(verr), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate cart"})
+		return
+	} else if updated, _ := validation["cart_updated"].(bool); updated {
+		h.logger.Warn("Cart changed during validation - rejecting checkout for re-confirmation",
+			zap.String("request_id", requestID), zap.String("user_id", userID))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":             "Your cart was updated (prices or availability changed). Please review the new total and try again.",
+			"code":              "CART_UPDATED",
+			"validation_issues": validation["validation_issues"],
+		})
+		return
+	}
+
+	// Re-fetch the (possibly corrected) cart so totals below use the re-priced values.
+	cart, err = h.orderService.GetUserCart(c.Request.Context(), userID)
+	if err != nil || cart == nil || len(cart.Items) == 0 {
+		h.logger.Error("Failed to re-fetch cart after validation",
+			zap.String("request_id", requestID), zap.Error(err), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get cart"})
+		return
+	}
+
 	// Step 2: Calculate totals dynamically from cart
 	cartTotal := 0.0
 	for _, item := range cart.Items {
