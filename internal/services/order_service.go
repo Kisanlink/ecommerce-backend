@@ -47,6 +47,7 @@ type OrderServiceInterface interface {
 	FormatAddress(addr *models.Address) string
 	// Admin listing/stats/export
 	ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error)
+	ListUnfulfilledOrders(ctx context.Context, page, limit int) ([]models.Order, int, error)
 	GetOrderStats(ctx context.Context) (map[string]interface{}, error)
 	ExportOrdersCSV(ctx context.Context) ([]byte, string, error)
 }
@@ -734,6 +735,48 @@ func (s *OrderService) ListOrders(ctx context.Context, status, paymentStatus, q 
 		return nil, 0, fmt.Errorf("failed to count orders: %w", err)
 	}
 	// load normalized relations for each order (best-effort)
+	for i := range orders {
+		if orders[i].CustomerID != "" {
+			if customer, err := s.orderRepo.GetOrderCustomer(ctx, orders[i].CustomerID); err == nil {
+				orders[i].Customer = customer
+			}
+		}
+		if orders[i].ShippingAddressID != "" {
+			if addr, err := s.orderRepo.GetOrderAddress(ctx, orders[i].ShippingAddressID); err == nil {
+				orders[i].ShippingAddress = addr
+			}
+		}
+	}
+	return orders, int(count), nil
+}
+
+// ListUnfulfilledOrders returns paid orders that have no shipment yet — i.e. confirmed orders with
+// an empty Delhivery waybill. These are the "payment taken but delivery not created" orders that
+// need recovery (fix address + retry shipment). Loads customer/address so admins can act on them.
+func (s *OrderService) ListUnfulfilledOrders(ctx context.Context, page, limit int) ([]models.Order, int, error) {
+	if s.orderRepo == nil {
+		return nil, 0, fmt.Errorf("order repository unavailable")
+	}
+	conds := []base.FilterCondition{
+		{Field: "status", Operator: base.OpEqual, Value: string(models.OrderStatusConfirmed)},
+		{Field: "delhivery_waybill", Operator: base.OpEqual, Value: ""},
+	}
+	filter := &base.Filter{Group: base.FilterGroup{Conditions: conds, Logic: base.LogicAnd}, Page: page, PageSize: limit}
+
+	found, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list unfulfilled orders: %w", err)
+	}
+	orders := make([]models.Order, 0, len(found))
+	for _, po := range found {
+		if po != nil {
+			orders = append(orders, *po)
+		}
+	}
+	count, err := s.orderRepo.CountWithFilter(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count unfulfilled orders: %w", err)
+	}
 	for i := range orders {
 		if orders[i].CustomerID != "" {
 			if customer, err := s.orderRepo.GetOrderCustomer(ctx, orders[i].CustomerID); err == nil {

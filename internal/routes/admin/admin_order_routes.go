@@ -17,6 +17,7 @@ func RegisterAdminOrderRoutes(r *gin.RouterGroup, orderHandler *handlers.OrderHa
 	orders := admin.Group("/orders")
 	{
 		orders.GET("", orderHandler.GetAllOrders)                 // Get all orders
+		orders.GET("/unshipped", orderHandler.GetUnshippedOrders) // Paid-but-unshipped recovery view
 		orders.GET("/:id", orderHandler.GetOrderDetailsAdmin)     // Get specific order details
 		orders.PUT("/:id/status", orderHandler.UpdateOrderStatus) // Update order status
 		orders.PUT("/:id/payment", orderHandler.UpdatePayment)    // Update payment details

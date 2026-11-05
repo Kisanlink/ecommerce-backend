@@ -743,6 +743,39 @@ func (h *OrderHandler) GetAllOrders(c *gin.Context) {
 	})
 }
 
+// GetUnshippedOrders returns paid orders that have no shipment yet (recovery view).
+// GET /api/v1/admin/orders/unshipped
+func (h *OrderHandler) GetUnshippedOrders(c *gin.Context) {
+	page := 1
+	limit := 50
+	if v := c.Query("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := c.Query("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 && l <= 200 {
+			limit = l
+		}
+	}
+
+	orders, total, err := h.orderService.ListUnfulfilledOrders(c.Request.Context(), page, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list unshipped orders"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"orders": orders,
+		"pagination": gin.H{
+			"page":     page,
+			"limit":    limit,
+			"total":    total,
+			"has_more": page*limit < total,
+		},
+	})
+}
+
 // GetOrderDetailsAdmin returns order details for admin without ownership checks
 // GET /api/v1/admin/orders/:id
 func (h *OrderHandler) GetOrderDetailsAdmin(c *gin.Context) {
