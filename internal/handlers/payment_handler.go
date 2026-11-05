@@ -100,6 +100,11 @@ type VerifyPaymentResponse struct {
 	// customer ("payment received, arranging delivery") without implying the payment failed.
 	FulfillmentStatus string `json:"fulfillment_status,omitempty"`
 	ShipmentPending   bool   `json:"shipment_pending"`
+	// PaymentPending is true when the signature is valid but Razorpay has not
+	// reported the payment as "captured" yet (authorized-only, created, or the
+	// status could not be fetched). No order is created in that case; the
+	// order.paid/payment.captured webhook fulfills once capture lands.
+	PaymentPending bool `json:"payment_pending"`
 }
 
 // CheckoutPage serves a minimal Razorpay Checkout HTML to initiate payment
@@ -708,6 +713,35 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
 				zap.Error(paymentErr))
+		}
+
+		// #12 Captured-payment gate. A valid signature only proves the
+		// (order_id, payment_id) pair came from Razorpay; it does NOT prove the
+		// money was captured. Do not create an order or ship on an
+		// authorized-only / created payment, nor when the status could not be
+		// fetched (Razorpay outage). The order.paid / payment.captured webhook
+		// is the safety net that fulfills once capture actually lands, so this
+		// is a conservative 200, not a failure the customer should worry about.
+		if rzpPayment == nil || rzpPayment.Status != "captured" {
+			status := "unknown"
+			if rzpPayment != nil {
+				status = rzpPayment.Status
+			}
+			h.logger.Warn("Payment signature valid but not captured - deferring fulfillment to webhook",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("payment_id", req.PaymentID),
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.String("payment_status", status))
+			c.JSON(http.StatusOK, VerifyPaymentResponse{
+				Success:         false,
+				Message:         "Payment received and being confirmed. Your order will be arranged once the payment is captured.",
+				PaymentID:       req.PaymentID,
+				OrderID:         req.OrderID,
+				PaymentPending:  true,
+				ShipmentPending: true,
+			})
+			return
 		}
 
 		// Fetch Razorpay order to get notes (subtotal, cart_total, shipping_charges, shipping_address)
