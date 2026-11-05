@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"firebase.google.com/go/v4/auth"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
@@ -18,6 +19,13 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/gin-gonic/gin"
 )
+
+// firebaseHTTPClient is used for all outbound calls to the Firebase Identity
+// Toolkit / Secure Token REST APIs. SECURITY (#29): the bare http.Post helpers
+// use http.DefaultClient, which has NO timeout, so a slow or hung Firebase
+// endpoint would block the request goroutine indefinitely. This shared client
+// bounds every such call.
+var firebaseHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // FirebaseAuthHandler handles Firebase authentication operations
 type FirebaseAuthHandler struct {
@@ -196,7 +204,7 @@ func (h *FirebaseAuthHandler) Signup(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=%s", firebaseAPIKey)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := firebaseHTTPClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		// Return success for user creation even if auto-login fails
 		utils.RespondWithSuccess(c, gin.H{
@@ -315,7 +323,7 @@ func (h *FirebaseAuthHandler) Login(c *gin.Context) {
 
 	// Call Firebase Auth REST API
 	url := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=%s", firebaseAPIKey)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := firebaseHTTPClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Authentication service unavailable", err)
 		return
@@ -825,7 +833,7 @@ func (h *FirebaseAuthHandler) RefreshToken(c *gin.Context) {
 
 	// Call Firebase Auth REST API for token refresh
 	url := fmt.Sprintf("https://securetoken.googleapis.com/v1/token?key=%s", firebaseAPIKey)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := firebaseHTTPClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Token refresh service unavailable", err)
 		return
@@ -938,7 +946,7 @@ func (h *FirebaseAuthHandler) GoogleSignIn(c *gin.Context) {
 		return
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(idpJsonData))
+	resp, err := firebaseHTTPClient.Post(url, "application/json", bytes.NewBuffer(idpJsonData))
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to authenticate with Google", err)
 		return
@@ -1476,7 +1484,7 @@ func (h *FirebaseAuthHandler) VerifyPhoneCode(c *gin.Context) {
 	}
 	jsonData, _ := json.Marshal(exchangeReq)
 	exchangeURL := fmt.Sprintf("https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=%s", firebaseAPIKey)
-	exchangeResp, postErr := http.Post(exchangeURL, "application/json", bytes.NewBuffer(jsonData))
+	exchangeResp, postErr := firebaseHTTPClient.Post(exchangeURL, "application/json", bytes.NewBuffer(jsonData))
 	if postErr != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to exchange token with Firebase", postErr)
 		return
