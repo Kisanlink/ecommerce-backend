@@ -900,38 +900,35 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			zap.String("note", "Order may not have been created via Magic Checkout or server was restarted"))
 	}
 
-	// Priority 2: Check if Razorpay sent amount in request
-	if cartTotal == 0 && req.Amount > 0 {
-		cartTotal = req.Amount / 100.0 // Convert paise to rupees
-		h.logger.Info("Using amount from request",
-			zap.Float64("amount_paise", req.Amount),
-			zap.Float64("cart_total_rupees", cartTotal))
-	} else if cartTotal == 0 && req.CartAmount > 0 {
-		cartTotal = req.CartAmount / 100.0
-		h.logger.Info("Using cart_amount from request",
-			zap.Float64("cart_amount_paise", req.CartAmount),
-			zap.Float64("cart_total_rupees", cartTotal))
-	}
+	// SECURITY (#3/#7): the cart total MUST come from an authoritative server-side source —
+	// our order cache (above) or the Razorpay order's notes.cart_total, which we set at
+	// create-order. It is NEVER taken from the callback request body: a caller could inflate
+	// `amount`/`cart_amount` past the free-delivery threshold to zero out shipping. The
+	// request-body amount fields are deliberately ignored.
 
-	// Priority 3: Try Razorpay API if we have a valid order ID
-	if cartTotal == 0 && strings.HasPrefix(orderID, "order_") {
-		rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), orderID)
-		if err == nil && rzpOrder.Notes != nil {
-			// Get item count from notes
-			if itemCount, ok := rzpOrder.Notes["total_items"].(float64); ok && itemCount > 0 {
-				weight = int(itemCount) * 100 // 100g per item
+	// Priority 2: authoritative Razorpay order (notes.cart_total is server-set at create-order)
+	if cartTotal == 0 {
+		apiOrderID := orderID
+		if !strings.HasPrefix(apiOrderID, "order_") {
+			apiOrderID = razorpayOrderID // the order_-prefixed form built above
+		}
+		if strings.HasPrefix(apiOrderID, "order_") {
+			if rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), apiOrderID); err == nil && rzpOrder != nil && rzpOrder.Notes != nil {
+				if itemCount, ok := rzpOrder.Notes["total_items"].(float64); ok && itemCount > 0 {
+					weight = int(itemCount) * 100 // 100g per item
+				}
+				if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
+					cartTotal = total
+				}
+				h.logger.Info("Retrieved cart total from Razorpay API",
+					zap.String("order_id", apiOrderID),
+					zap.Float64("cart_total", cartTotal))
 			}
-			// Get cart total for free delivery check
-			if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
-				cartTotal = total
-			}
-			h.logger.Info("Retrieved cart total from Razorpay API",
-				zap.String("order_id", orderID),
-				zap.Float64("cart_total", cartTotal))
 		}
 	}
 
-	// Log final cart total decision
+	// Log final cart total decision. If no authoritative total was found, cartTotal stays 0,
+	// the free-delivery gate below fails, and shipping is charged (fail closed).
 	h.logger.Info("SHIPPING CALCULATION - CART TOTAL DECISION",
 		zap.Float64("final_cart_total", cartTotal),
 		zap.Bool("qualifies_for_free_delivery", cartTotal >= 500))
