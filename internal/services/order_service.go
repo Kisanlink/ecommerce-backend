@@ -42,6 +42,7 @@ type OrderServiceInterface interface {
 	ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error
 	MarkFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error
 	DeductInventoryForOrder(ctx context.Context, orderID string) error
+	ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error)
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
@@ -912,6 +913,15 @@ func (s *OrderService) UpdateOrderWithShipmentAtomic(ctx context.Context, orderI
 }
 
 // ApplyShipmentSuccess records a successful shipment and advances the order to shipped + fulfilled.
+// ClaimOrderForShipment atomically claims an order for a single shipment attempt (see the repository
+// method). Returns true only to the one caller that wins the claim.
+func (s *OrderService) ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error) {
+	if s.orderRepo == nil {
+		return false, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ClaimOrderForShipment(ctx, orderID)
+}
+
 func (s *OrderService) ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error {
 	if s.orderRepo == nil {
 		return fmt.Errorf("order repository unavailable")

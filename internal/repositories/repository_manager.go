@@ -64,7 +64,7 @@ func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager,
 	return &RepositoryManager{
 		UserRepository:                NewUserRepository(dbManager),
 		ProductRepository:             NewProductRepository(dbManager),
-		OrderRepository:               NewOrderRepository(dbManager),
+		OrderRepository:               NewOrderRepository(dbManager, pgManager),
 		CartRepository:                NewCartRepository(dbManager, redisManager, logger), // Use new cart repository
 		AddressRepository:             NewAddressRepository(dbManager),
 		RecipesRepository:             recipesRepo,
@@ -106,12 +106,14 @@ func (rm *RepositoryManager) Close() error {
 type OrderRepository struct {
 	*base.BaseFilterableRepository[*models.Order]
 	dbManager db.DBManager
+	pgManager *db.PostgresManager // direct GORM access for atomic conditional updates
 }
 
-func NewOrderRepository(dbManager db.DBManager) *OrderRepository {
+func NewOrderRepository(dbManager db.DBManager, pgManager *db.PostgresManager) *OrderRepository {
 	repo := &OrderRepository{
 		BaseFilterableRepository: base.NewBaseFilterableRepository[*models.Order](),
 		dbManager:                dbManager,
+		pgManager:                pgManager,
 	}
 	repo.SetDBManager(dbManager)
 	return repo

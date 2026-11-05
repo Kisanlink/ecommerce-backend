@@ -2124,6 +2124,24 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 		return
 	}
 
+	// SECURITY (#9/#10 shipment race): atomically claim the order before calling the courier so a
+	// concurrent verify + webhook (or a double retry) cannot both create a shipment and leave two
+	// waybills at the courier. Only the single winner proceeds past this point.
+	claimed, claimErr := h.orderService.ClaimOrderForShipment(ctx, orderID)
+	if claimErr != nil {
+		h.logger.Error("finalizeFulfillment: failed to claim order for shipment",
+			zap.Error(claimErr), zap.String("order_id", orderID))
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual,
+			"could not atomically claim order for shipment: "+claimErr.Error())
+		return
+	}
+	if !claimed {
+		// Another path already claimed/completed the shipment, or the order needs manual handling.
+		h.logger.Info("finalizeFulfillment: order not claimable for shipment (already in progress/shipped or needs manual) - skipping",
+			zap.String("order_id", orderID))
+		return
+	}
+
 	shipmentResult, shipmentErr := h.deliveryService.CreateShipment(ctx, orderWithItems, orderItems)
 	if shipmentErr != nil || shipmentResult == nil || !shipmentResult.Success || shipmentResult.Waybill == "" {
 		reason := "shipment creation failed"
@@ -2146,12 +2164,14 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 	}
 
 	if err := h.orderService.ApplyShipmentSuccess(ctx, orderID, awb, trackingURL, shipmentResult.Status); err != nil {
-		// The shipment exists at the courier but we failed to persist it — flag for recovery
-		// rather than losing it.
-		h.logger.Error("finalizeFulfillment: shipment created but DB update failed",
+		// SECURITY (#10): the shipment EXISTS at the courier but we failed to persist the waybill.
+		// Mark needs_manual_fulfillment (NOT shipment_failed) so the automatic claim will not
+		// re-ship it — re-shipping would create a second parcel. The waybill is recorded in the
+		// error text so an admin can reconcile it by hand.
+		h.logger.Error("finalizeFulfillment: shipment created but DB update failed - needs manual reconciliation",
 			zap.Error(err), zap.String("order_id", orderID), zap.String("waybill", awb))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentShipmentFailed,
-			"shipment created but DB update failed: "+err.Error())
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual,
+			fmt.Sprintf("shipment created at courier (waybill %s) but DB update failed: %s — reconcile manually, do NOT re-ship", awb, err.Error()))
 		return
 	}
 

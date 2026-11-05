@@ -633,6 +633,37 @@ func (r *OrderRepository) SetInventoryDeducted(ctx context.Context, orderID stri
 	return nil
 }
 
+// ClaimOrderForShipment atomically claims an order for a SINGLE shipment attempt. Exactly one
+// concurrent caller (payment verify, the Razorpay webhook, or an admin retry) wins the claim; the
+// others receive false and must NOT call the courier. This prevents duplicate shipments and
+// orphaned waybills (#9/#10) that a check-then-act on an empty waybill allowed.
+//
+// An order is claimable only when it has no waybill yet AND its fulfillment status is retryable
+// (empty, pending_shipment, or shipment_failed). The states shipment_in_progress, fulfilled, and
+// needs_manual_fulfillment are deliberately not auto-claimable, so a shipment that was created at
+// the courier but failed to persist (marked needs_manual) is never automatically re-shipped.
+func (r *OrderRepository) ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error) {
+	if r.pgManager == nil {
+		// Fail safe: without atomic DB access we refuse the claim rather than risk a double shipment.
+		return false, fmt.Errorf("postgres manager unavailable for shipment claim")
+	}
+	gdb, err := r.pgManager.GetDB(ctx, false)
+	if err != nil {
+		return false, fmt.Errorf("failed to get db for shipment claim: %w", err)
+	}
+
+	claimable := []string{"", models.FulfillmentPendingShipment, models.FulfillmentShipmentFailed}
+	res := gdb.WithContext(ctx).
+		Model(&models.Order{}).
+		Where("id = ? AND (delhivery_waybill IS NULL OR delhivery_waybill = '') AND (fulfillment_status IS NULL OR fulfillment_status IN ?)",
+			orderID, claimable).
+		Update("fulfillment_status", models.FulfillmentShipmentInProgress)
+	if res.Error != nil {
+		return false, fmt.Errorf("failed to claim order for shipment: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // isDuplicateKeyError checks if an error is a duplicate key constraint violation
 func isDuplicateKeyError(err error) bool {
 	if err == nil {

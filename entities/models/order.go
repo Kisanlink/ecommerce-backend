@@ -19,10 +19,11 @@ const (
 // independent of the courier-reported delivery Status above. Used to find and recover
 // paid-but-unshipped orders.
 const (
-	FulfillmentPendingShipment = "pending_shipment"         // paid, shipment not yet created
-	FulfillmentShipmentFailed  = "shipment_failed"          // shipment attempt failed (see ShipmentError)
-	FulfillmentNeedsManual     = "needs_manual_fulfillment" // paid but order could not be built (e.g. cart gone)
-	FulfillmentFulfilled       = "fulfilled"                // order + shipment + inventory all done
+	FulfillmentPendingShipment    = "pending_shipment"         // paid, shipment not yet created
+	FulfillmentShipmentInProgress = "shipment_in_progress"     // a shipment attempt is underway (claim held)
+	FulfillmentShipmentFailed     = "shipment_failed"          // shipment attempt failed (see ShipmentError)
+	FulfillmentNeedsManual        = "needs_manual_fulfillment" // paid but order could not be built/shipped safely
+	FulfillmentFulfilled          = "fulfilled"                // order + shipment + inventory all done
 )
 
 // OrderCustomer represents customer information captured at order time
