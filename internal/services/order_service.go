@@ -29,6 +29,9 @@ type OrderServiceInterface interface {
 	// SaveCartSnapshot freezes the cart at create-order so the webhook can rebuild a paid
 	// order even after a process restart (paid-but-no-order recovery).
 	SaveCartSnapshot(ctx context.Context, params CartSnapshotParams) error
+	// RebuildOrderFromSnapshot rebuilds a confirmed order from the frozen snapshot when a
+	// payment is captured but /verify never ran. Returns ErrNoSnapshot when none exists.
+	RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error)
 	GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error)
@@ -1452,6 +1455,95 @@ func (s *OrderService) SaveCartSnapshot(ctx context.Context, p CartSnapshotParam
 		snap.Country = p.Country
 	}
 	return s.snapshotRepo.Create(ctx, snap)
+}
+
+// ErrNoSnapshot is returned by RebuildOrderFromSnapshot when no snapshot exists for the
+// Razorpay order id — the paid-but-no-order case cannot be auto-recovered and needs manual
+// reconciliation (the caller logs it for the runbook).
+var ErrNoSnapshot = errors.New("no cart snapshot for razorpay order")
+
+// RebuildOrderFromSnapshot rebuilds a confirmed, paid order from the durable cart snapshot
+// when a payment is captured but /verify never created the order (closed tab). It mirrors
+// CreateConfirmedOrder's assembly but sources the items/customer/address from the frozen
+// snapshot rather than the live cart — so it is correct even if the customer's cart has
+// since changed, and works after a restart. It does NOT touch the live cart. A concurrent
+// verify/webhook that already created the order is handled idempotently via the unique
+// index (ErrDuplicateOrder → reuse). The caller runs finalizeFulfillment afterwards.
+func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string) (*models.Order, error) {
+	if s.orderRepo == nil || s.snapshotRepo == nil {
+		return nil, fmt.Errorf("order service not fully initialized for snapshot rebuild")
+	}
+	snap, err := s.snapshotRepo.GetByRazorpayOrderID(ctx, rzpOrderID)
+	if err != nil {
+		return nil, err
+	}
+	if snap == nil {
+		return nil, ErrNoSnapshot
+	}
+	lines := snap.LineItems()
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("cart snapshot %s has no line items", snap.ID)
+	}
+
+	// Normalized customer + address from the frozen snapshot (reuse the PK-collision retry).
+	customer := models.NewOrderCustomer(snap.CustomerFirstName, snap.CustomerLastName, snap.CustomerPhone, snap.CustomerPhoneAlt, snap.CustomerEmail)
+	if err := s.createOrderCustomerWithRetry(ctx, customer); err != nil {
+		return nil, fmt.Errorf("failed to create order customer from snapshot: %w", err)
+	}
+	country := snap.Country
+	if country == "" {
+		country = "India"
+	}
+	address := models.NewOrderAddress(snap.AddressLine1, snap.AddressLine2, snap.City, snap.State, snap.PostalCode, country)
+	if err := s.createOrderAddressWithRetry(ctx, address); err != nil {
+		return nil, fmt.Errorf("failed to create order address from snapshot: %w", err)
+	}
+
+	order := models.NewOrder(snap.UserID, customer.ID, address.ID, snap.FinalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
+	order.RazorpayOrderID = snap.RazorpayOrderID
+	order.RazorpayPaymentID = paymentID
+	order.FulfillmentStatus = models.FulfillmentPendingShipment
+	order.ShippingCarrier = "Delhivery"
+	order.ShippingMode = "Surface"
+	order.ShippingCharge = snap.ShippingCharge
+	order.CustomerFirstName = snap.CustomerFirstName
+	order.CustomerLastName = snap.CustomerLastName
+	order.CustomerPhone = snap.CustomerPhone
+	order.CustomerPhoneAlt = snap.CustomerPhoneAlt
+	if snap.CouponCode != "" {
+		order.CouponCode = snap.CouponCode
+		order.DiscountAmount = snap.DiscountAmount
+	}
+	if snap.ShippingCharge > 0 {
+		order.Notes = fmt.Sprintf("Shipping: %.2f", snap.ShippingCharge)
+	}
+
+	items := make([]models.OrderItem, 0, len(lines))
+	for _, li := range lines {
+		items = append(items, *models.NewOrderItem(order.ID, li.ProductID, li.Quantity, li.UnitPrice))
+	}
+
+	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+		if errors.Is(err, ErrDuplicateOrder) {
+			// A concurrent verify/webhook already created the order — reuse it (idempotent).
+			existing, lookupErr := s.orderRepo.GetOrderByRazorpayOrderID(ctx, snap.RazorpayOrderID)
+			if lookupErr == nil && existing != nil {
+				_ = s.snapshotRepo.MarkConsumed(ctx, snap.ID, paymentID)
+				return existing, nil
+			}
+		}
+		return nil, err
+	}
+
+	if merr := s.snapshotRepo.MarkConsumed(ctx, snap.ID, paymentID); merr != nil {
+		s.logger.Warn("Order rebuilt from snapshot but failed to mark snapshot consumed",
+			zap.String("order_id", order.ID), zap.String("snapshot_id", snap.ID), zap.Error(merr))
+	}
+	s.logger.Info("Rebuilt confirmed order from cart snapshot (webhook recovery)",
+		zap.String("order_id", order.ID),
+		zap.String("razorpay_order_id", snap.RazorpayOrderID),
+		zap.Int("item_count", len(items)))
+	return order, nil
 }
 
 // GetOrderDetails retrieves an order with customer, address, and items data including product information

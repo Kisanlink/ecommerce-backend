@@ -2441,9 +2441,25 @@ func (h *PaymentHandler) markPaymentFailedFromWebhook(ctx context.Context, rzpOr
 func (h *PaymentHandler) fulfillFromWebhook(ctx context.Context, rzpOrderID, paymentID string) {
 	order, err := h.orderService.GetOrderByRazorpayOrderID(ctx, rzpOrderID)
 	if err != nil || order == nil {
-		h.logger.Error("Webhook: paid order has no matching DB order - needs manual reconciliation",
-			zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
-		return
+		// No order yet — the browser never reached /verify (closed tab). Rebuild it from the
+		// durable cart snapshot written at create-order. This is the real paid-but-no-order
+		// safety net (#13) and, because the snapshot lives in Postgres, it works even after a
+		// process restart / host idle-sleep — exactly when the webhook (not the browser) must
+		// finish the order.
+		rebuilt, rErr := h.orderService.RebuildOrderFromSnapshot(ctx, rzpOrderID, paymentID)
+		if rErr != nil || rebuilt == nil {
+			if errors.Is(rErr, services.ErrNoSnapshot) {
+				h.logger.Error("Webhook: paid order has no matching DB order and no cart snapshot - needs manual reconciliation",
+					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+			} else {
+				h.logger.Error("Webhook: failed to rebuild paid order from cart snapshot - needs manual reconciliation",
+					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID), zap.Error(rErr))
+			}
+			return
+		}
+		h.logger.Info("Webhook: rebuilt paid order from cart snapshot",
+			zap.String("order_id", rebuilt.ID), zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+		order = rebuilt
 	}
 
 	// Persist the captured payment ID for reconciliation if we don't have it yet. Defense-in-depth:
