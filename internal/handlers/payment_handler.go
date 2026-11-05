@@ -1687,7 +1687,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 			if strings.TrimSpace(existing.RazorpayPaymentID) == "" {
 				existing.RazorpayPaymentID = req.PaymentID
-				_ = h.orderService.UpdateOrder(c.Request.Context(), existing)
+				if updErr := h.orderService.UpdateOrder(c.Request.Context(), existing); updErr != nil {
+					// Non-fatal for the response, but the payment ID is how ownership
+					// checks and reconciliation later find this order — surface it.
+					h.logger.Error("Idempotent verify: failed to persist razorpay_payment_id on existing order",
+						zap.Error(updErr),
+						zap.String("order_id", existing.ID),
+						zap.String("payment_id", req.PaymentID))
+				}
 			}
 
 			// Re-run idempotent fulfillment (completes a shipment that failed the first time; a
@@ -1876,7 +1883,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			// Update notes compact string
 			notesStr := fmt.Sprintf("rzp_order:%s, amount_paisa:%d, carrier:%s, mode:%s, charges:%.2f",
 				rzpOrder.ID, rzpOrder.Amount, order.ShippingCarrier, order.ShippingMode, order.ShippingCharge)
-			_ = h.orderService.UpdateOrderNotes(c.Request.Context(), order.ID, notesStr)
+			if notesErr := h.orderService.UpdateOrderNotes(c.Request.Context(), order.ID, notesStr); notesErr != nil {
+				// Non-critical diagnostic metadata; log so it isn't silently lost.
+				h.logger.Warn("Failed to persist order notes",
+					zap.Error(notesErr), zap.String("order_id", order.ID))
+			}
 		}
 
 		// Create the Delhivery shipment, decrement inventory, and advance the order.
@@ -2113,12 +2124,27 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 //
 // It deliberately returns nothing: a captured payment must never be failed because a shipment
 // could not be created. Instead, failures are persisted so the order can be found and recovered.
+// markFulfillmentOrLog records a fulfillment-recovery state and, crucially, does NOT
+// swallow a failure to write it. A recovery marker (needs_manual_fulfillment /
+// shipment_failed) is what keeps a problem order visible in the admin unshipped
+// queue; if that write fails silently the order still looks healthy and is lost from
+// the queue. So a failed marker write is surfaced at ERROR level (#31).
+func (h *PaymentHandler) markFulfillmentOrLog(ctx context.Context, orderID, status, shipmentErr string) {
+	if err := h.orderService.MarkFulfillmentStatus(ctx, orderID, status, shipmentErr); err != nil {
+		h.logger.Error("CRITICAL: failed to persist fulfillment recovery marker - order may be hidden from the unshipped queue",
+			zap.Error(err),
+			zap.String("order_id", orderID),
+			zap.String("intended_status", status),
+			zap.String("shipment_error", shipmentErr))
+	}
+}
+
 func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string) {
 	orderWithItems, orderItems, err := h.orderService.GetOrderWithItems(ctx, orderID)
 	if err != nil || orderWithItems == nil {
 		h.logger.Error("finalizeFulfillment: failed to load order",
 			zap.Error(err), zap.String("order_id", orderID))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual, "could not load order/items")
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "could not load order/items")
 		return
 	}
 
@@ -2138,7 +2164,7 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 	if len(orderItems) == 0 {
 		h.logger.Error("finalizeFulfillment: order has no items - cannot ship",
 			zap.String("order_id", orderID))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual, "order has no items")
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "order has no items")
 		return
 	}
 
@@ -2154,7 +2180,7 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 		strings.Contains(addrLower, "000000") {
 		h.logger.Error("finalizeFulfillment: shipping address is placeholder/invalid - needs manual fulfillment",
 			zap.String("order_id", orderID), zap.String("shipping_address", orderWithItems.ShippingAddr))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual, "invalid or placeholder shipping address")
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "invalid or placeholder shipping address")
 		return
 	}
 
@@ -2165,7 +2191,7 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 	if claimErr != nil {
 		h.logger.Error("finalizeFulfillment: failed to claim order for shipment",
 			zap.Error(claimErr), zap.String("order_id", orderID))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual,
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual,
 			"could not atomically claim order for shipment: "+claimErr.Error())
 		return
 	}
@@ -2187,7 +2213,7 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 		}
 		h.logger.Error("finalizeFulfillment: shipment failed - order needs recovery",
 			zap.String("order_id", orderID), zap.String("reason", reason))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentShipmentFailed, reason)
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentShipmentFailed, reason)
 		return
 	}
 
@@ -2204,7 +2230,7 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 		// error text so an admin can reconcile it by hand.
 		h.logger.Error("finalizeFulfillment: shipment created but DB update failed - needs manual reconciliation",
 			zap.Error(err), zap.String("order_id", orderID), zap.String("waybill", awb))
-		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual,
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual,
 			fmt.Sprintf("shipment created at courier (waybill %s) but DB update failed: %s — reconcile manually, do NOT re-ship", awb, err.Error()))
 		return
 	}
