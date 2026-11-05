@@ -965,8 +965,16 @@ func (s *DeliveryService) SyncDeliveryStatus(ctx context.Context, orderID string
 		order.DelhiveryStatus = info.Status
 		changed = true
 	}
-	// Advance the order lifecycle when the courier reports delivery.
-	if strings.Contains(strings.ToLower(info.Status), "delivered") && order.Status != models.OrderStatusDelivered {
+	// #16: advance to delivered ONLY on a true customer delivery. A plain substring match on
+	// "delivered" also matched "Undelivered" and "RTO/DTO Delivered" (parcel returned to origin),
+	// which wrongly advanced undelivered/returned orders to delivered. Require "delivered" while
+	// excluding the undelivered and return-to-origin variants.
+	normalized := strings.ToLower(strings.TrimSpace(info.Status))
+	isTrueDelivery := strings.Contains(normalized, "delivered") &&
+		!strings.Contains(normalized, "undelivered") &&
+		!strings.Contains(normalized, "rto") &&
+		!strings.Contains(normalized, "dto")
+	if isTrueDelivery && order.Status != models.OrderStatusDelivered {
 		order.Status = models.OrderStatusDelivered
 		changed = true
 	}
