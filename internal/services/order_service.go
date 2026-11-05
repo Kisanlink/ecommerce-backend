@@ -917,18 +917,34 @@ func (s *OrderService) ExportOrdersCSV(ctx context.Context) ([]byte, string, err
 	if s.orderRepo == nil {
 		return nil, "", fmt.Errorf("order repository unavailable")
 	}
-	orders, err := s.orderRepo.Find(ctx, &base.Filter{Page: 1, PageSize: 100000})
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to load orders: %w", err)
-	}
+
+	// #36: page through the orders in fixed-size batches instead of loading up to
+	// 100k rows into memory at once. A hard cap on pages bounds total work.
+	const pageSize = 500
+	const maxPages = 10000 // safety cap: up to 5M rows
+
 	var b strings.Builder
 	b.WriteString("order_id,user_id,status,payment_status,total_amount,created_at\n")
-	for _, o := range orders {
-		if o == nil {
-			continue
+
+	for page := 1; page <= maxPages; page++ {
+		batch, err := s.orderRepo.Find(ctx, &base.Filter{Page: page, PageSize: pageSize})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to load orders (page %d): %w", page, err)
 		}
-		b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.2f,%s\n", o.ID, o.UserID, string(o.Status), o.PaymentStatus, o.TotalAmount, o.CreatedAt.Format(time.RFC3339)))
+		if len(batch) == 0 {
+			break
+		}
+		for _, o := range batch {
+			if o == nil {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.2f,%s\n", o.ID, o.UserID, string(o.Status), o.PaymentStatus, o.TotalAmount, o.CreatedAt.Format(time.RFC3339)))
+		}
+		if len(batch) < pageSize {
+			break // last (partial) page
+		}
 	}
+
 	filename := fmt.Sprintf("orders_export_%d.csv", time.Now().Unix())
 	return []byte(b.String()), filename, nil
 }
