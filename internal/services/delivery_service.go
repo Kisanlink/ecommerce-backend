@@ -418,6 +418,30 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 	return result, nil
 }
 
+// isPlaceholderDestination reports whether a resolved shipping destination is a
+// placeholder/invalid address that must never be shipped to (#8/#6). It checks the
+// structured destination (pincode/city/state) plus the full address string for the
+// placeholder markers used across the codebase ("Unknown", "000000", "not provided").
+func isPlaceholderDestination(pincode, city, state, addressString string) bool {
+	p := strings.TrimSpace(pincode)
+	if p == "" || p == "000000" {
+		return true
+	}
+	if c := strings.TrimSpace(city); c == "" || strings.EqualFold(c, "Unknown") {
+		return true
+	}
+	if st := strings.TrimSpace(state); st == "" || strings.EqualFold(st, "Unknown") {
+		return true
+	}
+	a := strings.ToLower(addressString)
+	if strings.Contains(a, "address not provided") ||
+		strings.Contains(a, "unknown") ||
+		strings.Contains(a, "000000") {
+		return true
+	}
+	return false
+}
+
 // CreateShipment creates a Delhivery shipment after successful payment
 func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error) {
 	if order == nil {
@@ -537,6 +561,22 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		if shippingAddressString == "" {
 			shippingAddressString = fmt.Sprintf("Address, %s, %s %s", destCity, destState, pincode)
 		}
+	}
+
+	// SECURITY (#8/#6): refuse to ship to a placeholder/invalid address, at the single choke
+	// point every shipment path goes through (verify/webhook via finalizeFulfillment AND the
+	// admin manual retry via CreateOrderShipment). This guards the resolved destination, not
+	// just the order's address string, so a "Unknown / 000000" parcel can never be dispatched.
+	if isPlaceholderDestination(pincode, destCity, destState, shippingAddressString) {
+		s.logger.Error("CreateShipment: refusing shipment to placeholder/invalid address",
+			zap.String("order_id", order.ID),
+			zap.String("pincode", pincode),
+			zap.String("city", destCity),
+			zap.String("state", destState))
+		return &ShipmentResult{
+			Success: false,
+			Message: "shipping address is incomplete or invalid; cannot create shipment",
+		}, fmt.Errorf("placeholder or invalid shipping address for order %s", order.ID)
 	}
 
 	// Fetch customer data from order_customers table (PRIORITY 1)
