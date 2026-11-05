@@ -2108,6 +2108,22 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 		return
 	}
 
+	// SECURITY (#8 validated-vs-shipped address): never attempt a shipment to a placeholder/invalid
+	// address. The paid address is validated at create-order, but verify can fall back to Magic
+	// Checkout / saved-address data, so guard again here. A bad address becomes an explicit
+	// needs_manual_fulfillment (surfaced in the recovery queue) instead of a cryptic courier error
+	// or a parcel sent to "Unknown / 000000".
+	addrLower := strings.ToLower(strings.TrimSpace(orderWithItems.ShippingAddr))
+	if addrLower == "" ||
+		strings.Contains(addrLower, "address not provided") ||
+		strings.Contains(addrLower, "unknown") ||
+		strings.Contains(addrLower, "000000") {
+		h.logger.Error("finalizeFulfillment: shipping address is placeholder/invalid - needs manual fulfillment",
+			zap.String("order_id", orderID), zap.String("shipping_address", orderWithItems.ShippingAddr))
+		_ = h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentNeedsManual, "invalid or placeholder shipping address")
+		return
+	}
+
 	shipmentResult, shipmentErr := h.deliveryService.CreateShipment(ctx, orderWithItems, orderItems)
 	if shipmentErr != nil || shipmentResult == nil || !shipmentResult.Success || shipmentResult.Waybill == "" {
 		reason := "shipment creation failed"
