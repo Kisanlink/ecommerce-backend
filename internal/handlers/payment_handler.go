@@ -551,7 +551,9 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Float64("amount", finalAmount),
 			zap.String("currency", req.Currency),
 			zap.String("error_type", "payment_service_error"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment order", "details": err.Error()})
+		// SECURITY (#28): error already logged above; do not leak internal/upstream
+		// error text to the client.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment order"})
 		return
 	}
 
@@ -696,10 +698,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("order_id", req.OrderID),
 			zap.String("payment_id", req.PaymentID),
 			zap.String("error_type", "payment_api_error"))
+		// SECURITY (#28): error already logged above; do not leak internal details.
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "Payment verification API failed",
-			"code":    "PAYMENT_VERIFICATION_ERROR",
-			"details": err.Error()})
+			"error": "Payment verification API failed",
+			"code":  "PAYMENT_VERIFICATION_ERROR"})
 		return
 	}
 
@@ -3273,9 +3275,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 			zap.Float64("amount", discountedTotal),
 			zap.Int("line_items_count", len(lineItems)),
 			zap.Int("line_items_total", lineItemsTotal))
+		// SECURITY (#28): error already logged above; do not leak internal details.
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "Failed to create payment order. Please try again.",
-			"details": err.Error(),
+			"error": "Failed to create payment order. Please try again.",
 		})
 		return
 	}
