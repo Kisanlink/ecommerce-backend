@@ -577,6 +577,62 @@ func (r *OrderRepository) UpdateOrderShipmentAtomic(ctx context.Context, orderID
 	return nil
 }
 
+// ApplyShipmentSuccess records a successful shipment and advances the order:
+// sets the Delhivery fields, moves Status to shipped, and marks fulfillment complete — in one write.
+func (r *OrderRepository) ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error {
+	var order models.Order
+	if err := r.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return fmt.Errorf("failed to get order: %w", err)
+	}
+
+	order.DelhiveryWaybill = waybill
+	order.TrackingURL = trackingURL
+	order.DelhiveryStatus = delhiveryStatus
+	order.Status = models.OrderStatusShipped
+	order.FulfillmentStatus = models.FulfillmentFulfilled
+	order.ShipmentError = ""
+
+	if err := r.dbManager.Update(ctx, &order); err != nil {
+		return fmt.Errorf("failed to apply shipment success: %w", err)
+	}
+
+	return nil
+}
+
+// SetFulfillmentStatus records the post-payment fulfillment state (and last shipment error, if any)
+// so paid-but-unshipped orders are queryable and recoverable.
+func (r *OrderRepository) SetFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error {
+	var order models.Order
+	if err := r.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return fmt.Errorf("failed to get order: %w", err)
+	}
+
+	order.FulfillmentStatus = status
+	order.ShipmentError = shipmentErr
+
+	if err := r.dbManager.Update(ctx, &order); err != nil {
+		return fmt.Errorf("failed to set fulfillment status: %w", err)
+	}
+
+	return nil
+}
+
+// SetInventoryDeducted flips the inventory-deducted idempotency guard on the order.
+func (r *OrderRepository) SetInventoryDeducted(ctx context.Context, orderID string, deducted bool) error {
+	var order models.Order
+	if err := r.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return fmt.Errorf("failed to get order: %w", err)
+	}
+
+	order.InventoryDeducted = deducted
+
+	if err := r.dbManager.Update(ctx, &order); err != nil {
+		return fmt.Errorf("failed to set inventory_deducted: %w", err)
+	}
+
+	return nil
+}
+
 // isDuplicateKeyError checks if an error is a duplicate key constraint violation
 func isDuplicateKeyError(err error) bool {
 	if err == nil {

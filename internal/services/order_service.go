@@ -38,6 +38,10 @@ type OrderServiceInterface interface {
 	// Transaction-based methods for payment verification
 	CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error)
 	UpdateOrderWithShipmentAtomic(ctx context.Context, orderID string, waybill string, trackingURL string, delhiveryStatus string) error
+	// Fulfillment helpers (idempotent; shared by verify, webhook and manual retry)
+	ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error
+	MarkFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error
+	DeductInventoryForOrder(ctx context.Context, orderID string) error
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
@@ -862,6 +866,57 @@ func (s *OrderService) UpdateOrderWithShipmentAtomic(ctx context.Context, orderI
 	}
 
 	return s.orderRepo.UpdateOrderShipmentAtomic(ctx, orderID, waybill, trackingURL, delhiveryStatus)
+}
+
+// ApplyShipmentSuccess records a successful shipment and advances the order to shipped + fulfilled.
+func (s *OrderService) ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ApplyShipmentSuccess(ctx, orderID, waybill, trackingURL, delhiveryStatus)
+}
+
+// MarkFulfillmentStatus records the post-payment fulfillment state (and last shipment error).
+func (s *OrderService) MarkFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.SetFulfillmentStatus(ctx, orderID, status, shipmentErr)
+}
+
+// DeductInventoryForOrder decrements stock for the order's items exactly once (idempotent).
+// It is a no-op if inventory was already deducted for this order, so it is safe to call from
+// both the verify path and the webhook/retry paths.
+func (s *OrderService) DeductInventoryForOrder(ctx context.Context, orderID string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+
+	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to load order for inventory deduction: %w", err)
+	}
+	if order == nil {
+		return fmt.Errorf("order %s not found", orderID)
+	}
+	if order.InventoryDeducted {
+		// Already deducted — nothing to do.
+		return nil
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("order %s has no items", orderID)
+	}
+
+	if err := s.updateInventoryForOrderItems(ctx, items); err != nil {
+		return fmt.Errorf("failed to deduct inventory: %w", err)
+	}
+
+	if err := s.orderRepo.SetInventoryDeducted(ctx, orderID, true); err != nil {
+		return fmt.Errorf("failed to mark inventory deducted: %w", err)
+	}
+
+	s.logger.Info("Inventory deducted for order", zap.String("order_id", orderID), zap.Int("item_count", len(items)))
+	return nil
 }
 
 // ReduceCouponUsage reduces the usage count of a coupon when an order is successfully created
