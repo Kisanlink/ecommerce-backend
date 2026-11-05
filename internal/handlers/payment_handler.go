@@ -303,6 +303,39 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	shippingAddressID = req.ShippingAddressID
 	if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
 		shippingAddress = h.orderService.FormatAddress(addr)
+
+		// Gate payment on a real, serviceable address. Previously an empty/garbage address
+		// (city/state "Unknown", pincode "000000") was accepted and the customer was charged,
+		// after which shipment creation silently failed — leaving a paid order that could not be
+		// delivered. Reject such orders BEFORE any Razorpay charge.
+		pincode := strings.TrimSpace(addr.PostalCode)
+		city := strings.TrimSpace(addr.City)
+		state := strings.TrimSpace(addr.State)
+		if !pincodeRegex.MatchString(pincode) || pincode == "000000" ||
+			city == "" || strings.EqualFold(city, "Unknown") ||
+			state == "" || strings.EqualFold(state, "Unknown") {
+			h.logger.Warn("Rejecting payment order: incomplete/invalid shipping address",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("address_id", shippingAddressID),
+				zap.String("city", city),
+				zap.String("state", state),
+				zap.String("postal_code", pincode))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "A valid shipping address (city, state and a 6-digit pincode) is required before payment."})
+			return
+		}
+		// Confirm the pincode is serviceable. Fail-open on a serviceability-API error so a
+		// transient Delhivery outage does not block checkout, but hard-block a definite "no".
+		if ok, svcErr := h.deliveryService.CheckServiceability(c.Request.Context(), pincode); svcErr != nil {
+			h.logger.Warn("Serviceability check errored - allowing checkout (fail-open)",
+				zap.String("request_id", requestID), zap.String("pincode", pincode), zap.Error(svcErr))
+		} else if !ok {
+			h.logger.Warn("Rejecting payment order: pincode not serviceable",
+				zap.String("request_id", requestID), zap.String("user_id", userID), zap.String("pincode", pincode))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "We currently cannot deliver to this pincode. Please use a different delivery address."})
+			return
+		}
+
 		h.logger.Info("Shipping address resolved successfully",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
@@ -1614,8 +1647,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Update the order with Razorpay order ID, payment details, and customer info
 		order.RazorpayOrderID = req.OrderID
+		order.RazorpayPaymentID = req.PaymentID // persist pay_... for reconciliation
 		order.PaymentStatus = "paid"
 		order.Status = models.OrderStatusConfirmed
+		order.FulfillmentStatus = models.FulfillmentPendingShipment
 
 		// CRITICAL: Set customer fields on order for Delhivery shipment
 		order.CustomerFirstName = firstName
@@ -1695,6 +1730,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			order.RazorpayOrderID = rzpOrder.ID
 			order.RazorpayReceipt = rzpOrder.Receipt
 			order.RazorpayAmountPaisa = rzpOrder.Amount
+			// Reconcile the order total to what Razorpay actually captured, instead of trusting
+			// the recomputed cart figure (which diverged from the charged amount, e.g. 360 vs 399).
+			if rzpOrder.Amount > 0 {
+				order.TotalAmount = services.PaisaToRupees(rzpOrder.Amount)
+			}
 			// Basic compact JSON string for notes
 			order.RazorpayNotesJSON = "{}"
 			// Delivery details
