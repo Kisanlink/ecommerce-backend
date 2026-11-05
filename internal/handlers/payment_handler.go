@@ -2351,6 +2351,22 @@ func (h *PaymentHandler) GetPaymentStatus(c *gin.Context) {
 		return
 	}
 
+	// Ownership check (#17/#38): a signature-less payment ID must not be a lookup
+	// oracle. Only the owner of the order this payment belongs to — or an admin —
+	// may read its status. Resolve the order by payment ID and compare the owner.
+	// Return 404 (not 403) on mismatch/not-found so the endpoint can't be used to
+	// enumerate which payment IDs exist.
+	if !h.authContext.IsAdmin(c) {
+		order, oErr := h.orderService.GetOrderByRazorpayPaymentID(c.Request.Context(), paymentID)
+		if oErr != nil || order == nil || !h.callerOwnsOrder(c, userID, order.UserID) {
+			h.logger.Warn("Payment status denied - caller does not own the order",
+				zap.String("user_id", userID),
+				zap.String("payment_id", paymentID))
+			c.JSON(http.StatusNotFound, gin.H{"error": "Payment not found"})
+			return
+		}
+	}
+
 	// Get payment details from Razorpay
 	payment, err := h.paymentService.GetPaymentStatus(c.Request.Context(), paymentID)
 	if err != nil {
@@ -2669,6 +2685,30 @@ func (h *PaymentHandler) parseShippingAddressToOrderAddress(shippingAddress stri
 
 // mapFirebaseUIDToInternalUserID maps a Firebase UID to an internal user ID
 // If the user doesn't exist in the local database, it auto-creates them from Firebase
+// callerOwnsOrder reports whether the authenticated caller owns an order whose
+// stored UserID is ownerUserID. Orders are created with the internal user ID (or,
+// as a fallback, the Firebase UID), so this resolves the caller's Firebase UID to
+// its internal ID read-only (no auto-create) and also accepts a direct match to
+// cover the Firebase-UID-fallback and JWT-internal-ID cases.
+func (h *PaymentHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return false
+	}
+	if ownerUserID == callerID {
+		return true
+	}
+	if !strings.HasPrefix(callerID, "USER") && h.userService != nil {
+		if resp, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), callerID); err == nil && resp != nil && resp.Data != nil {
+			if userMap, ok := resp.Data.(map[string]interface{}); ok {
+				if id, ok := userMap["id"].(string); ok && id == ownerUserID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebaseUID string) string {
 	// Try to get user by Firebase UID
 	userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)

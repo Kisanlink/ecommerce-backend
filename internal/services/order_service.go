@@ -24,6 +24,8 @@ type OrderServiceInterface interface {
 	GetUserCart(ctx context.Context, userID string) (*models.Cart, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
+	GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error)
+	GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error)
 	GetUserOrders(ctx context.Context, userID string) ([]models.Order, error)
 	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
@@ -695,6 +697,22 @@ func (s *OrderService) GetOrderByRazorpayOrderID(ctx context.Context, razorpayOr
 		return nil, fmt.Errorf("order repository unavailable")
 	}
 	return s.orderRepo.GetOrderByRazorpayOrderID(ctx, razorpayOrderID)
+}
+
+// GetOrderByRazorpayPaymentID retrieves an order by Razorpay payment ID (for ownership checks)
+func (s *OrderService) GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.GetOrderByRazorpayPaymentID(ctx, razorpayPaymentID)
+}
+
+// GetOrderByWaybill retrieves an order by Delhivery waybill (for ownership checks)
+func (s *OrderService) GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.GetOrderByWaybill(ctx, waybill)
 }
 
 // ListOrders returns filtered, paginated orders for admin

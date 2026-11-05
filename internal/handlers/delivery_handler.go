@@ -103,21 +103,47 @@ func (h *ShipmentHandler) CreateShipment(c *gin.Context) {
 type DeliveryHandler struct {
 	deliveryService services.DeliveryServiceInterface
 	orderService    services.OrderServiceInterface
+	userService     *services.UserService
 	logger          *zap.Logger
 	auth            *authctx.AuthContext
 }
 
 // NewDeliveryHandler constructs a DeliveryHandler
-func NewDeliveryHandler(deliveryService services.DeliveryServiceInterface, orderService services.OrderServiceInterface, logger *zap.Logger) *DeliveryHandler {
+func NewDeliveryHandler(deliveryService services.DeliveryServiceInterface, orderService services.OrderServiceInterface, userService *services.UserService, logger *zap.Logger) *DeliveryHandler {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
 	return &DeliveryHandler{
 		deliveryService: deliveryService,
 		orderService:    orderService,
+		userService:     userService,
 		logger:          logger,
 		auth:            authctx.NewAuthContext(),
 	}
+}
+
+// callerOwnsOrder reports whether the authenticated caller owns an order whose
+// stored UserID is ownerUserID. Mirrors the resolution used when orders are
+// created: the caller's Firebase UID is resolved to its internal ID read-only (no
+// auto-create), with a direct match accepted to cover the Firebase-UID-fallback
+// and JWT-internal-ID cases.
+func (h *DeliveryHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return false
+	}
+	if ownerUserID == callerID {
+		return true
+	}
+	if !strings.HasPrefix(callerID, "USER") && h.userService != nil {
+		if resp, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), callerID); err == nil && resp != nil && resp.Data != nil {
+			if userMap, ok := resp.Data.(map[string]interface{}); ok {
+				if id, ok := userMap["id"].(string); ok && id == ownerUserID {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // CheckServiceability handles GET /serviceability/:pincode
@@ -188,6 +214,27 @@ func (h *DeliveryHandler) Estimate(c *gin.Context) {
 // @Router /delivery/track/{waybill} [get]
 func (h *DeliveryHandler) GetTrackingInfo(c *gin.Context) {
 	waybill := c.Param("waybill")
+
+	// Ownership check (#18): a waybill must not be a tracking oracle for any
+	// logged-in user. Only the owner of the order carrying this waybill — or an
+	// admin — may track it. Return 404 on mismatch/not-found to avoid confirming
+	// which waybills exist.
+	if !h.auth.IsAdmin(c) {
+		callerID, ok := h.auth.GetAuthenticatedUserID(c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+			return
+		}
+		order, oErr := h.orderService.GetOrderByWaybill(c.Request.Context(), waybill)
+		if oErr != nil || order == nil || !h.callerOwnsOrder(c, callerID, order.UserID) {
+			h.logger.Warn("Tracking denied - caller does not own the waybill",
+				zap.String("user_id", callerID),
+				zap.String("waybill", waybill))
+			c.JSON(http.StatusNotFound, gin.H{"error": "Shipment not found"})
+			return
+		}
+	}
+
 	info, err := h.deliveryService.GetTrackingInfo(c.Request.Context(), waybill)
 	if err != nil {
 		h.logger.Warn("Tracking fetch failed", zap.Error(err), zap.String("waybill", waybill))
@@ -354,6 +401,25 @@ func (h *DeliveryHandler) GetOrderShipment(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
 	}
+
+	// Ownership check (#17): order IDs must not be an enumeration oracle. Only the
+	// order's owner — or an admin — may read its shipment. Return 404 on mismatch
+	// so the response is indistinguishable from a non-existent order.
+	if !h.auth.IsAdmin(c) {
+		callerID, ok := h.auth.GetAuthenticatedUserID(c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+			return
+		}
+		if !h.callerOwnsOrder(c, callerID, order.UserID) {
+			h.logger.Warn("Order shipment denied - caller does not own the order",
+				zap.String("user_id", callerID),
+				zap.String("order_id", orderID))
+			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+			return
+		}
+	}
+
 	resp := gin.H{
 		"order_id":     order.ID,
 		"waybill":      order.DelhiveryWaybill,

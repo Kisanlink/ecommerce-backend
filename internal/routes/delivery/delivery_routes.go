@@ -32,7 +32,7 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 
 	// Initialize services and handler
 	deliveryService := services.NewDeliveryService(repoManager, logger)
-	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, serviceManager.OrderService, logger)
+	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, serviceManager.OrderService, serviceManager.UserService, logger)
 
 	// Debug endpoints - now admin-gated (previously public, which leaked Delhivery config).
 	debug := r.Group("/delivery/debug")

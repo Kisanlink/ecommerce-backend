@@ -529,6 +529,55 @@ func (r *OrderRepository) GetOrderByRazorpayOrderID(ctx context.Context, razorpa
 	return orders[0], nil
 }
 
+// GetOrderByRazorpayPaymentID retrieves the order bound to a Razorpay payment ID.
+// Used for ownership checks so a caller can only read the payment status of their
+// own order.
+func (r *OrderRepository) GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error) {
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "razorpay_payment_id", Operator: base.OpEqual, Value: razorpayPaymentID},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var orders []*models.Order
+	if err := r.dbManager.List(ctx, filter, &orders); err != nil {
+		return nil, fmt.Errorf("failed to get order by razorpay payment ID: %w", err)
+	}
+
+	if len(orders) == 0 {
+		return nil, fmt.Errorf("order not found for razorpay payment ID: %s", razorpayPaymentID)
+	}
+
+	return orders[0], nil
+}
+
+// GetOrderByWaybill retrieves the order bound to a Delhivery waybill. Used for
+// ownership checks so a caller can only track their own shipment.
+func (r *OrderRepository) GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error) {
+	filter := &base.Filter{
+		Group: base.FilterGroup{
+			Conditions: []base.FilterCondition{
+				{Field: "delhivery_waybill", Operator: base.OpEqual, Value: waybill},
+			},
+			Logic: base.LogicAnd,
+		},
+	}
+
+	var orders []*models.Order
+	if err := r.dbManager.List(ctx, filter, &orders); err != nil {
+		return nil, fmt.Errorf("failed to get order by waybill: %w", err)
+	}
+
+	if len(orders) == 0 {
+		return nil, fmt.Errorf("order not found for waybill: %s", waybill)
+	}
+
+	return orders[0], nil
+}
+
 // CreateOrderAtomic creates an order and its items atomically to prevent duplicate orders
 func (r *OrderRepository) CreateOrderAtomic(ctx context.Context, order *models.Order, cartItems []models.CartItem) error {
 	// Double check that no order exists with this razorpay_order_id before creating
