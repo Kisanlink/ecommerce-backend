@@ -101,17 +101,59 @@ local_webhook_secret
 
 ### A4. Delhivery — nothing to get, use the local mock
 
-`POST /payments/create-order` checks that the pincode is deliverable and **refuses if it
-can't check** (so a broken courier can't produce an undeliverable paid order), and fulfilment
-calls Delhivery to create the shipment. Locally you don't need any Delhivery account or token:
-you run the **local mock** (`scripts/local/mock-delhivery.mjs`, started in Part C as
-Terminal 3) and point the backend at it with `DELHIVERY_BASE_URL=http://localhost:4100`. The
-`DELHIVERY_API_TOKEN` can be any dummy value — the mock ignores it.
+**Why this exists.** `POST /payments/create-order` checks that the pincode is deliverable and
+**refuses if it can't check** (so a broken courier can't produce an undeliverable paid order),
+and fulfilment calls Delhivery to create the shipment. Locally you don't have Delhivery access,
+so instead of a real account you run a tiny fake courier that always says "serviceable" and
+hands back a fake tracking number. **The backend is not modified** — you only point it at the
+mock with an env var, so this can never affect production.
 
-> **Prefer the real Delhivery staging API?** If you do have staging credentials, skip the mock:
-> set `DELHIVERY_BASE_URL` to the staging base URL and `DELHIVERY_API_TOKEN` to your staging
-> token, leave `DELHIVERY_PRODUCTION` empty, and don't start Terminal 3. Use a known
-> serviceable pincode (e.g. `500081`) in your test address.
+**What it is.** `scripts/local/mock-delhivery.mjs` — a small Node script (no `npm install`,
+uses only built-in modules). It answers the four Delhivery endpoints the backend calls:
+serviceability (every pincode → serviceable), charges, TAT, and shipment creation (returns a
+`MOCK…` waybill).
+
+**How to run it.** Open a terminal in the `ecommerce-backend` folder and run:
+
+```bash
+node scripts/local/mock-delhivery.mjs
+```
+
+You should see:
+
+```
+[mock-delhivery] listening on http://localhost:4100
+[mock-delhivery] set DELHIVERY_BASE_URL=http://localhost:4100 in .env.local
+```
+
+Leave this terminal running while you test — it logs every call it answers (e.g.
+`serviceability 500081 -> serviceable`). To stop it, press `Ctrl-C`. Want a different port?
+`PORT=4200 node scripts/local/mock-delhivery.mjs` (then use that port in `DELHIVERY_BASE_URL`).
+
+> This is **Terminal 3** in the run order (Part C). It is listed here too so you have the whole
+> Delhivery story in one place; you don't run it twice.
+
+**How to point the backend at it.** In your `.env.local` (set up in Part B1):
+
+```dotenv
+DELHIVERY_BASE_URL=http://localhost:4100
+DELHIVERY_API_TOKEN=dummy-local-token   # any value — the mock ignores it
+DELHIVERY_PRODUCTION=
+```
+
+**Check it works** (optional, in another terminal):
+
+```bash
+curl "http://localhost:4100/c/api/pin-codes/json/?filter_codes=500081"
+```
+
+A healthy mock returns JSON containing `"pre_paid":"Y"` and `"remarks":""` — that's what makes
+the backend treat the pincode as serviceable.
+
+> **Prefer the real Delhivery staging API instead?** If you do have staging credentials, skip
+> the mock entirely: set `DELHIVERY_BASE_URL` to the staging base URL and `DELHIVERY_API_TOKEN`
+> to your staging token, leave `DELHIVERY_PRODUCTION` empty, and don't start Terminal 3. Use a
+> known serviceable pincode (e.g. `500081`) in your test address.
 
 ---
 
