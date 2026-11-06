@@ -341,6 +341,35 @@ func main() {
 	repoManager := repositories.NewRepositoryManager(pgManager, pgManager, logger)
 	logger.Info("✅ All repositories initialized and connected to NeonDB")
 
+	// Background cleanup of abandoned payment cart snapshots (issue #4): pending snapshots from
+	// checkouts that were started but never paid would otherwise accumulate forever. Consumed
+	// snapshots are retained as an audit trail. Runs at startup and every 6h; self-recovering.
+	if snapRepo := repoManager.PaymentCartSnapshotRepository; snapRepo != nil {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("payment cart snapshot cleanup goroutine panicked", zap.Any("panic", r))
+				}
+			}()
+			const snapshotTTL = 48 * time.Hour
+			cleanup := func() {
+				cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if n, err := snapRepo.DeleteStalePending(cctx, time.Now().Add(-snapshotTTL)); err != nil {
+					logger.Warn("payment cart snapshot cleanup failed", zap.Error(err))
+				} else if n > 0 {
+					logger.Info("payment cart snapshot cleanup removed stale pending rows", zap.Int64("deleted", n))
+				}
+			}
+			cleanup()
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				cleanup()
+			}
+		}()
+	}
+
 	// Create service manager with repository manager (uses Cloudflare R2 for storage)
 	serviceManager := services.NewServiceManager(repoManager)
 

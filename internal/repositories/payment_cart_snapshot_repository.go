@@ -87,3 +87,20 @@ func (r *PaymentCartSnapshotRepository) MarkConsumed(ctx context.Context, id, pa
 			"razorpay_payment_id": paymentID,
 		}).Error
 }
+
+// DeleteStalePending removes PENDING (never-consumed) snapshots created before cutoff, so
+// abandoned checkouts don't accumulate. Consumed snapshots are retained as an audit trail.
+// Returns the number of rows removed.
+func (r *PaymentCartSnapshotRepository) DeleteStalePending(ctx context.Context, cutoff time.Time) (int64, error) {
+	if r.pgManager == nil {
+		return 0, fmt.Errorf("postgres manager unavailable for snapshot cleanup")
+	}
+	gdb, err := r.pgManager.GetDB(ctx, false)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get DB for snapshot cleanup: %w", err)
+	}
+	res := gdb.WithContext(ctx).
+		Where("status = ? AND created_at < ?", models.SnapshotStatusPending, cutoff).
+		Delete(&models.PaymentCartSnapshot{})
+	return res.RowsAffected, res.Error
+}
