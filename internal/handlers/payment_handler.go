@@ -2451,12 +2451,32 @@ func (h *PaymentHandler) fulfillFromWebhook(ctx context.Context, rzpOrderID, pay
 		// safety net (#13) and, because the snapshot lives in Postgres, it works even after a
 		// process restart / host idle-sleep — exactly when the webhook (not the browser) must
 		// finish the order.
-		rebuilt, rErr := h.orderService.RebuildOrderFromSnapshot(ctx, rzpOrderID, paymentID)
+		//
+		// Resolve authoritative values from Razorpay (which the service layer can't reach): the
+		// captured amount (so the order total is reconciled to what was actually charged, not the
+		// snapshot's pre-shipping estimate) and, for 1CC, the real shipping address the buyer
+		// entered in the widget. A lookup failure falls back to snapshot values.
+		ov := services.SnapshotRebuildOverrides{}
+		if rzp, gerr := h.paymentService.GetOrder(ctx, rzpOrderID); gerr == nil && rzp != nil {
+			if rzp.AmountPaid > 0 {
+				ov.CapturedAmountPaisa = rzp.AmountPaid
+			} else if rzp.Amount > 0 {
+				ov.CapturedAmountPaisa = rzp.Amount
+			}
+		} else {
+			h.logger.Warn("Webhook: could not fetch Razorpay order for rebuild reconciliation - using snapshot values",
+				zap.String("razorpay_order_id", rzpOrderID), zap.Error(gerr))
+		}
+		rebuilt, rErr := h.orderService.RebuildOrderFromSnapshot(ctx, rzpOrderID, paymentID, ov)
 		if rErr != nil || rebuilt == nil {
-			if errors.Is(rErr, services.ErrNoSnapshot) {
+			switch {
+			case errors.Is(rErr, services.ErrNoSnapshot):
 				h.logger.Error("Webhook: paid order has no matching DB order and no cart snapshot - needs manual reconciliation",
 					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
-			} else {
+			case errors.Is(rErr, services.ErrCartAmountMismatch):
+				h.logger.Error("Webhook: captured amount is less than snapshot cart goods - refusing rebuild, needs manual reconciliation",
+					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID), zap.Error(rErr))
+			default:
 				h.logger.Error("Webhook: failed to rebuild paid order from cart snapshot - needs manual reconciliation",
 					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID), zap.Error(rErr))
 			}

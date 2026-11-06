@@ -30,8 +30,9 @@ type OrderServiceInterface interface {
 	// order even after a process restart (paid-but-no-order recovery).
 	SaveCartSnapshot(ctx context.Context, params CartSnapshotParams) error
 	// RebuildOrderFromSnapshot rebuilds a confirmed order from the frozen snapshot when a
-	// payment is captured but /verify never ran. Returns ErrNoSnapshot when none exists.
-	RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string) (*models.Order, error)
+	// payment is captured but /verify never ran. Returns ErrNoSnapshot when none exists, or
+	// ErrCartAmountMismatch when the captured amount is less than the snapshot's goods.
+	RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string, ov SnapshotRebuildOverrides) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
 	GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error)
 	GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error)
@@ -1462,6 +1463,20 @@ func (s *OrderService) SaveCartSnapshot(ctx context.Context, p CartSnapshotParam
 // reconciliation (the caller logs it for the runbook).
 var ErrNoSnapshot = errors.New("no cart snapshot for razorpay order")
 
+// SnapshotRebuildOverrides carries authoritative values the webhook handler resolves from
+// Razorpay (which it can reach but the service layer cannot). They take precedence over the
+// snapshot, which can understate the charge (1CC shipping is added by the widget AFTER the
+// snapshot is written) or hold a stale default address.
+type SnapshotRebuildOverrides struct {
+	// CapturedAmountPaisa is what Razorpay actually captured. When > 0 the rebuilt order's
+	// total is reconciled to it; when it is materially LESS than the snapshot's discounted
+	// goods, the rebuild is refused (ErrCartAmountMismatch) rather than shipping more than paid.
+	CapturedAmountPaisa int
+	// ShippingAddress, when set, overrides the snapshot address (used for 1CC, where the real
+	// shipping address is the one the buyer entered in the widget, not their saved default).
+	ShippingAddress *models.OrderAddress
+}
+
 // RebuildOrderFromSnapshot rebuilds a confirmed, paid order from the durable cart snapshot
 // when a payment is captured but /verify never created the order (closed tab). It mirrors
 // CreateConfirmedOrder's assembly but sources the items/customer/address from the frozen
@@ -1469,7 +1484,7 @@ var ErrNoSnapshot = errors.New("no cart snapshot for razorpay order")
 // since changed, and works after a restart. It does NOT touch the live cart. A concurrent
 // verify/webhook that already created the order is handled idempotently via the unique
 // index (ErrDuplicateOrder → reuse). The caller runs finalizeFulfillment afterwards.
-func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string) (*models.Order, error) {
+func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string, ov SnapshotRebuildOverrides) (*models.Order, error) {
 	if s.orderRepo == nil || s.snapshotRepo == nil {
 		return nil, fmt.Errorf("order service not fully initialized for snapshot rebuild")
 	}
@@ -1490,22 +1505,54 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 	if err := s.createOrderCustomerWithRetry(ctx, customer); err != nil {
 		return nil, fmt.Errorf("failed to create order customer from snapshot: %w", err)
 	}
+	// Reconcile the order total to what Razorpay actually captured, when the caller resolved it.
+	// The snapshot's FinalAmount can understate the charge — 1CC shipping is added by the widget
+	// AFTER the snapshot is written — so trusting it would under-record the order. We also refuse
+	// the unsafe direction: if the captured amount is materially LESS than the discounted goods
+	// in the snapshot, confirming would ship more than was paid (cart-swap-like), so bail out to
+	// manual reconciliation rather than rebuild.
+	discountedGoods := utils.ApplyDiscount(snap.CartTotal, snap.DiscountAmount)
+	totalAmount := snap.FinalAmount
+	shippingCharge := snap.ShippingCharge
+	amountPaisa := snap.ExpectedAmountPaisa
+	if ov.CapturedAmountPaisa > 0 {
+		const tolerancePaisa = 100 // ₹1 for rounding differences
+		goodsFloorPaisa := utils.RupeesToPaisa(discountedGoods)
+		if ov.CapturedAmountPaisa+tolerancePaisa < goodsFloorPaisa {
+			s.logger.Error("Snapshot rebuild: captured amount is less than cart goods - refusing",
+				zap.String("razorpay_order_id", snap.RazorpayOrderID),
+				zap.Int("captured_paisa", ov.CapturedAmountPaisa),
+				zap.Int("goods_floor_paisa", goodsFloorPaisa))
+			return nil, fmt.Errorf("%w: captured %d paisa vs goods %d paisa", ErrCartAmountMismatch, ov.CapturedAmountPaisa, goodsFloorPaisa)
+		}
+		amountPaisa = ov.CapturedAmountPaisa
+		totalAmount = PaisaToRupees(ov.CapturedAmountPaisa)
+		shippingCharge = utils.RoundToTwoDecimals(totalAmount - discountedGoods)
+		if shippingCharge < 0 {
+			shippingCharge = 0
+		}
+	}
+
 	country := snap.Country
 	if country == "" {
 		country = "India"
 	}
 	address := models.NewOrderAddress(snap.AddressLine1, snap.AddressLine2, snap.City, snap.State, snap.PostalCode, country)
+	if ov.ShippingAddress != nil {
+		address = ov.ShippingAddress
+	}
 	if err := s.createOrderAddressWithRetry(ctx, address); err != nil {
 		return nil, fmt.Errorf("failed to create order address from snapshot: %w", err)
 	}
 
-	order := models.NewOrder(snap.UserID, customer.ID, address.ID, snap.FinalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
+	order := models.NewOrder(snap.UserID, customer.ID, address.ID, totalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
 	order.RazorpayOrderID = snap.RazorpayOrderID
 	order.RazorpayPaymentID = paymentID
+	order.RazorpayAmountPaisa = amountPaisa
 	order.FulfillmentStatus = models.FulfillmentPendingShipment
 	order.ShippingCarrier = "Delhivery"
 	order.ShippingMode = "Surface"
-	order.ShippingCharge = snap.ShippingCharge
+	order.ShippingCharge = shippingCharge
 	order.CustomerFirstName = snap.CustomerFirstName
 	order.CustomerLastName = snap.CustomerLastName
 	order.CustomerPhone = snap.CustomerPhone
@@ -1514,8 +1561,8 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 		order.CouponCode = snap.CouponCode
 		order.DiscountAmount = snap.DiscountAmount
 	}
-	if snap.ShippingCharge > 0 {
-		order.Notes = fmt.Sprintf("Shipping: %.2f", snap.ShippingCharge)
+	if shippingCharge > 0 {
+		order.Notes = fmt.Sprintf("Shipping: %.2f", shippingCharge)
 	}
 
 	items := make([]models.OrderItem, 0, len(lines))
