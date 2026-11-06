@@ -629,11 +629,16 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		snapParams.Country = snapAddr.Country
 	}
 	if serr := h.orderService.SaveCartSnapshot(c.Request.Context(), snapParams); serr != nil {
-		h.logger.Error("Failed to save cart snapshot - webhook order recovery weakened for this payment",
+		// Fail closed: without the snapshot the webhook cannot rebuild a paid-but-no-order,
+		// so we must NOT hand the client an order id it could pay against with no safety net.
+		// The Razorpay order just created is an unpaid intent and harmlessly auto-expires.
+		h.logger.Error("Failed to save cart snapshot - refusing to start payment without recovery net",
 			zap.String("request_id", requestID),
 			zap.String("razorpay_order_id", razorpayOrder.ID),
 			zap.String("user_id", userID),
 			zap.Error(serr))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "We could not start checkout right now. Please try again in a moment."})
+		return
 	}
 
 	// Convert amount back to rupees for response
@@ -3520,11 +3525,16 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 			}
 		}
 		if serr := h.orderService.SaveCartSnapshot(c.Request.Context(), snapParams); serr != nil {
-			h.logger.Error("Failed to save Magic Checkout cart snapshot - webhook order recovery weakened",
+			// Fail closed: no snapshot means the webhook cannot rebuild a paid-but-no-order,
+			// which is the most likely failure mode for 1CC (tab closed after pay). Do not
+			// return a payable order id. The unpaid Razorpay intent auto-expires.
+			h.logger.Error("Failed to save Magic Checkout cart snapshot - refusing to start payment without recovery net",
 				zap.String("request_id", requestID),
 				zap.String("razorpay_order_id", razorpayOrder.ID),
 				zap.String("user_id", internalUserID),
 				zap.Error(serr))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "We could not start checkout right now. Please try again in a moment."})
+			return
 		}
 	}
 
