@@ -20,7 +20,7 @@ Search logs for the quoted strings.
 |---|---------|-------------|-------------------|-----------------|----------------|
 | A | **Cart swap** — cart total exceeds amount paid at verify | `409 CART_AMOUNT_MISMATCH` | `Cart-swap guard: cart total exceeds amount paid` / `Rejecting verify: cart total exceeds amount paid (possible cart swap)` | Maybe (if the widget captured) | **No** |
 | B | **Gateway lookup failed** at verify, no existing order | `503 GATEWAY_LOOKUP_FAILED` | `Rejecting verify: Razorpay order lookup failed and no existing order` | Maybe | **No** |
-| C | **Paid, verify never ran** (closed tab) AND no cart snapshot exists to rebuild from | — (no client) | `Webhook: paid order has no matching DB order and no cart snapshot - needs manual reconciliation` or `failed to rebuild paid order from cart snapshot` | **Yes** | **No** |
+| C | **Paid, verify never ran** (closed tab) AND the snapshot is missing, errored, or the captured amount is less than the snapshot goods | — (no client) | `paid order has no matching DB order and no cart snapshot`, `failed to rebuild paid order from cart snapshot`, or `captured amount is less than snapshot cart goods - refusing rebuild` | **Yes** | **No** |
 | D | **User-binding mismatch** at verify | `403` | `Rejecting verify: Razorpay order user binding missing or mismatched` | Maybe | **No** |
 | E | **Placeholder address** — paid order can't ship | — | `refusing shipment to placeholder/invalid address` / `shipping address is placeholder/invalid - needs manual fulfillment` | **Yes** | **Yes** (unshipped) |
 
