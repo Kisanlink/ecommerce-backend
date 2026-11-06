@@ -26,13 +26,21 @@ This guide is written to be followed top to bottom the first time. Later you onl
 
 ## What you'll have running
 
-Three things, in three terminals, all on your machine:
+Four things, in four terminals, all on your machine:
 
 ```
-Terminal 1:  Docker        → Postgres (DB) + Redis + DynamoDB
-Terminal 2:  Firebase       → the Auth emulator (fake login)
-Terminal 3:  the backend    → http://localhost:8080
+Terminal 1:  Docker          → Postgres (DB) + Redis + DynamoDB
+Terminal 2:  Firebase          → the Auth emulator (fake login)
+Terminal 3:  Delhivery mock    → a fake courier API (so checkout can confirm delivery)
+Terminal 4:  the backend       → http://localhost:8080
 ```
+
+> **About the Delhivery mock:** checkout refuses to take payment unless it can confirm the
+> pincode is deliverable, and fulfilment calls Delhivery to create the shipment. Locally you
+> usually don't have Delhivery access, so we run a tiny fake courier
+> (`scripts/local/mock-delhivery.mjs`) that always says "serviceable" and hands back a fake
+> tracking number. **The backend code is not changed at all** — you just point it at the mock
+> instead of the real Delhivery. Nothing about this can leak into production.
 
 ---
 
@@ -91,19 +99,19 @@ local_webhook_secret
    *(This file is gitignored. With the emulator on, it's only used so the app boots — it never
    contacts Google.)*
 
-### A4. Delhivery staging token (needed for "create order")
+### A4. Delhivery — nothing to get, use the local mock
 
 `POST /payments/create-order` checks that the pincode is deliverable and **refuses if it
-can't check** (so a broken courier can't produce an undeliverable paid order). That means you
-need working Delhivery credentials locally.
+can't check** (so a broken courier can't produce an undeliverable paid order), and fulfilment
+calls Delhivery to create the shipment. Locally you don't need any Delhivery account or token:
+you run the **local mock** (`scripts/local/mock-delhivery.mjs`, started in Part C as
+Terminal 3) and point the backend at it with `DELHIVERY_BASE_URL=http://localhost:4100`. The
+`DELHIVERY_API_TOKEN` can be any dummy value — the mock ignores it.
 
-- Easiest: reuse the Delhivery values already in your existing `.env` (look for
-  `DELHIVERY_*`), and use a known serviceable pincode (e.g. `500081`) in your test address.
-- If you have a Delhivery **staging** account, use its base URL + token instead and leave
-  `DELHIVERY_PRODUCTION` empty.
-
-> Only testing the webhook-recovery flow and don't have Delhivery handy? You can still do it,
-> but create-order needs this to succeed, so set it up.
+> **Prefer the real Delhivery staging API?** If you do have staging credentials, skip the mock:
+> set `DELHIVERY_BASE_URL` to the staging base URL and `DELHIVERY_API_TOKEN` to your staging
+> token, leave `DELHIVERY_PRODUCTION` empty, and don't start Terminal 3. Use a known
+> serviceable pincode (e.g. `500081`) in your test address.
 
 ---
 
@@ -143,10 +151,11 @@ FIREBASE_AUTH_EMULATOR_HOST=localhost:9099
 
 # ---------- WhatsApp: leave everything unset → no real messages ----------
 
-# ---------- Delhivery (from A4) ----------
+# ---------- Delhivery: point at the local mock (from A4) ----------
 DELHIVERY_PRODUCTION=
-DELHIVERY_BASE_URL=[delhivery base url if you have a staging one]
-# plus your DELHIVERY_API_TOKEN / related vars
+DELHIVERY_BASE_URL=http://localhost:4100
+DELHIVERY_API_TOKEN=dummy-local-token
+# (Using real Delhivery staging instead? Put its base URL + token here and skip Terminal 3.)
 
 PORT=8080
 GIN_MODE=debug
@@ -180,7 +189,7 @@ This loads products, inventory, coupons and an admin user into the **local** dat
 
 ## Part C — Run it (do this every time)
 
-Open **three** terminals.
+Open **four** terminals.
 
 **Terminal 1 — infrastructure** (if not already up from B2):
 ```bash
@@ -195,7 +204,15 @@ firebase emulators:start --only auth --project YOUR_FIREBASE_PROJECT_ID
 ```
 Leave it running. (Emulator UI: http://localhost:4000)
 
-**Terminal 3 — the backend.** This loads `.env.local` and starts the server.
+**Terminal 3 — Delhivery mock** (the fake courier, so checkout can confirm delivery):
+```bash
+cd ecommerce-backend
+node scripts/local/mock-delhivery.mjs
+```
+Leave it running. It prints each call it answers. *(Skip this terminal only if you set
+`DELHIVERY_BASE_URL` to a real Delhivery staging URL in A4.)*
+
+**Terminal 4 — the backend.** This loads `.env.local` and starts the server.
 
 PowerShell (Windows) — save as `scripts/local/run-local.ps1` and run `./scripts/local/run-local.ps1`:
 ```powershell
@@ -312,7 +329,7 @@ from your live webhooks and changes nothing in production.)
 | Symptom | Cause / fix |
 |---------|-------------|
 | Log shows a `neon.tech` DB host | `.env.local` didn't override. Launch via the Part C script (don't just `go run`), and confirm the printed `DB -> localhost:5555` line. |
-| `create-order` returns **503** "could not confirm delivery" | Delhivery serviceability call failed → fix `DELHIVERY_*` in `.env.local`, or use a known serviceable pincode. |
+| `create-order` returns **503** "could not confirm delivery" | The Delhivery mock (Terminal 3) isn't running, or `DELHIVERY_BASE_URL` in `.env.local` doesn't point at it (`http://localhost:4100`). Start the mock and confirm it logs a `serviceability … -> serviceable` line when you retry. (On real staging: check the token/URL and use a serviceable pincode.) |
 | `create-order` returns **503** "could not start checkout" | The snapshot couldn't be saved (DB issue). Check Postgres is up and the `payment_cart_snapshots` table exists (it auto-creates on boot). |
 | Any authed call returns **401** | Token missing/expired, or the emulator isn't running, or its `--project` id doesn't match `FIREBASE_PROJECT_ID`. Re-mint the token (D1) and retry. |
 | Token mint script errors | The Auth emulator (Terminal 2) isn't running on `localhost:9099`. |
@@ -326,7 +343,7 @@ from your live webhooks and changes nothing in production.)
 ```bash
 docker-compose down       # stop DB/Redis/Dynamo (keeps data)
 docker-compose down -v    # also wipe the local data
-# Ctrl-C the emulator (Terminal 2) and the backend (Terminal 3)
+# Ctrl-C the emulator (T2), the Delhivery mock (T3), and the backend (T4)
 ```
 
 ---
@@ -339,6 +356,7 @@ docker-compose down -v    # also wipe the local data
 | Postgres | `localhost:5555` db `DemoDB` user `postgres` pass `12345678` (sslmode `disable`) |
 | Redis | `localhost:6379` |
 | Firebase Auth emulator | `localhost:9099` (UI `localhost:4000`) |
+| Delhivery mock | `node scripts/local/mock-delhivery.mjs` → `http://localhost:4100` |
 | Mint a login token | `node scripts/local/mint-emulator-token.mjs [email] [password]` |
 | Simulate a paid webhook | `node scripts/local/sim-razorpay-webhook.mjs <order_id>` |
 | Razorpay test card | `4111 1111 1111 1111`, any future expiry + CVV |
