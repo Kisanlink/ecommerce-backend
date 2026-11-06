@@ -218,14 +218,27 @@ docker-compose ps        # wait until all show "healthy"
 
 ### B3. Put some products in the local database
 
-A fresh local database is empty, so your cart would have nothing to add. Seed it (run in the
-same shell where you've loaded `.env.local`, or set the `DB_POSTGRES_*` vars first):
+A fresh local database is empty, so your cart would have nothing to add. Seed it.
 
+> **The seed does not read `.env.local` by itself.** If you just run `go run ./cmd/seed`, it
+> falls back to its defaults — port `5432` with SSL **required** — and fails with
+> `pq: SSL is not enabled on the server`. Your Docker Postgres is on **5555** with SSL **off**,
+> so pass those two settings on the command line:
+
+Git Bash:
 ```bash
-go run ./cmd/seed
+DB_POSTGRES_PORT=5555 DB_POSTGRES_SSLMODE=disable go run ./cmd/seed
 ```
 
-This loads products, inventory, coupons and an admin user into the **local** database.
+PowerShell:
+```powershell
+$env:DB_POSTGRES_PORT="5555"; $env:DB_POSTGRES_SSLMODE="disable"; go run ./cmd/seed
+```
+
+The seed's other DB defaults (host `localhost`, user `postgres`, password `12345678`, db
+`DemoDB`) already match the container, so only the port and SSL mode need overriding. It loads
+products, inventory, coupons and an admin user into the **local** database — you should see it
+finish with a success summary instead of the SSL error.
 
 ---
 
