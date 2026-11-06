@@ -2463,6 +2463,20 @@ func (h *PaymentHandler) fulfillFromWebhook(ctx context.Context, rzpOrderID, pay
 			} else if rzp.Amount > 0 {
 				ov.CapturedAmountPaisa = rzp.Amount
 			}
+			// For Magic Checkout the authoritative shipping address is the one the buyer entered
+			// in the widget (on the Razorpay order's customer_details), NOT the saved default the
+			// snapshot froze at create-order. Use it when present and shippable; otherwise the
+			// snapshot address stands and the ship-time placeholder guard catches anything invalid.
+			if rzp.CustomerDetails != nil && rzp.CustomerDetails.ShippingAddress != nil {
+				sa := rzp.CustomerDetails.ShippingAddress
+				if strings.TrimSpace(sa.Line1) != "" && strings.TrimSpace(sa.City) != "" && strings.TrimSpace(sa.Zipcode) != "" {
+					country := strings.TrimSpace(sa.Country)
+					if country == "" {
+						country = "India"
+					}
+					ov.ShippingAddress = models.NewOrderAddress(sa.Line1, sa.Line2, sa.City, sa.State, sa.Zipcode, country)
+				}
+			}
 		} else {
 			h.logger.Warn("Webhook: could not fetch Razorpay order for rebuild reconciliation - using snapshot values",
 				zap.String("razorpay_order_id", rzpOrderID), zap.Error(gerr))
