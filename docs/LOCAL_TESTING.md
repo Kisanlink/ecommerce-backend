@@ -325,9 +325,20 @@ It prints a **UID** and an **ID TOKEN**. Copy the ID TOKEN — that's your login
 
 1. Open **http://localhost:8080/docs**.
 2. Click the green **Authorize** button (top right).
-3. Paste your token. *(If the box is labelled `Authorization`, type `Bearer ` then the token.
-   If it says "bearer", paste just the token.)* Click **Authorize** → **Close**.
+3. In the value box, type the word **`Bearer`**, then a **space**, then paste the token — the
+   whole thing on one line:
+   ```
+   Bearer eyJhbGciOi...<the rest of your token>...fQ.
+   ```
+   The scheme is a header API key, so Swagger sends exactly what you type — you **must** include
+   the `Bearer ` prefix yourself. Pasting the bare token (no `Bearer `) is the #1 cause of a
+   `401` here. If the dialog shows two boxes (`BearerAuth` and `FirebaseAuth`), fill either one
+   the same way. Click **Authorize** → **Close**.
 4. Now every request you send from this page is logged in as your test user.
+
+> **Copy the token as one line.** The minter prints it on a single line, but your terminal may
+> *wrap* it across several rows — if a real newline gets copied in, the header breaks and you
+> get a 401. Paste into a plain text editor first and confirm it's one unbroken line if unsure.
 
 Do these in order, using the "Try it out" button on each:
 
@@ -400,7 +411,7 @@ from your live webhooks and changes nothing in production.)
 | Log shows a `neon.tech` DB host | `.env.local` didn't override. Launch via the Part C script (don't just `go run`), and confirm the printed `DB -> localhost:5555` line. |
 | `create-order` returns **503** "could not confirm delivery" | The Delhivery mock (Terminal 3) isn't running, or `DELHIVERY_BASE_URL` in `.env.local` doesn't point at it (`http://localhost:4100`). Start the mock and confirm it logs a `serviceability … -> serviceable` line when you retry. (On real staging: check the token/URL and use a serviceable pincode.) |
 | `create-order` returns **503** "could not start checkout" | The snapshot couldn't be saved (DB issue). Check Postgres is up and the `payment_cart_snapshots` table exists (it auto-creates on boot). |
-| Any authed call returns **401** | Token missing/expired, or the emulator isn't running, or its `--project` id doesn't match `FIREBASE_PROJECT_ID`. Re-mint the token (D1) and retry. |
+| Any authed call returns **401** | Most often the Authorize value is missing the `Bearer ` prefix, or the token got a line-break when copied (D2) — it must be `Bearer <token>` on one line. Otherwise: token expired (re-mint, D1), the emulator isn't running, or its `--project` id doesn't match `FIREBASE_PROJECT_ID`. |
 | Token mint script: `ECONNREFUSED ::1:9099` | Node resolved `localhost` to IPv6 but the emulator is IPv4-only. The script now uses `127.0.0.1`; if you set `FIREBASE_AUTH_EMULATOR_HOST` yourself, use `127.0.0.1:9099`, not `localhost:9099`. Also confirm the Auth emulator (Terminal 2) is actually running. |
 | Webhook simulator returns **400** "Invalid webhook" | The `RAZORPAY_WEBHOOK_SECRET` you ran the script with doesn't match the one the backend started with. Make them identical. |
 | Cart "product not found" | Run the seed (B3), or copy a real id from `GET /api/v1/products`. |
