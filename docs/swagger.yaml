@@ -154,10 +154,6 @@ definitions:
         maximum: 1000
         minimum: 1
         type: integer
-      unit_price:
-        description: Optional, will be fetched from product if not provided
-        minimum: 0
-        type: number
     required:
     - product_id
     - quantity
