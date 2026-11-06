@@ -86,7 +86,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		inventoryHandler := handlers.NewInventoryHandler(serviceManager.InventoryService)
 		admin.RegisterAdminInventoryRoutes(v1, inventoryHandler, repoManager)
 
-		orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, serviceManager.UserService, logger)
+		orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, services.NewPaymentService(logger), serviceManager.UserService, logger)
 		admin.RegisterAdminOrderRoutes(v1, orderHandler, repoManager)
 
 		reviewHandler := handlers.NewReviewHandler(serviceManager.ReviewService, logger)

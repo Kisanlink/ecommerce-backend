@@ -55,6 +55,7 @@ func (m *Migration) runPostgresMigrations() error {
 		&models.Review{},
 		&models.Coupon{},     // Add Coupon model for auto-migration
 		&models.CouponRule{}, // Add CouponRule model for auto-migration
+		&models.PhoneVerification{}, // WhatsApp OTP verification sessions
 	}
 
 	// Run auto migration for each model

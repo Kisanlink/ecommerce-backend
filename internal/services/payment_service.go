@@ -23,8 +23,10 @@ type PaymentServiceInterface interface {
 	CreateOrderWithOptions(ctx context.Context, orderOptions map[string]interface{}) (*RazorpayOrder, error)
 	VerifyPayment(ctx context.Context, orderID, paymentID, signature string) (bool, error)
 	ProcessWebhook(ctx context.Context, body []byte, signature string) error
+	ParseWebhook(body []byte, signature string) (*RazorpayWebhookPayload, error)
 	GetPaymentStatus(ctx context.Context, paymentID string) (*RazorpayPayment, error)
 	GetOrder(ctx context.Context, orderID string) (*RazorpayOrder, error)
+	VerifyMagicCheckoutSignature(body []byte, signature string) (configured bool, valid bool)
 }
 
 // PaymentService implements payment business logic with Razorpay
@@ -47,50 +49,50 @@ func NewPaymentService(logger *zap.Logger) PaymentServiceInterface {
 
 // RazorpayOrder represents Razorpay order response
 type RazorpayOrder struct {
-	ID               string                 `json:"id"`
-	Entity           string                 `json:"entity"`
-	Amount           int                    `json:"amount"`      // Amount in paisa
-	AmountPaid       int                    `json:"amount_paid"` // Amount paid in paisa
-	AmountDue        int                    `json:"amount_due"`  // Amount due in paisa
-	Currency         string                 `json:"currency"`
-	Receipt          string                 `json:"receipt"`
-	OfferID          string                 `json:"offer_id,omitempty"`
-	Status           string                 `json:"status"`
-	Attempts         int                    `json:"attempts"`
-	Notes            map[string]interface{} `json:"notes"`
-	CreatedAt        int64                  `json:"created_at"`
-	Description      string                 `json:"description,omitempty"`
-	Checkout         map[string]interface{} `json:"checkout,omitempty"`
-	Promotions       []map[string]interface{} `json:"promotions,omitempty"`
-	CODFee           int                    `json:"cod_fee,omitempty"`
-	ShippingFee      int                    `json:"shipping_fee,omitempty"`
-	LineItemsTotal   int                    `json:"line_items_total,omitempty"`
-	TaxDetails       map[string]interface{} `json:"tax_details,omitempty"`
+	ID             string                   `json:"id"`
+	Entity         string                   `json:"entity"`
+	Amount         int                      `json:"amount"`      // Amount in paisa
+	AmountPaid     int                      `json:"amount_paid"` // Amount paid in paisa
+	AmountDue      int                      `json:"amount_due"`  // Amount due in paisa
+	Currency       string                   `json:"currency"`
+	Receipt        string                   `json:"receipt"`
+	OfferID        string                   `json:"offer_id,omitempty"`
+	Status         string                   `json:"status"`
+	Attempts       int                      `json:"attempts"`
+	Notes          map[string]interface{}   `json:"notes"`
+	CreatedAt      int64                    `json:"created_at"`
+	Description    string                   `json:"description,omitempty"`
+	Checkout       map[string]interface{}   `json:"checkout,omitempty"`
+	Promotions     []map[string]interface{} `json:"promotions,omitempty"`
+	CODFee         int                      `json:"cod_fee,omitempty"`
+	ShippingFee    int                      `json:"shipping_fee,omitempty"`
+	LineItemsTotal int                      `json:"line_items_total,omitempty"`
+	TaxDetails     map[string]interface{}   `json:"tax_details,omitempty"`
 	// Customer details from Magic Checkout
-	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
+	CustomerDetails *CustomerDetails `json:"customer_details,omitempty"`
 }
 
 // CustomerDetails represents customer details from Magic Checkout
 type CustomerDetails struct {
-	Email           string          `json:"email"`
-	Contact         string          `json:"contact"`
-	BillingAddress  *MagicAddress   `json:"billing_address,omitempty"`
-	ShippingAddress *MagicAddress   `json:"shipping_address,omitempty"`
+	Email           string        `json:"email"`
+	Contact         string        `json:"contact"`
+	BillingAddress  *MagicAddress `json:"billing_address,omitempty"`
+	ShippingAddress *MagicAddress `json:"shipping_address,omitempty"`
 }
 
 // MagicAddress represents address from Magic Checkout
 type MagicAddress struct {
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Name     string `json:"name"`
-	Contact  string `json:"contact,omitempty"`
-	Line1    string `json:"line1"`
-	Line2    string `json:"line2,omitempty"`
-	City     string `json:"city"`
-	State    string `json:"state"`
-	Country  string `json:"country"`
-	Zipcode  string `json:"zipcode"`
-	Tag      string `json:"tag,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Name    string `json:"name"`
+	Contact string `json:"contact,omitempty"`
+	Line1   string `json:"line1"`
+	Line2   string `json:"line2,omitempty"`
+	City    string `json:"city"`
+	State   string `json:"state"`
+	Country string `json:"country"`
+	Zipcode string `json:"zipcode"`
+	Tag     string `json:"tag,omitempty"`
 }
 
 // RazorpayPayment represents Razorpay payment response
@@ -121,7 +123,7 @@ type RazorpayPayment struct {
 	ErrorDescription string                 `json:"error_description,omitempty"`
 	CreatedAt        int64                  `json:"created_at"`
 	// Magic Checkout fields - customer details with shipping address
-	CustomerDetails  *CustomerDetails       `json:"customer_details,omitempty"`
+	CustomerDetails *CustomerDetails `json:"customer_details,omitempty"`
 }
 
 // RazorpayWebhookPayload represents webhook event payload
@@ -200,8 +202,10 @@ func (s *PaymentService) CreateOrder(ctx context.Context, userID string, amount 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		s.logger.Error("Razorpay API error", zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// SECURITY (#27): do not log the raw upstream body (may echo customer/payment
+		// details); log only the status and the body length.
+		s.logger.Error("Razorpay API error", zap.Int("status", resp.StatusCode), zap.Int("body_len", len(body)))
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
 	var order RazorpayOrder
@@ -319,11 +323,12 @@ func (s *PaymentService) CreateOrderWithOptions(ctx context.Context, orderOption
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// SECURITY (#27): do not log the raw upstream body; log only status + length.
 		s.logger.Error("Razorpay API error",
 			zap.Int("status", resp.StatusCode),
-			zap.String("body", string(body)),
+			zap.Int("body_len", len(body)),
 			zap.String("key_id_prefix", keyIDPrefix))
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
 	var order RazorpayOrder
@@ -370,14 +375,13 @@ func (s *PaymentService) VerifyPayment(ctx context.Context, orderID, paymentID, 
 			zap.String("payment_id", paymentID),
 			zap.String("message", message))
 	} else {
-		s.logger.Warn("Payment signature verification FAILED - detailed debug info",
+		// SECURITY (#27): never log the expected/received signatures or secret material —
+		// they are the HMAC output over order|payment with the key secret, and logging them
+		// aids forgery/correlation. Log only the (non-secret) ids and a boolean.
+		s.logger.Warn("Payment signature verification failed",
 			zap.String("order_id", orderID),
 			zap.String("payment_id", paymentID),
-			zap.String("message", message),
-			zap.String("expected_signature", expectedSignature),
-			zap.String("received_signature", signature),
-			zap.String("key_secret_length", fmt.Sprintf("%d", len(s.config.KeySecret))),
-			zap.Bool("signatures_equal", expectedSignature == signature))
+			zap.Bool("signatures_equal", false))
 	}
 
 	return isValid, nil
@@ -407,39 +411,21 @@ func (s *PaymentService) GetPaymentStatus(ctx context.Context, paymentID string)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// SECURITY (#27): do not echo the raw upstream body to logs or callers.
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
-
-	// Log raw response for debugging Magic Checkout customer_details
-	s.logger.Info("Razorpay GetPaymentStatus RAW response",
-		zap.String("payment_id", paymentID),
-		zap.String("raw_response", string(body)))
 
 	var payment RazorpayPayment
 	if err := json.Unmarshal(body, &payment); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Log customer details if present (Magic Checkout payments)
+	// SECURITY (#27): never log Razorpay customer_details (email/contact/shipping
+	// address are PII). Log only whether they are present, for diagnostics.
 	if payment.CustomerDetails != nil {
 		s.logger.Info("Payment has customer_details (Magic Checkout)",
 			zap.String("payment_id", paymentID),
-			zap.String("email", payment.CustomerDetails.Email),
-			zap.String("contact", payment.CustomerDetails.Contact),
 			zap.Bool("has_shipping_address", payment.CustomerDetails.ShippingAddress != nil))
-
-		if payment.CustomerDetails.ShippingAddress != nil {
-			addr := payment.CustomerDetails.ShippingAddress
-			s.logger.Info("Magic Checkout shipping address from payment",
-				zap.String("payment_id", paymentID),
-				zap.String("name", addr.Name),
-				zap.String("line1", addr.Line1),
-				zap.String("line2", addr.Line2),
-				zap.String("city", addr.City),
-				zap.String("state", addr.State),
-				zap.String("zipcode", addr.Zipcode),
-				zap.String("country", addr.Country))
-		}
 	}
 
 	return &payment, nil
@@ -471,39 +457,20 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// SECURITY (#27): do not echo the raw upstream body to logs or callers.
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
-
-	// Log raw response for debugging Magic Checkout customer_details
-	s.logger.Info("Razorpay GetOrder RAW response",
-		zap.String("order_id", orderID),
-		zap.String("raw_response", string(body)))
 
 	var order RazorpayOrder
 	if err := json.Unmarshal(body, &order); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Log customer details if present (Magic Checkout orders)
+	// SECURITY (#27): never log Razorpay customer_details (PII). Log presence only.
 	if order.CustomerDetails != nil {
 		s.logger.Info("Razorpay order has customer_details (Magic Checkout)",
 			zap.String("order_id", orderID),
-			zap.String("email", order.CustomerDetails.Email),
-			zap.String("contact", order.CustomerDetails.Contact),
 			zap.Bool("has_shipping_address", order.CustomerDetails.ShippingAddress != nil))
-
-		if order.CustomerDetails.ShippingAddress != nil {
-			addr := order.CustomerDetails.ShippingAddress
-			s.logger.Info("Magic Checkout shipping address from order",
-				zap.String("order_id", orderID),
-				zap.String("name", addr.Name),
-				zap.String("line1", addr.Line1),
-				zap.String("line2", addr.Line2),
-				zap.String("city", addr.City),
-				zap.String("state", addr.State),
-				zap.String("zipcode", addr.Zipcode),
-				zap.String("country", addr.Country))
-		}
 	} else {
 		s.logger.Info("Razorpay order does NOT have customer_details",
 			zap.String("order_id", orderID),
@@ -518,21 +485,29 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 	return &order, nil
 }
 
-// ProcessWebhook processes Razorpay webhook events
-func (s *PaymentService) ProcessWebhook(ctx context.Context, body []byte, signature string) error {
-	// Verify webhook signature
+// ParseWebhook verifies the webhook signature and returns the parsed payload.
+// Fulfillment is driven by the handler (which has the order/delivery dependencies); this keeps
+// signature verification and parsing in one place.
+func (s *PaymentService) ParseWebhook(body []byte, signature string) (*RazorpayWebhookPayload, error) {
 	expectedSignature := s.generateSignature(string(body), s.config.WebhookSecret)
 	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
 		s.logger.Error("Webhook signature verification failed",
-			zap.String("expected", expectedSignature),
 			zap.String("received", signature))
-		return fmt.Errorf("invalid webhook signature")
+		return nil, fmt.Errorf("invalid webhook signature")
 	}
 
-	// Parse webhook payload
 	var webhook RazorpayWebhookPayload
 	if err := json.Unmarshal(body, &webhook); err != nil {
-		return fmt.Errorf("failed to parse webhook: %w", err)
+		return nil, fmt.Errorf("failed to parse webhook: %w", err)
+	}
+	return &webhook, nil
+}
+
+// ProcessWebhook processes Razorpay webhook events
+func (s *PaymentService) ProcessWebhook(ctx context.Context, body []byte, signature string) error {
+	webhook, err := s.ParseWebhook(body, signature)
+	if err != nil {
+		return err
 	}
 
 	s.logger.Info("Processing Razorpay webhook",
@@ -569,17 +544,19 @@ func (s *PaymentService) handlePaymentCaptured(ctx context.Context, payment Razo
 	return nil
 }
 
-// handlePaymentFailed processes failed payment
+// handlePaymentFailed processes failed payment.
+//
+// NOTE (#35): this service-level webhook switch (ProcessWebhook above) has no callers —
+// the live webhook route is served by PaymentHandler.ProcessWebhook, which updates the
+// order's payment status to "failed" via markPaymentFailedFromWebhook. This method is kept
+// only as a stub for the unused service path; if that path is ever wired up it must call the
+// order service the same way (it does not currently hold an order-repo dependency).
 func (s *PaymentService) handlePaymentFailed(ctx context.Context, payment RazorpayPayment) error {
 	s.logger.Warn("Payment failed",
 		zap.String("payment_id", payment.ID),
 		zap.String("order_id", payment.OrderID),
 		zap.String("error_code", payment.ErrorCode),
 		zap.String("error_description", payment.ErrorDescription))
-
-	// TODO: Update order status to failed
-	// TODO: Send failure notification
-	// TODO: Restore cart if needed
 
 	return nil
 }
@@ -601,6 +578,23 @@ func (s *PaymentService) generateSignature(message, secret string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(message))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifyMagicCheckoutSignature verifies a Magic Checkout (1CC) callback signature.
+//
+// It returns configured=false when no 1CC secret is set — verification is DORMANT and
+// the caller should skip enforcement (the callbacks keep their other #7 protections).
+// When configured=true, valid reports whether the supplied X-Razorpay-Signature equals
+// HMAC-SHA256(rawBody, 1CC secret), hex-encoded — the same construction as the webhook
+// check (generateSignature), but with the dedicated Magic Checkout secret
+// (RAZORPAY_MAGIC_CHECKOUT_SECRET), which is distinct from the webhook secret.
+func (s *PaymentService) VerifyMagicCheckoutSignature(body []byte, signature string) (configured bool, valid bool) {
+	secret := s.config.MagicCheckoutSecret
+	if secret == "" {
+		return false, false
+	}
+	expected := s.generateSignature(string(body), secret)
+	return true, hmac.Equal([]byte(expected), []byte(signature))
 }
 
 // Helper function to convert paisa to rupees

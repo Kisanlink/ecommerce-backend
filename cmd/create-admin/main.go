@@ -88,10 +88,10 @@ func main() {
 
 		// Create new admin user
 		adminUser := &models.User{
-			Email:       email,
+			Email:       &email,
 			Name:        "Admin User",
 			Password:    "admin123", // You should change this
-			FirebaseUID: "",         // Will be set when user logs in with Firebase
+			FirebaseUID: nil,        // Will be set when user logs in with Firebase
 			Role:        "admin",
 			IsVerified:  true,
 			IsActive:    true,
@@ -113,16 +113,16 @@ func main() {
 	log.Println("\n" + strings.Repeat("=", 50))
 	log.Println("ADMIN USER SETUP COMPLETE")
 	log.Println(strings.Repeat("=", 50))
-	log.Printf("📧 Email: %s", verifyUser.Email)
+	log.Printf("📧 Email: %v", verifyUser.Email)
 	log.Printf("👤 Name: %s", verifyUser.Name)
 	log.Printf("🆔 User ID: %s", verifyUser.ID)
 	log.Printf("🔑 Role: %s", verifyUser.Role)
-	log.Printf("🔥 Firebase UID: %s", verifyUser.FirebaseUID)
+	log.Printf("🔥 Firebase UID: %v", verifyUser.FirebaseUID)
 	log.Printf("✅ Is Active: %t", verifyUser.IsActive)
 	log.Printf("✅ Is Verified: %t", verifyUser.IsVerified)
 	log.Println(strings.Repeat("=", 50))
 
-	if verifyUser.FirebaseUID == "" {
+	if verifyUser.FirebaseUID == nil || *verifyUser.FirebaseUID == "" {
 		log.Println("⚠️  Note: Firebase UID is empty. User needs to login with Firebase first.")
 		log.Println("   After Firebase login, the Firebase UID will be automatically linked.")
 	}

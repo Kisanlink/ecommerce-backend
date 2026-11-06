@@ -29,12 +29,12 @@ type PhoneLoginRequest struct {
 }
 
 type SendPhoneCodeRequest struct {
-	PhoneNumber    string `json:"phone_number" binding:"required"`
-	RecaptchaToken string `json:"recaptcha_token" binding:"required"`
+	PhoneNumber string `json:"phone_number" binding:"required"`
 }
 
 type VerifyPhoneCodeRequest struct {
 	PhoneNumber string `json:"phone_number" binding:"required"`
 	Code        string `json:"code" binding:"required"`
 	SessionInfo string `json:"session_info" binding:"required"`
+	Name        string `json:"name"` // Optional — used as display name for new users
 }

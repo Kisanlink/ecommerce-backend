@@ -22,6 +22,7 @@ type ServiceManager struct {
 	ReviewService          *ReviewService
 	ImageService           ImageServiceInterface
 	WhatsAppService        *WhatsAppService
+	OTPService             *OTPService
 }
 
 // NewServiceManager creates a new service manager with repositories
@@ -47,7 +48,7 @@ func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceMana
 	sessionCartService := NewSessionCartService(repoManager.CartRepository, repoManager.ProductRepository, repoManager.CouponRepository, logger)
 	sessionFavoriteService := NewSessionFavoriteService(repoManager.FavoriteRepository, repoManager.ProductRepository, repoManager.ImageRepository, repoManager.InventoryRepository, logger)
 	deliveryService := NewDeliveryService(repoManager, logger)
-	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, r2Service, logger)
+	orderService := NewOrderService(repoManager.OrderRepository, cartService, repoManager.ProductRepository, repoManager.AddressRepository, repoManager.CouponRepository, repoManager.PaymentCartSnapshotRepository, r2Service, logger)
 
 	// Create review service with PostgreSQL support
 	userService := NewUserService(repoManager.UserRepository)
@@ -59,6 +60,9 @@ func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceMana
 
 	// Create WhatsApp service
 	whatsappService := NewWhatsAppService(logger)
+
+	// Create OTP service
+	otpService := NewOTPService(repoManager.GetPostgresManager(), logger)
 
 	return &ServiceManager{
 		UserService:            userService,
@@ -76,5 +80,6 @@ func NewServiceManager(repoManager *repositories.RepositoryManager) *ServiceMana
 		ReviewService:          reviewService,
 		ImageService:           imageService,
 		WhatsAppService:        whatsappService,
+		OTPService:             otpService,
 	}
 }

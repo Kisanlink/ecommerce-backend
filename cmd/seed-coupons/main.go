@@ -47,8 +47,8 @@ func main() {
 		}
 	}()
 
-	// Create repository manager
-	repoManager := repositories.NewRepositoryManager(pgManager, logger)
+	// Create coupon repository directly
+	couponRepo := repositories.NewCouponRepository(pgManager, logger)
 
 	// Define the coupons from the image
 	coupons := []struct {
@@ -120,7 +120,7 @@ func main() {
 	for _, couponData := range coupons {
 		// Check if coupon already exists
 		var existingCoupon models.Coupon
-		_, err := repoManager.CouponRepository.GetByCode(ctx, couponData.code, &existingCoupon)
+		_, err := couponRepo.GetByCode(ctx, couponData.code, &existingCoupon)
 		if err == nil {
 			fmt.Printf("Coupon %s already exists, skipping...\n", couponData.code)
 			continue
@@ -159,7 +159,7 @@ func main() {
 		coupon.IsActive = true
 
 		// Save to database
-		if err := repoManager.CouponRepository.Create(ctx, coupon); err != nil {
+		if err := couponRepo.Create(ctx, coupon); err != nil {
 			logger.Error("Failed to create coupon",
 				zap.String("code", couponData.code),
 				zap.Error(err))
@@ -175,7 +175,7 @@ func main() {
 
 	// Verify coupons were created
 	fmt.Println("\nVerifying created coupons...")
-	allCoupons, err := repoManager.CouponRepository.GetAll(ctx, 100, 0)
+	allCoupons, err := couponRepo.GetAll(ctx, 100, 0)
 	if err != nil {
 		log.Printf("Failed to verify coupons: %v", err)
 		return

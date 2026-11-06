@@ -251,7 +251,7 @@ Authorization: Bearer <your_firebase_token>
   "order_id": "order_razorpay_xxxxx",
   "amount": 230.00,
   "currency": "INR",
-  "key_id": "rzp_live_RCbm4zwG4WzwGV",
+  "key_id": "rzp_live_xxxxxxxxxxxxxx",
   "description": "Kisanlink Order Payment",
   "notes": {
     "user_id": "USER_xxxxxxxxxxxxx",

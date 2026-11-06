@@ -256,6 +256,11 @@ func (s *ProfileService) GetProfileByUserID(ctx context.Context, userID string) 
 	return profile, nil
 }
 
+// SoftDeleteProfileByUserID soft-deletes the user's profile (#37 account deletion).
+func (s *ProfileService) SoftDeleteProfileByUserID(ctx context.Context, userID, deletedBy string) error {
+	return s.repoManager.ProfileRepository.SoftDeleteByUserID(ctx, userID, deletedBy)
+}
+
 // UpdateProfile updates the user's profile
 func (s *ProfileService) UpdateProfile(ctx context.Context, req *requests.UpdateProfileRequest) (*models.Profile, error) {
 	log.Printf("Updating profile for user ID: %s", req.GetUserID())

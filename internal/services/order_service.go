@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/core/hash"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // OrderServiceInterface defines the contract for order operations
@@ -21,8 +23,19 @@ type OrderServiceInterface interface {
 	// Create order with customer and address data
 	CreateOrder(ctx context.Context, userID string, customerData *models.OrderCustomer, addressData *models.OrderAddress, paymentMethod string, shippingCharges float64) (*models.Order, error)
 	GetUserCart(ctx context.Context, userID string) (*models.Cart, error)
+	ValidateCart(ctx context.Context, userID string) (map[string]interface{}, error)
 	GetOrderByID(ctx context.Context, orderID string) (*models.Order, error)
+	CreateConfirmedOrder(ctx context.Context, params ConfirmedOrderParams) (*models.Order, error)
+	// SaveCartSnapshot freezes the cart at create-order so the webhook can rebuild a paid
+	// order even after a process restart (paid-but-no-order recovery).
+	SaveCartSnapshot(ctx context.Context, params CartSnapshotParams) error
+	// RebuildOrderFromSnapshot rebuilds a confirmed order from the frozen snapshot when a
+	// payment is captured but /verify never ran. Returns ErrNoSnapshot when none exists, or
+	// ErrCartAmountMismatch when the captured amount is less than the snapshot's goods.
+	RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string, ov SnapshotRebuildOverrides) (*models.Order, error)
 	GetOrderByRazorpayOrderID(ctx context.Context, razorpayOrderID string) (*models.Order, error)
+	GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error)
+	GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error)
 	GetUserOrders(ctx context.Context, userID string) ([]models.Order, error)
 	GetOrderDetails(ctx context.Context, orderID string) (*models.Order, []repositories.OrderItemWithProduct, error)
 	UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error
@@ -38,36 +51,45 @@ type OrderServiceInterface interface {
 	// Transaction-based methods for payment verification
 	CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error)
 	UpdateOrderWithShipmentAtomic(ctx context.Context, orderID string, waybill string, trackingURL string, delhiveryStatus string) error
+	// Fulfillment helpers (idempotent; shared by verify, webhook and manual retry)
+	ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error
+	MarkFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error
+	DeductInventoryForOrder(ctx context.Context, orderID string) error
+	ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error)
+	ClaimOrderForShipmentAdmin(ctx context.Context, orderID string) (bool, error)
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
 	// Admin listing/stats/export
 	ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error)
+	ListUnfulfilledOrders(ctx context.Context, page, limit int) ([]models.Order, int, error)
 	GetOrderStats(ctx context.Context) (map[string]interface{}, error)
 	ExportOrdersCSV(ctx context.Context) ([]byte, string, error)
 }
 
 // OrderService implements order business logic
 type OrderService struct {
-	orderRepo   *repositories.OrderRepository
-	cartService CartServiceInterface
-	productRepo repositories.ProductRepositoryInterface
-	addressRepo *repositories.AddressRepository
-	couponRepo  repositories.CouponRepositoryInterface
-	r2Service   *R2Service // Cloudflare R2 storage
-	logger      *zap.Logger
+	orderRepo    *repositories.OrderRepository
+	cartService  CartServiceInterface
+	productRepo  repositories.ProductRepositoryInterface
+	addressRepo  *repositories.AddressRepository
+	couponRepo   repositories.CouponRepositoryInterface
+	snapshotRepo *repositories.PaymentCartSnapshotRepository // frozen cart for webhook order rebuild
+	r2Service    *R2Service                                  // Cloudflare R2 storage
+	logger       *zap.Logger
 }
 
 // NewOrderService creates a new order service
-func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
+func NewOrderService(orderRepo *repositories.OrderRepository, cartService CartServiceInterface, productRepo repositories.ProductRepositoryInterface, addressRepo *repositories.AddressRepository, couponRepo repositories.CouponRepositoryInterface, snapshotRepo *repositories.PaymentCartSnapshotRepository, r2Service *R2Service, logger *zap.Logger) OrderServiceInterface {
 	service := &OrderService{
-		orderRepo:   orderRepo,
-		cartService: cartService,
-		productRepo: productRepo,
-		addressRepo: addressRepo,
-		couponRepo:  couponRepo,
-		r2Service:   r2Service,
-		logger:      logger,
+		orderRepo:    orderRepo,
+		cartService:  cartService,
+		productRepo:  productRepo,
+		addressRepo:  addressRepo,
+		couponRepo:   couponRepo,
+		snapshotRepo: snapshotRepo,
+		r2Service:    r2Service,
+		logger:       logger,
 	}
 
 	// Initialize order ID counter from existing database records
@@ -233,6 +255,14 @@ func (s *OrderService) initializeOrderAddressIDCounter() {
 // GetUserCart retrieves the user's cart via cart service
 func (s *OrderService) GetUserCart(ctx context.Context, userID string) (*models.Cart, error) {
 	return s.cartService.GetUserCart(ctx, userID)
+}
+
+// ValidateCart re-validates and re-prices the user's cart against current product
+// data (#34). It returns the validation result map (cart, validation_issues,
+// cart_updated); when cart_updated is true, prices/quantities were stale and the cart
+// was corrected, so the caller should ask the user to re-confirm before charging.
+func (s *OrderService) ValidateCart(ctx context.Context, userID string) (map[string]interface{}, error) {
+	return s.cartService.ValidateCart(ctx, userID)
 }
 
 // CreateOrderFromCart creates a new order from user's cart
@@ -419,32 +449,27 @@ func (s *OrderService) CreateOrderFromCartWithShipping(ctx context.Context, user
 	return order, nil
 }
 
-// updateInventoryForOrderItems decrements stock for each ordered product
+// updateInventoryForOrderItems decrements stock for each ordered product using an
+// atomic per-item UPDATE (no read-modify-write, so concurrent deductions can't lose
+// updates). An oversell (stock below the ordered quantity) is logged rather than
+// silently hidden; stock is still floored at zero since a paid item can't be un-sold.
 func (s *OrderService) updateInventoryForOrderItems(ctx context.Context, items []models.OrderItem) error {
 	if s.productRepo == nil {
 		return fmt.Errorf("product repository unavailable")
 	}
 	var firstErr error
 	for _, it := range items {
-		var prod models.Product
-		res, err := s.productRepo.GetByID(ctx, it.ProductID, &prod)
-		if err != nil || res == nil {
+		oversold, err := s.productRepo.DecrementStockAtomic(ctx, nil, it.ProductID, it.Quantity)
+		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("product %s not found: %w", it.ProductID, err)
+				firstErr = fmt.Errorf("failed to decrement stock for %s: %w", it.ProductID, err)
 			}
 			continue
 		}
-		// Decrement stock but not below zero
-		newStock := prod.Stock - it.Quantity
-		if newStock < 0 {
-			newStock = 0
-		}
-		prod.Stock = newStock
-		if newStock <= 0 {
-			prod.StockStatus = "Out of Stock"
-		}
-		if err := s.productRepo.Update(ctx, &prod); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("failed to update stock for %s: %w", it.ProductID, err)
+		if oversold {
+			s.logger.Warn("Inventory oversold (stock floored to zero)",
+				zap.String("product_id", it.ProductID),
+				zap.Int("quantity", it.Quantity))
 		}
 	}
 	return firstErr
@@ -545,9 +570,10 @@ func (s *OrderService) GenerateAndAttachInvoice(ctx context.Context, orderID str
 		return "", fmt.Errorf("failed to generate PDF invoice: %w", err)
 	}
 
-	// Update order with invoice URL
+	// Update order with invoice URL. #33: write only the invoice_url column so this
+	// post-PDF save cannot clobber fields a concurrent request changed meanwhile.
 	order.InvoiceURL = url
-	if err := s.orderRepo.Update(ctx, order); err != nil {
+	if err := s.orderRepo.UpdateInvoiceURL(ctx, orderID, url); err != nil {
 		s.logger.Error("Failed to update order with invoice URL",
 			zap.String("order_id", orderID),
 			zap.String("invoice_url", url),
@@ -586,21 +612,87 @@ func (s *OrderService) GetUserOrders(ctx context.Context, userID string) ([]mode
 	return orders, nil
 }
 
-// UpdateOrderStatus updates the status of an order
+// Status-transition errors (#21). Handlers map these to 400/409 instead of a
+// blanket 500. Only the admin endpoints reach the validation below; the internal
+// payment-verify and fulfillment paths write through orderRepo / the Atomic
+// helpers directly and are intentionally not gated by it.
+var (
+	// ErrUnknownOrderStatus is returned for a status string outside the known set.
+	ErrUnknownOrderStatus = errors.New("unknown order status")
+	// ErrInvalidStatusTransition is returned for a known but illegal status move
+	// (e.g. delivered → pending, or skipping pending → delivered).
+	ErrInvalidStatusTransition = errors.New("invalid order status transition")
+	// ErrInvalidPaymentStatus is returned for a payment status outside the allowlist.
+	ErrInvalidPaymentStatus = errors.New("invalid payment status")
+)
+
+// allowedOrderStatusTransitions lists the only forward moves permitted along
+// pending → confirmed → shipped → delivered. Re-setting a status to itself is
+// also allowed (idempotent no-op); every other move, including any backward one,
+// is rejected.
+var allowedOrderStatusTransitions = map[models.OrderStatus]map[models.OrderStatus]bool{
+	models.OrderStatusPending:   {models.OrderStatusConfirmed: true},
+	models.OrderStatusConfirmed: {models.OrderStatusShipped: true},
+	models.OrderStatusShipped:   {models.OrderStatusDelivered: true},
+	models.OrderStatusDelivered: {},
+}
+
+func isKnownOrderStatus(s models.OrderStatus) bool {
+	switch s {
+	case models.OrderStatusPending, models.OrderStatusConfirmed, models.OrderStatusShipped, models.OrderStatusDelivered:
+		return true
+	}
+	return false
+}
+
+// allowedPaymentStatuses is the set an admin may set a payment to (#21).
+var allowedPaymentStatuses = map[string]bool{
+	"pending":    true,
+	"paid":       true,
+	"successful": true,
+	"failed":     true,
+	"refunded":   true,
+}
+
+// UpdateOrderStatus updates the status of an order, enforcing the allowed
+// forward-only state machine (#21). Rejects unknown statuses (ErrUnknownOrderStatus)
+// and illegal transitions (ErrInvalidStatusTransition) before touching the DB.
 func (s *OrderService) UpdateOrderStatus(ctx context.Context, orderID string, status models.OrderStatus) error {
+	if !isKnownOrderStatus(status) {
+		return fmt.Errorf("%w: %q", ErrUnknownOrderStatus, string(status))
+	}
+
+	current, err := s.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to load order for status update: %w", err)
+	}
+
+	if current.Status != status {
+		if !allowedOrderStatusTransitions[current.Status][status] {
+			return fmt.Errorf("%w: %s → %s", ErrInvalidStatusTransition, string(current.Status), string(status))
+		}
+	}
+
 	if err := s.orderRepo.UpdateOrderStatus(ctx, orderID, status); err != nil {
 		return fmt.Errorf("failed to update order status: %w", err)
 	}
 
 	s.logger.Info("Order status updated",
 		zap.String("order_id", orderID),
+		zap.String("from_status", string(current.Status)),
 		zap.String("status", string(status)))
 
 	return nil
 }
 
-// UpdatePaymentStatus updates the payment status and payment ID of an order
+// UpdatePaymentStatus updates the payment status and payment ID of an order.
+// The payment status must be in the allowlist (#21); callers in the internal
+// verify/webhook paths already pass allowlisted values ("successful"/"failed").
 func (s *OrderService) UpdatePaymentStatus(ctx context.Context, orderID string, paymentStatus, paymentID string) error {
+	if !allowedPaymentStatuses[paymentStatus] {
+		return fmt.Errorf("%w: %q", ErrInvalidPaymentStatus, paymentStatus)
+	}
+
 	if err := s.orderRepo.UpdatePaymentStatus(ctx, orderID, paymentStatus, paymentID); err != nil {
 		return fmt.Errorf("failed to update payment status: %w", err)
 	}
@@ -694,6 +786,22 @@ func (s *OrderService) GetOrderByRazorpayOrderID(ctx context.Context, razorpayOr
 	return s.orderRepo.GetOrderByRazorpayOrderID(ctx, razorpayOrderID)
 }
 
+// GetOrderByRazorpayPaymentID retrieves an order by Razorpay payment ID (for ownership checks)
+func (s *OrderService) GetOrderByRazorpayPaymentID(ctx context.Context, razorpayPaymentID string) (*models.Order, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.GetOrderByRazorpayPaymentID(ctx, razorpayPaymentID)
+}
+
+// GetOrderByWaybill retrieves an order by Delhivery waybill (for ownership checks)
+func (s *OrderService) GetOrderByWaybill(ctx context.Context, waybill string) (*models.Order, error) {
+	if s.orderRepo == nil {
+		return nil, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.GetOrderByWaybill(ctx, waybill)
+}
+
 // ListOrders returns filtered, paginated orders for admin
 func (s *OrderService) ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error) {
 	if s.orderRepo == nil {
@@ -745,6 +853,48 @@ func (s *OrderService) ListOrders(ctx context.Context, status, paymentStatus, q 
 	return orders, int(count), nil
 }
 
+// ListUnfulfilledOrders returns paid orders that have no shipment yet — i.e. confirmed orders with
+// an empty Delhivery waybill. These are the "payment taken but delivery not created" orders that
+// need recovery (fix address + retry shipment). Loads customer/address so admins can act on them.
+func (s *OrderService) ListUnfulfilledOrders(ctx context.Context, page, limit int) ([]models.Order, int, error) {
+	if s.orderRepo == nil {
+		return nil, 0, fmt.Errorf("order repository unavailable")
+	}
+	conds := []base.FilterCondition{
+		{Field: "status", Operator: base.OpEqual, Value: string(models.OrderStatusConfirmed)},
+		{Field: "delhivery_waybill", Operator: base.OpEqual, Value: ""},
+	}
+	filter := &base.Filter{Group: base.FilterGroup{Conditions: conds, Logic: base.LogicAnd}, Page: page, PageSize: limit}
+
+	found, err := s.orderRepo.Find(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list unfulfilled orders: %w", err)
+	}
+	orders := make([]models.Order, 0, len(found))
+	for _, po := range found {
+		if po != nil {
+			orders = append(orders, *po)
+		}
+	}
+	count, err := s.orderRepo.CountWithFilter(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count unfulfilled orders: %w", err)
+	}
+	for i := range orders {
+		if orders[i].CustomerID != "" {
+			if customer, err := s.orderRepo.GetOrderCustomer(ctx, orders[i].CustomerID); err == nil {
+				orders[i].Customer = customer
+			}
+		}
+		if orders[i].ShippingAddressID != "" {
+			if addr, err := s.orderRepo.GetOrderAddress(ctx, orders[i].ShippingAddressID); err == nil {
+				orders[i].ShippingAddress = addr
+			}
+		}
+	}
+	return orders, int(count), nil
+}
+
 // GetOrderStats computes simple aggregates
 func (s *OrderService) GetOrderStats(ctx context.Context) (map[string]interface{}, error) {
 	if s.orderRepo == nil {
@@ -777,18 +927,34 @@ func (s *OrderService) ExportOrdersCSV(ctx context.Context) ([]byte, string, err
 	if s.orderRepo == nil {
 		return nil, "", fmt.Errorf("order repository unavailable")
 	}
-	orders, err := s.orderRepo.Find(ctx, &base.Filter{Page: 1, PageSize: 100000})
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to load orders: %w", err)
-	}
+
+	// #36: page through the orders in fixed-size batches instead of loading up to
+	// 100k rows into memory at once. A hard cap on pages bounds total work.
+	const pageSize = 500
+	const maxPages = 10000 // safety cap: up to 5M rows
+
 	var b strings.Builder
 	b.WriteString("order_id,user_id,status,payment_status,total_amount,created_at\n")
-	for _, o := range orders {
-		if o == nil {
-			continue
+
+	for page := 1; page <= maxPages; page++ {
+		batch, err := s.orderRepo.Find(ctx, &base.Filter{Page: page, PageSize: pageSize})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to load orders (page %d): %w", page, err)
 		}
-		b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.2f,%s\n", o.ID, o.UserID, string(o.Status), o.PaymentStatus, o.TotalAmount, o.CreatedAt.Format(time.RFC3339)))
+		if len(batch) == 0 {
+			break
+		}
+		for _, o := range batch {
+			if o == nil {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%.2f,%s\n", o.ID, o.UserID, string(o.Status), o.PaymentStatus, o.TotalAmount, o.CreatedAt.Format(time.RFC3339)))
+		}
+		if len(batch) < pageSize {
+			break // last (partial) page
+		}
 	}
+
 	filename := fmt.Sprintf("orders_export_%d.csv", time.Now().Unix())
 	return []byte(b.String()), filename, nil
 }
@@ -862,6 +1028,121 @@ func (s *OrderService) UpdateOrderWithShipmentAtomic(ctx context.Context, orderI
 	}
 
 	return s.orderRepo.UpdateOrderShipmentAtomic(ctx, orderID, waybill, trackingURL, delhiveryStatus)
+}
+
+// ApplyShipmentSuccess records a successful shipment and advances the order to shipped + fulfilled.
+// ClaimOrderForShipment atomically claims an order for a single shipment attempt (see the repository
+// method). Returns true only to the one caller that wins the claim.
+func (s *OrderService) ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error) {
+	if s.orderRepo == nil {
+		return false, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ClaimOrderForShipment(ctx, orderID)
+}
+
+// ClaimOrderForShipmentAdmin is the admin/manual-retry claim (see the repository method).
+func (s *OrderService) ClaimOrderForShipmentAdmin(ctx context.Context, orderID string) (bool, error) {
+	if s.orderRepo == nil {
+		return false, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ClaimOrderForShipmentAdmin(ctx, orderID)
+}
+
+func (s *OrderService) ApplyShipmentSuccess(ctx context.Context, orderID, waybill, trackingURL, delhiveryStatus string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ApplyShipmentSuccess(ctx, orderID, waybill, trackingURL, delhiveryStatus)
+}
+
+// MarkFulfillmentStatus records the post-payment fulfillment state (and last shipment error).
+func (s *OrderService) MarkFulfillmentStatus(ctx context.Context, orderID, status, shipmentErr string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.SetFulfillmentStatus(ctx, orderID, status, shipmentErr)
+}
+
+// DeductInventoryForOrder decrements stock for the order's items exactly once (idempotent).
+// It is a no-op if inventory was already deducted for this order, so it is safe to call from
+// both the verify path and the webhook/retry paths.
+func (s *OrderService) DeductInventoryForOrder(ctx context.Context, orderID string) error {
+	if s.orderRepo == nil {
+		return fmt.Errorf("order repository unavailable")
+	}
+
+	order, items, err := s.orderRepo.GetOrderWithItems(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to load order for inventory deduction: %w", err)
+	}
+	if order == nil {
+		return fmt.Errorf("order %s not found", orderID)
+	}
+	if order.InventoryDeducted {
+		// Fast path — already deducted, nothing to do. (The authoritative guard is
+		// the conditional claim inside the transaction below.)
+		return nil
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("order %s has no items", orderID)
+	}
+	if s.productRepo == nil {
+		return fmt.Errorf("product repository unavailable")
+	}
+
+	pg := s.orderRepo.GetPostgresManager()
+	if pg == nil {
+		return fmt.Errorf("postgres manager unavailable for inventory deduction")
+	}
+
+	// Deduct every item's stock AND flip the inventory_deducted guard in ONE
+	// transaction, so a partial failure can't leave stock decremented with the
+	// guard still false (which a retry would then double-count). The guard flip is
+	// a conditional claim — only the first caller to set it from false proceeds to
+	// decrement, so concurrent verify/webhook/admin calls can't double-deduct.
+	var (
+		claimed     bool
+		oversoldIDs []string
+	)
+	txErr := pg.WithTransaction(ctx, func(tx *gorm.DB) error {
+		claim := tx.WithContext(ctx).
+			Model(&models.Order{}).
+			Where("id = ? AND (inventory_deducted = ? OR inventory_deducted IS NULL)", orderID, false).
+			Update("inventory_deducted", true)
+		if claim.Error != nil {
+			return fmt.Errorf("failed to claim inventory deduction: %w", claim.Error)
+		}
+		if claim.RowsAffected == 0 {
+			// Another call already claimed and deducted — no-op.
+			return nil
+		}
+		claimed = true
+		for _, it := range items {
+			oversold, derr := s.productRepo.DecrementStockAtomic(ctx, tx, it.ProductID, it.Quantity)
+			if derr != nil {
+				// Roll back the claim and every prior decrement in this tx.
+				return derr
+			}
+			if oversold {
+				oversoldIDs = append(oversoldIDs, it.ProductID)
+			}
+		}
+		return nil
+	})
+	if txErr != nil {
+		return fmt.Errorf("failed to deduct inventory: %w", txErr)
+	}
+	if !claimed {
+		return nil
+	}
+	if len(oversoldIDs) > 0 {
+		s.logger.Warn("Inventory oversold on paid order (stock floored to zero)",
+			zap.String("order_id", orderID),
+			zap.Strings("oversold_product_ids", oversoldIDs))
+	}
+
+	s.logger.Info("Inventory deducted for order", zap.String("order_id", orderID), zap.Int("item_count", len(items)))
+	return nil
 }
 
 // ReduceCouponUsage reduces the usage count of a coupon when an order is successfully created
@@ -983,6 +1264,332 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID string, customerD
 		zap.Float64("total_amount", totalAmount),
 		zap.Int("item_count", len(orderItems)))
 
+	return order, nil
+}
+
+// ErrDuplicateOrder is re-exported from the repository layer so handlers can detect
+// a concurrent duplicate (and route to idempotent reuse) without importing repositories.
+var ErrDuplicateOrder = repositories.ErrDuplicateOrder
+
+// ErrCartAmountMismatch is returned when the cart total at verify is materially higher
+// than what the customer actually paid — i.e. the cart was changed (items added) between
+// create-order and verify. Confirming it would hand the customer more goods than they
+// paid for, so the order is refused and must be re-checked out against a fresh payment.
+var ErrCartAmountMismatch = errors.New("cart total exceeds amount paid")
+
+// ConfirmedOrderParams carries everything needed to create a fully-confirmed, paid
+// order in one shot from the payment-verify path.
+type ConfirmedOrderParams struct {
+	UserID            string
+	Customer          *models.OrderCustomer
+	Address           *models.OrderAddress
+	PaymentMethod     string
+	ShippingCharges   float64
+	RazorpayOrderID   string
+	RazorpayPaymentID string
+	CustomerFirstName string
+	CustomerLastName  string
+	CustomerPhone     string
+	CustomerPhoneAlt  string
+	// ExpectedAmountPaisa is the amount actually captured by the payment gateway, in paisa.
+	// When > 0, CreateConfirmedOrder refuses to confirm if the current cart total exceeds it
+	// beyond a tiny rounding tolerance (cart-swap guard). Zero disables the check.
+	ExpectedAmountPaisa int
+}
+
+// CreateConfirmedOrder creates a fully-confirmed, paid order transactionally (#13/#14/#32).
+// It fetches the cart (failing if empty — no zero-item orders), creates the normalized
+// customer + address records, then creates the order (bound to razorpay_order_id AT
+// INSERT so concurrent verifies dedup via the unique index) together with ALL its items
+// in ONE DB transaction, and clears the cart ONLY after that transaction commits. A
+// concurrent duplicate returns ErrDuplicateOrder so the caller can reuse the existing order.
+func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrderParams) (*models.Order, error) {
+	if s.orderRepo == nil || s.cartService == nil {
+		return nil, fmt.Errorf("order service not fully initialized")
+	}
+
+	cart, err := s.cartService.GetUserCart(ctx, p.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user cart: %w", err)
+	}
+	if cart == nil || len(cart.Items) == 0 {
+		return nil, fmt.Errorf("cart is empty")
+	}
+
+	cartTotal := cart.GetTotalAmount()
+	discountedCartTotal := utils.ApplyDiscount(cartTotal, cart.DiscountAmount)
+	totalAmount := utils.AddShippingCharges(discountedCartTotal, p.ShippingCharges)
+
+	// Cart-swap guard: the Razorpay order was created for a fixed amount from the cart as it
+	// stood at create-order. If the cart now totals MORE than what was actually captured, the
+	// cart was changed (items added) between create-order and verify — confirming it would give
+	// the customer more goods than they paid for. Refuse (fail closed). We only reject when the
+	// cart EXCEEDS the paid amount beyond a 1-rupee rounding tolerance; a cart total at or below
+	// the captured amount is fine (the caller reconciles the order total up to what was paid).
+	if p.ExpectedAmountPaisa > 0 {
+		const tolerancePaisa = 100 // ₹1 for rounding differences
+		cartTotalPaisa := utils.RupeesToPaisa(totalAmount)
+		if cartTotalPaisa > p.ExpectedAmountPaisa+tolerancePaisa {
+			s.logger.Error("Cart-swap guard: cart total exceeds amount paid - refusing to confirm order",
+				zap.String("razorpay_order_id", p.RazorpayOrderID),
+				zap.Int("cart_total_paisa", cartTotalPaisa),
+				zap.Int("paid_paisa", p.ExpectedAmountPaisa))
+			return nil, fmt.Errorf("%w: cart %d paisa vs paid %d paisa", ErrCartAmountMismatch, cartTotalPaisa, p.ExpectedAmountPaisa)
+		}
+	}
+
+	// Normalized customer + address first (reuse the PK-collision retry). These are
+	// harmless normalized records; the security-critical atomic unit is order + items.
+	if err := s.createOrderCustomerWithRetry(ctx, p.Customer); err != nil {
+		return nil, fmt.Errorf("failed to create order customer: %w", err)
+	}
+	if err := s.createOrderAddressWithRetry(ctx, p.Address); err != nil {
+		return nil, fmt.Errorf("failed to create order address: %w", err)
+	}
+
+	order := models.NewOrder(p.UserID, p.Customer.ID, p.Address.ID, totalAmount, p.PaymentMethod, models.OrderStatusConfirmed, "successful")
+	order.RazorpayOrderID = p.RazorpayOrderID
+	order.RazorpayPaymentID = p.RazorpayPaymentID
+	order.FulfillmentStatus = models.FulfillmentPendingShipment
+	order.ShippingCarrier = "Delhivery"
+	order.ShippingMode = "Surface"
+	order.ShippingCharge = p.ShippingCharges
+	order.CustomerFirstName = p.CustomerFirstName
+	order.CustomerLastName = p.CustomerLastName
+	order.CustomerPhone = p.CustomerPhone
+	order.CustomerPhoneAlt = p.CustomerPhoneAlt
+	if cart.CouponCode != "" {
+		order.CouponCode = cart.CouponCode
+		order.DiscountAmount = cart.DiscountAmount
+	}
+	if p.ShippingCharges > 0 {
+		order.Notes = fmt.Sprintf("Shipping: %.2f", p.ShippingCharges)
+	}
+
+	items := make([]models.OrderItem, 0, len(cart.Items))
+	for _, ci := range cart.Items {
+		items = append(items, *models.NewOrderItem(order.ID, ci.ProductID, ci.Quantity, ci.UnitPrice))
+	}
+
+	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+		// May be ErrDuplicateOrder — surfaced unchanged for the caller to reuse.
+		return nil, err
+	}
+
+	// Cart cleared ONLY after the order+items commit (#32). Non-fatal if it fails:
+	// the order is committed; a stale cart is a minor UX issue, not a correctness one.
+	if err := s.ClearUserCart(ctx, p.UserID); err != nil {
+		s.logger.Error("Failed to clear cart after confirmed order creation",
+			zap.Error(err), zap.String("user_id", p.UserID))
+	}
+
+	s.logger.Info("Confirmed order created transactionally",
+		zap.String("order_id", order.ID),
+		zap.String("razorpay_order_id", p.RazorpayOrderID),
+		zap.Int("item_count", len(items)))
+	return order, nil
+}
+
+// CartSnapshotParams carries the frozen cart + customer + address captured at create-order.
+type CartSnapshotParams struct {
+	RazorpayOrderID     string
+	UserID              string
+	Flow                string // "standard" | "magic"
+	Items               []models.SnapshotLineItem
+	CartTotal           float64
+	DiscountAmount      float64
+	CouponCode          string
+	ShippingCharge      float64
+	FinalAmount         float64
+	ExpectedAmountPaisa int
+	CustomerFirstName   string
+	CustomerLastName    string
+	CustomerPhone       string
+	CustomerPhoneAlt    string
+	CustomerEmail       string
+	ShippingAddressID   string
+	AddressLine1        string
+	AddressLine2        string
+	City                string
+	State               string
+	PostalCode          string
+	Country             string
+}
+
+// SaveCartSnapshot persists a frozen copy of the cart + customer + address keyed by the
+// Razorpay order id. It is written synchronously at create-order, BEFORE the customer
+// pays, so that if the browser never reaches /verify (closed tab) the webhook can rebuild
+// the order from durable storage — unlike the in-memory Magic Checkout cache, this
+// survives a process restart / host idle-sleep. Best-effort: the caller must treat a
+// failure here as non-fatal to checkout (the live verify path still works; only the
+// webhook safety net is weakened), and log it.
+func (s *OrderService) SaveCartSnapshot(ctx context.Context, p CartSnapshotParams) error {
+	if s.snapshotRepo == nil {
+		return fmt.Errorf("snapshot repository unavailable")
+	}
+	if p.RazorpayOrderID == "" || p.UserID == "" || len(p.Items) == 0 {
+		return fmt.Errorf("refusing to save snapshot with missing order id, user, or items")
+	}
+	snap := models.NewPaymentCartSnapshot(p.RazorpayOrderID, p.UserID)
+	snap.Flow = p.Flow
+	if err := snap.SetLineItems(p.Items); err != nil {
+		return fmt.Errorf("failed to serialize snapshot items: %w", err)
+	}
+	snap.CartTotal = p.CartTotal
+	snap.DiscountAmount = p.DiscountAmount
+	snap.CouponCode = p.CouponCode
+	snap.ShippingCharge = p.ShippingCharge
+	snap.FinalAmount = p.FinalAmount
+	snap.ExpectedAmountPaisa = p.ExpectedAmountPaisa
+	snap.CustomerFirstName = p.CustomerFirstName
+	snap.CustomerLastName = p.CustomerLastName
+	snap.CustomerPhone = p.CustomerPhone
+	snap.CustomerPhoneAlt = p.CustomerPhoneAlt
+	snap.CustomerEmail = p.CustomerEmail
+	snap.ShippingAddressID = p.ShippingAddressID
+	snap.AddressLine1 = p.AddressLine1
+	snap.AddressLine2 = p.AddressLine2
+	snap.City = p.City
+	snap.State = p.State
+	snap.PostalCode = p.PostalCode
+	if p.Country != "" {
+		snap.Country = p.Country
+	}
+	return s.snapshotRepo.Create(ctx, snap)
+}
+
+// ErrNoSnapshot is returned by RebuildOrderFromSnapshot when no snapshot exists for the
+// Razorpay order id — the paid-but-no-order case cannot be auto-recovered and needs manual
+// reconciliation (the caller logs it for the runbook).
+var ErrNoSnapshot = errors.New("no cart snapshot for razorpay order")
+
+// SnapshotRebuildOverrides carries authoritative values the webhook handler resolves from
+// Razorpay (which it can reach but the service layer cannot). They take precedence over the
+// snapshot, which can understate the charge (1CC shipping is added by the widget AFTER the
+// snapshot is written) or hold a stale default address.
+type SnapshotRebuildOverrides struct {
+	// CapturedAmountPaisa is what Razorpay actually captured. When > 0 the rebuilt order's
+	// total is reconciled to it; when it is materially LESS than the snapshot's discounted
+	// goods, the rebuild is refused (ErrCartAmountMismatch) rather than shipping more than paid.
+	CapturedAmountPaisa int
+	// ShippingAddress, when set, overrides the snapshot address (used for 1CC, where the real
+	// shipping address is the one the buyer entered in the widget, not their saved default).
+	ShippingAddress *models.OrderAddress
+}
+
+// RebuildOrderFromSnapshot rebuilds a confirmed, paid order from the durable cart snapshot
+// when a payment is captured but /verify never created the order (closed tab). It mirrors
+// CreateConfirmedOrder's assembly but sources the items/customer/address from the frozen
+// snapshot rather than the live cart — so it is correct even if the customer's cart has
+// since changed, and works after a restart. It does NOT touch the live cart. A concurrent
+// verify/webhook that already created the order is handled idempotently via the unique
+// index (ErrDuplicateOrder → reuse). The caller runs finalizeFulfillment afterwards.
+func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID, paymentID string, ov SnapshotRebuildOverrides) (*models.Order, error) {
+	if s.orderRepo == nil || s.snapshotRepo == nil {
+		return nil, fmt.Errorf("order service not fully initialized for snapshot rebuild")
+	}
+	snap, err := s.snapshotRepo.GetByRazorpayOrderID(ctx, rzpOrderID)
+	if err != nil {
+		return nil, err
+	}
+	if snap == nil {
+		return nil, ErrNoSnapshot
+	}
+	lines := snap.LineItems()
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("cart snapshot %s has no line items", snap.ID)
+	}
+
+	// Normalized customer + address from the frozen snapshot (reuse the PK-collision retry).
+	customer := models.NewOrderCustomer(snap.CustomerFirstName, snap.CustomerLastName, snap.CustomerPhone, snap.CustomerPhoneAlt, snap.CustomerEmail)
+	if err := s.createOrderCustomerWithRetry(ctx, customer); err != nil {
+		return nil, fmt.Errorf("failed to create order customer from snapshot: %w", err)
+	}
+	// Reconcile the order total to what Razorpay actually captured, when the caller resolved it.
+	// The snapshot's FinalAmount can understate the charge — 1CC shipping is added by the widget
+	// AFTER the snapshot is written — so trusting it would under-record the order. We also refuse
+	// the unsafe direction: if the captured amount is materially LESS than the discounted goods
+	// in the snapshot, confirming would ship more than was paid (cart-swap-like), so bail out to
+	// manual reconciliation rather than rebuild.
+	discountedGoods := utils.ApplyDiscount(snap.CartTotal, snap.DiscountAmount)
+	totalAmount := snap.FinalAmount
+	shippingCharge := snap.ShippingCharge
+	amountPaisa := snap.ExpectedAmountPaisa
+	if ov.CapturedAmountPaisa > 0 {
+		const tolerancePaisa = 100 // ₹1 for rounding differences
+		goodsFloorPaisa := utils.RupeesToPaisa(discountedGoods)
+		if ov.CapturedAmountPaisa+tolerancePaisa < goodsFloorPaisa {
+			s.logger.Error("Snapshot rebuild: captured amount is less than cart goods - refusing",
+				zap.String("razorpay_order_id", snap.RazorpayOrderID),
+				zap.Int("captured_paisa", ov.CapturedAmountPaisa),
+				zap.Int("goods_floor_paisa", goodsFloorPaisa))
+			return nil, fmt.Errorf("%w: captured %d paisa vs goods %d paisa", ErrCartAmountMismatch, ov.CapturedAmountPaisa, goodsFloorPaisa)
+		}
+		amountPaisa = ov.CapturedAmountPaisa
+		totalAmount = PaisaToRupees(ov.CapturedAmountPaisa)
+		shippingCharge = utils.RoundToTwoDecimals(totalAmount - discountedGoods)
+		if shippingCharge < 0 {
+			shippingCharge = 0
+		}
+	}
+
+	country := snap.Country
+	if country == "" {
+		country = "India"
+	}
+	address := models.NewOrderAddress(snap.AddressLine1, snap.AddressLine2, snap.City, snap.State, snap.PostalCode, country)
+	if ov.ShippingAddress != nil {
+		address = ov.ShippingAddress
+	}
+	if err := s.createOrderAddressWithRetry(ctx, address); err != nil {
+		return nil, fmt.Errorf("failed to create order address from snapshot: %w", err)
+	}
+
+	order := models.NewOrder(snap.UserID, customer.ID, address.ID, totalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
+	order.RazorpayOrderID = snap.RazorpayOrderID
+	order.RazorpayPaymentID = paymentID
+	order.RazorpayAmountPaisa = amountPaisa
+	order.FulfillmentStatus = models.FulfillmentPendingShipment
+	order.ShippingCarrier = "Delhivery"
+	order.ShippingMode = "Surface"
+	order.ShippingCharge = shippingCharge
+	order.CustomerFirstName = snap.CustomerFirstName
+	order.CustomerLastName = snap.CustomerLastName
+	order.CustomerPhone = snap.CustomerPhone
+	order.CustomerPhoneAlt = snap.CustomerPhoneAlt
+	if snap.CouponCode != "" {
+		order.CouponCode = snap.CouponCode
+		order.DiscountAmount = snap.DiscountAmount
+	}
+	if shippingCharge > 0 {
+		order.Notes = fmt.Sprintf("Shipping: %.2f", shippingCharge)
+	}
+
+	items := make([]models.OrderItem, 0, len(lines))
+	for _, li := range lines {
+		items = append(items, *models.NewOrderItem(order.ID, li.ProductID, li.Quantity, li.UnitPrice))
+	}
+
+	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+		if errors.Is(err, ErrDuplicateOrder) {
+			// A concurrent verify/webhook already created the order — reuse it (idempotent).
+			existing, lookupErr := s.orderRepo.GetOrderByRazorpayOrderID(ctx, snap.RazorpayOrderID)
+			if lookupErr == nil && existing != nil {
+				_ = s.snapshotRepo.MarkConsumed(ctx, snap.ID, paymentID)
+				return existing, nil
+			}
+		}
+		return nil, err
+	}
+
+	if merr := s.snapshotRepo.MarkConsumed(ctx, snap.ID, paymentID); merr != nil {
+		s.logger.Warn("Order rebuilt from snapshot but failed to mark snapshot consumed",
+			zap.String("order_id", order.ID), zap.String("snapshot_id", snap.ID), zap.Error(merr))
+	}
+	s.logger.Info("Rebuilt confirmed order from cart snapshot (webhook recovery)",
+		zap.String("order_id", order.ID),
+		zap.String("razorpay_order_id", snap.RazorpayOrderID),
+		zap.Int("item_count", len(items)))
 	return order, nil
 }
 

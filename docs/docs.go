@@ -6233,11 +6233,6 @@ const docTemplate = `{
                     "type": "integer",
                     "maximum": 1000,
                     "minimum": 1
-                },
-                "unit_price": {
-                    "description": "Optional, will be fetched from product if not provided",
-                    "type": "number",
-                    "minimum": 0
                 }
             }
         },

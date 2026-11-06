@@ -75,6 +75,20 @@ func (r *ProfileRepository) UpdateProfile(ctx context.Context, profile *models.P
 	return nil
 }
 
+// SoftDeleteByUserID soft-deletes the profile belonging to a user (#37 account deletion).
+// Returns nil if the user has no profile (nothing to delete).
+func (r *ProfileRepository) SoftDeleteByUserID(ctx context.Context, userID, deletedBy string) error {
+	profile, err := r.GetByUserID(ctx, userID)
+	if err != nil {
+		// No profile is not an error for cleanup purposes.
+		return nil
+	}
+	if err := r.dbManager.SoftDelete(ctx, profile.GetID(), profile, deletedBy); err != nil {
+		return fmt.Errorf("failed to soft delete profile: %w", err)
+	}
+	return nil
+}
+
 // ExistsByUserID checks if a profile exists for a user
 func (r *ProfileRepository) ExistsByUserID(ctx context.Context, userID string) (bool, error) {
 	log.Printf("Checking if profile exists for user: %s", userID)

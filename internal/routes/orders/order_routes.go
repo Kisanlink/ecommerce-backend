@@ -12,7 +12,7 @@ import (
 // RegisterOrderRoutes registers user order routes (authenticated users)
 // Admin order routes are registered separately via admin.RegisterAdminOrderRoutes
 func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, logger *zap.Logger) {
-	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, serviceManager.UserService, logger)
+	orderHandler := handlers.NewOrderHandler(serviceManager.OrderService, services.NewPaymentService(logger), serviceManager.UserService, logger)
 
 	// Protected order routes (requires authentication)
 	orders := r.Group("/orders")
@@ -24,10 +24,6 @@ func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.Repositor
 		orders.GET("/:id/status", orderHandler.GetOrderStatus)     // Get order status
 		orders.GET("/:id/tracking", orderHandler.GetOrderTracking) // Get order tracking
 	}
-
-	// Debug endpoint without authentication
-	debug := r.Group("/debug")
-	{
-		debug.GET("/order/:id", orderHandler.GetOrderDetailsDebug) // Debug order details
-	}
+	// SECURITY (#6): the unauthenticated /debug/order/:id endpoint, which returned order PII
+	// (user_id, shipping address, waybill, total) for any guessable order ID, has been removed.
 }
