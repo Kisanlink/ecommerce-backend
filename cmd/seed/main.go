@@ -232,8 +232,14 @@ func seedProducts(ctx context.Context, database *gorm.DB) error {
 		},
 	}
 
+	// The cart and checkout path still validate against the DEPRECATED Product.Stock field
+	// (the new Inventory model is seeded separately in seedInventory and is what /products
+	// reports as available_stock). Keep the two in sync here, using the same levels as
+	// seedInventory, so seeded products can actually be added to the cart locally.
+	stockLevels := []int{150, 200, 100, 180, 160, 120, 140}
+
 	// Create products if they don't exist
-	for _, productData := range products {
+	for i, productData := range products {
 		var existingProduct models.Product
 		result := database.WithContext(ctx).Where("id = ?", productData.ID).First(&existingProduct)
 
@@ -261,6 +267,9 @@ func seedProducts(ctx context.Context, database *gorm.DB) error {
 			Rating:          4.5, // Default rating
 			IsActive:        true,
 		}
+		// Populate the deprecated stock fields the cart still reads (see note above).
+		product.Stock = stockLevels[i%len(stockLevels)]
+		product.StockStatus = "In Stock"
 
 		if err := database.WithContext(ctx).Create(product).Error; err != nil {
 			return fmt.Errorf("failed to create product %s: %w", productData.Name, err)
