@@ -189,7 +189,7 @@ RAZORPAY_WEBHOOK_SECRET=local_webhook_secret
 # ---------- Firebase (from A3) ----------
 FIREBASE_PROJECT_ID=[your firebase project id]
 FIREBASE_SERVICE_ACCOUNT_PATH=firebase_service_account.json
-FIREBASE_AUTH_EMULATOR_HOST=localhost:9099
+FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099   # use 127.0.0.1, NOT localhost (IPv6 ::1 breaks it)
 
 # ---------- WhatsApp: leave everything unset → no real messages ----------
 
@@ -401,7 +401,7 @@ from your live webhooks and changes nothing in production.)
 | `create-order` returns **503** "could not confirm delivery" | The Delhivery mock (Terminal 3) isn't running, or `DELHIVERY_BASE_URL` in `.env.local` doesn't point at it (`http://localhost:4100`). Start the mock and confirm it logs a `serviceability … -> serviceable` line when you retry. (On real staging: check the token/URL and use a serviceable pincode.) |
 | `create-order` returns **503** "could not start checkout" | The snapshot couldn't be saved (DB issue). Check Postgres is up and the `payment_cart_snapshots` table exists (it auto-creates on boot). |
 | Any authed call returns **401** | Token missing/expired, or the emulator isn't running, or its `--project` id doesn't match `FIREBASE_PROJECT_ID`. Re-mint the token (D1) and retry. |
-| Token mint script errors | The Auth emulator (Terminal 2) isn't running on `localhost:9099`. |
+| Token mint script: `ECONNREFUSED ::1:9099` | Node resolved `localhost` to IPv6 but the emulator is IPv4-only. The script now uses `127.0.0.1`; if you set `FIREBASE_AUTH_EMULATOR_HOST` yourself, use `127.0.0.1:9099`, not `localhost:9099`. Also confirm the Auth emulator (Terminal 2) is actually running. |
 | Webhook simulator returns **400** "Invalid webhook" | The `RAZORPAY_WEBHOOK_SECRET` you ran the script with doesn't match the one the backend started with. Make them identical. |
 | Cart "product not found" | Run the seed (B3), or copy a real id from `GET /api/v1/products`. |
 

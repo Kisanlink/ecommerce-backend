@@ -16,11 +16,13 @@
  *   FIREBASE_PROJECT_ID=<same project id the emulator + backend use> \
  *     node scripts/local/mint-emulator-token.mjs [email] [password]
  *
- *   FIREBASE_AUTH_EMULATOR_HOST   default localhost:9099
+ *   FIREBASE_AUTH_EMULATOR_HOST   default 127.0.0.1:9099
  *   email                         default tester@local.test
  *   password                      default Test123!
  */
-const host = process.env.FIREBASE_AUTH_EMULATOR_HOST || 'localhost:9099';
+// Use 127.0.0.1, not "localhost": Node 18+ resolves "localhost" to IPv6 ::1 first, but the
+// emulator binds IPv4 only, so "localhost" gives ECONNREFUSED ::1:9099. Normalize either way.
+const host = (process.env.FIREBASE_AUTH_EMULATOR_HOST || '127.0.0.1:9099').replace('localhost', '127.0.0.1');
 const project = process.env.FIREBASE_PROJECT_ID;
 const email = process.argv[2] || 'tester@local.test';
 const password = process.argv[3] || 'Test123!';
