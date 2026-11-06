@@ -344,14 +344,26 @@ Do these in order, using the "Try it out" button on each:
 
 1. **GET `/api/v1/users/profile`** → in the response copy your internal **`id`** (looks like
    `USER...`). You need it for the next step.
-2. **POST `/api/v1/users/{userId}/addresses`** → put your `id` in `userId`, and in the body
-   give a real address with a **serviceable 6-digit pincode** (e.g. city `Hyderabad`, state
-   `Telangana`, `postal_code` `500081`, country `India`, a phone). Copy the new address's `id`.
-3. **POST `/api/v1/cart/items`** → body `{ "product_id": "<a product id>", "quantity": 1 }`.
-   Get a product id from **GET `/api/v1/products`**.
+2. **Create a shipping address** (one-time per user). There is **no address API** — the
+   address CRUD routes are not implemented (they're commented out in `user_routes.go`), so you
+   won't find them in Swagger. In the live app, Magic Checkout collects the address through the
+   Razorpay widget; the standard `create-order` instead needs a `shipping_address_id` that
+   already exists. For local testing, insert one directly, putting **your** internal `id` from
+   step 1 in `user_id`:
+   ```bash
+   docker exec ecommerce-postgres psql -U postgres -d DemoDB -c \
+   "INSERT INTO addresses (id, created_at, updated_at, user_id, type, first_name, last_name, address_line1, city, state, postal_code, country, phone, is_default) \
+    VALUES ('ADDRLOCALTEST01', now(), now(), 'PASTE_YOUR_USER_ID', 'home', 'Test', 'User', '123 Test Street', 'Hyderabad', 'Telangana', '500081', 'India', '9999999999', true);"
+   ```
+   Your `shipping_address_id` is then `ADDRLOCALTEST01`. The pincode `500081` is serviceable via
+   the Delhivery mock. *(The address must belong to your user — `create-order` checks
+   `user_id` ownership and returns `Invalid shipping_address_id` otherwise.)*
+3. **POST `/api/v1/cart/items`** → body `{ "product_id": "PROD00000005", "quantity": 1 }`.
+   Get a product id from **GET `/api/v1/products`**. (If this returns *insufficient stock*,
+   re-seed — see the note in B3 / troubleshooting.)
 4. **POST `/api/v1/payments/create-order`** → body:
    ```json
-   { "first_name": "Test", "mobile": "9999999999", "shipping_address_id": "<address id>" }
+   { "first_name": "Test", "mobile": "9999999999", "shipping_address_id": "ADDRLOCALTEST01" }
    ```
    The response has an **`order_id`** like `order_...`. A payment is now ready — and a recovery
    **snapshot row has been saved** for it.
@@ -415,6 +427,7 @@ from your live webhooks and changes nothing in production.)
 | Token mint script: `ECONNREFUSED ::1:9099` | Node resolved `localhost` to IPv6 but the emulator is IPv4-only. The script now uses `127.0.0.1`; if you set `FIREBASE_AUTH_EMULATOR_HOST` yourself, use `127.0.0.1:9099`, not `localhost:9099`. Also confirm the Auth emulator (Terminal 2) is actually running. |
 | Webhook simulator returns **400** "Invalid webhook" | The `RAZORPAY_WEBHOOK_SECRET` you ran the script with doesn't match the one the backend started with. Make them identical. |
 | Cart "product not found" | Run the seed (B3), or copy a real id from `GET /api/v1/products`. |
+| No address endpoint in Swagger / `create-order` says `Invalid shipping_address_id` | There is no address API (routes are commented out). Insert an address row for your user and use its id — see D2 step 2. The row's `user_id` must equal your internal `id` from `GET /users/profile`. |
 
 ---
 
