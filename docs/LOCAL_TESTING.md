@@ -210,11 +210,21 @@ GIN_MODE=debug
 
 ### B2. Start the database + cache (Terminal 1)
 
+Start **only the infrastructure** — Postgres, Redis, DynamoDB. Do **not** start the whole
+stack: `docker-compose up -d` on its own also launches a containerised `ecommerce-backend` and
+`nginx` that grab port **8080**, and then the backend you run with `go run` (Part C) can't bind
+it. Name the three services explicitly:
+
 ```bash
 cd ecommerce-backend
-docker-compose up -d
-docker-compose ps        # wait until all show "healthy"
+docker-compose up -d postgres redis dynamodb
+docker-compose ps        # postgres and redis should show "healthy"
 ```
+
+> Already ran a bare `docker-compose up -d` and have the backend/nginx containers running? Free
+> the port with `docker-compose stop ecommerce-backend nginx` (your DB/Redis/Dynamo keep
+> running). `dynamodb` showing "unhealthy" is normal — it has no health check and isn't used by
+> this flow.
 
 ### B3. Put some products in the local database
 
@@ -249,8 +259,10 @@ Open **four** terminals.
 **Terminal 1 — infrastructure** (if not already up from B2):
 ```bash
 cd ecommerce-backend
-docker-compose up -d
+docker-compose up -d postgres redis dynamodb
 ```
+*(Only these three — not a bare `docker-compose up -d`, which would also start a backend
+container on port 8080 and block Terminal 4.)*
 
 **Terminal 2 — Firebase Auth emulator** (use your real project id from A3):
 ```bash
@@ -383,6 +395,8 @@ from your live webhooks and changes nothing in production.)
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| Backend won't start — **port 8080 already in use** / bind error | A containerised backend is holding it. Run `docker-compose stop ecommerce-backend nginx`, then start the backend again. Start infra with `docker-compose up -d postgres redis dynamodb`, never a bare `docker-compose up -d`. |
+| Seed fails with `SSL is not enabled on the server` | You ran `go run ./cmd/seed` without the DB overrides. Use `DB_POSTGRES_PORT=5555 DB_POSTGRES_SSLMODE=disable go run ./cmd/seed` (B3). |
 | Log shows a `neon.tech` DB host | `.env.local` didn't override. Launch via the Part C script (don't just `go run`), and confirm the printed `DB -> localhost:5555` line. |
 | `create-order` returns **503** "could not confirm delivery" | The Delhivery mock (Terminal 3) isn't running, or `DELHIVERY_BASE_URL` in `.env.local` doesn't point at it (`http://localhost:4100`). Start the mock and confirm it logs a `serviceability … -> serviceable` line when you retry. (On real staging: check the token/URL and use a serviceable pincode.) |
 | `create-order` returns **503** "could not start checkout" | The snapshot couldn't be saved (DB issue). Check Postgres is up and the `payment_cart_snapshots` table exists (it auto-creates on boot). |
