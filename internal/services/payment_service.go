@@ -67,7 +67,12 @@ type RazorpayOrder struct {
 	CODFee         int                      `json:"cod_fee,omitempty"`
 	ShippingFee    int                      `json:"shipping_fee,omitempty"`
 	LineItemsTotal int                      `json:"line_items_total,omitempty"`
-	TaxDetails     map[string]interface{}   `json:"tax_details,omitempty"`
+	// TaxDetails is accepted as raw JSON because Razorpay Magic Checkout returns it as an
+	// array (e.g. []), while other responses may send an object. A fixed map/object type made
+	// GetOrder fail to decode ("cannot unmarshal array into ... map[string]interface {}"),
+	// which cascaded into a 503 on /verify and a paid-but-unfulfilled order. We never read this
+	// field, so RawMessage captures whatever shape arrives without ever failing the decode.
+	TaxDetails     json.RawMessage          `json:"tax_details,omitempty"`
 	// Customer details from Magic Checkout
 	CustomerDetails *CustomerDetails `json:"customer_details,omitempty"`
 }
