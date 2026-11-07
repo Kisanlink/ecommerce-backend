@@ -1546,6 +1546,20 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 	}
 
 	order := models.NewOrder(snap.UserID, customer.ID, address.ID, totalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
+	// Mirror the resolved address into the legacy ShippingAddr text column. The normal verify
+	// path sets this (order_service.go GenerateAndAttachInvoice / payment_handler.go), but the
+	// snapshot rebuild only set the normalized ShippingAddressID — leaving the text column empty.
+	// finalizeFulfillment's placeholder guard reads that text column, so a fully valid rebuilt
+	// order was wrongly flagged needs_manual_fulfillment and never shipped. Keep the two in sync
+	// using the SAME address used for ShippingAddressID (same format as the other call sites).
+	{
+		addrLine2 := ""
+		if address.AddressLine2 != "" {
+			addrLine2 = ", " + address.AddressLine2
+		}
+		order.ShippingAddr = fmt.Sprintf("%s%s, %s, %s %s, %s",
+			address.AddressLine1, addrLine2, address.City, address.State, address.PostalCode, address.Country)
+	}
 	order.RazorpayOrderID = snap.RazorpayOrderID
 	order.RazorpayPaymentID = paymentID
 	order.RazorpayAmountPaisa = amountPaisa

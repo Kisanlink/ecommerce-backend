@@ -2257,11 +2257,21 @@ func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string
 	// Checkout / saved-address data, so guard again here. A bad address becomes an explicit
 	// needs_manual_fulfillment (surfaced in the recovery queue) instead of a cryptic courier error
 	// or a parcel sent to "Unknown / 000000".
+	// A populated normalized order_addresses row (OADR prefix) is the authoritative shipping
+	// destination: it is exactly what CreateShipment resolves and then re-guards via
+	// isPlaceholderDestination on the resolved pincode/city/state (delivery_service.go). The legacy
+	// ShippingAddr text column can legitimately be empty on some creation paths (notably the webhook
+	// snapshot rebuild, which sets only ShippingAddressID), so only apply this text-based early-out
+	// when there is NO normalized address to resolve. This keeps the guard consistent with how the
+	// shipment actually resolves the destination and stops a valid order from being wrongly flagged
+	// needs_manual_fulfillment. A genuinely placeholder normalized address is still caught at the
+	// CreateShipment choke point, so nothing bad can be shipped.
 	addrLower := strings.ToLower(strings.TrimSpace(orderWithItems.ShippingAddr))
-	if addrLower == "" ||
+	hasNormalizedAddr := strings.HasPrefix(orderWithItems.ShippingAddressID, "OADR")
+	if !hasNormalizedAddr && (addrLower == "" ||
 		strings.Contains(addrLower, "address not provided") ||
 		strings.Contains(addrLower, "unknown") ||
-		strings.Contains(addrLower, "000000") {
+		strings.Contains(addrLower, "000000")) {
 		h.logger.Error("finalizeFulfillment: shipping address is placeholder/invalid - needs manual fulfillment",
 			zap.String("order_id", orderID), zap.String("shipping_address", orderWithItems.ShippingAddr))
 		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "invalid or placeholder shipping address")
