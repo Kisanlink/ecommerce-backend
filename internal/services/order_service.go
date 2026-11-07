@@ -1475,6 +1475,14 @@ type SnapshotRebuildOverrides struct {
 	// ShippingAddress, when set, overrides the snapshot address (used for 1CC, where the real
 	// shipping address is the one the buyer entered in the widget, not their saved default).
 	ShippingAddress *models.OrderAddress
+	// CustomerName / CustomerPhone, when set, override the snapshot's (often empty) customer
+	// identity. For 1CC the buyer's name + contact arrive in the widget AFTER the snapshot is
+	// written, so the snapshot's customer fields are typically blank; they are only present on
+	// the Razorpay order's customer_details at payment time. The webhook resolves them there so
+	// the rebuilt order carries a shippable customer — Delhivery requires a non-empty name and
+	// phone. Empty strings leave the snapshot value in place.
+	CustomerName  string
+	CustomerPhone string
 }
 
 // RebuildOrderFromSnapshot rebuilds a confirmed, paid order from the durable cart snapshot
@@ -1500,8 +1508,26 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 		return nil, fmt.Errorf("cart snapshot %s has no line items", snap.ID)
 	}
 
+	// Resolve the customer identity. Prefer the webhook-provided override (for 1CC, resolved from
+	// the Razorpay order's customer_details at payment time) over the snapshot, whose customer
+	// fields are usually blank for Magic Checkout — the snapshot is frozen before the buyer enters
+	// their name/contact in the widget. Delhivery rejects a shipment with an empty name or phone,
+	// so without this the rebuilt order shipped-failed on "missing customer name/phone on order".
+	custFirst, custLast := snap.CustomerFirstName, snap.CustomerLastName
+	custPhone := snap.CustomerPhone
+	if n := strings.TrimSpace(ov.CustomerName); n != "" {
+		if i := strings.IndexByte(n, ' '); i > 0 {
+			custFirst, custLast = n[:i], strings.TrimSpace(n[i+1:])
+		} else {
+			custFirst, custLast = n, ""
+		}
+	}
+	if p := strings.TrimSpace(ov.CustomerPhone); p != "" {
+		custPhone = p
+	}
+
 	// Normalized customer + address from the frozen snapshot (reuse the PK-collision retry).
-	customer := models.NewOrderCustomer(snap.CustomerFirstName, snap.CustomerLastName, snap.CustomerPhone, snap.CustomerPhoneAlt, snap.CustomerEmail)
+	customer := models.NewOrderCustomer(custFirst, custLast, custPhone, snap.CustomerPhoneAlt, snap.CustomerEmail)
 	if err := s.createOrderCustomerWithRetry(ctx, customer); err != nil {
 		return nil, fmt.Errorf("failed to create order customer from snapshot: %w", err)
 	}
@@ -1567,9 +1593,9 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 	order.ShippingCarrier = "Delhivery"
 	order.ShippingMode = "Surface"
 	order.ShippingCharge = shippingCharge
-	order.CustomerFirstName = snap.CustomerFirstName
-	order.CustomerLastName = snap.CustomerLastName
-	order.CustomerPhone = snap.CustomerPhone
+	order.CustomerFirstName = custFirst
+	order.CustomerLastName = custLast
+	order.CustomerPhone = custPhone
 	order.CustomerPhoneAlt = snap.CustomerPhoneAlt
 	if snap.CouponCode != "" {
 		order.CouponCode = snap.CouponCode
