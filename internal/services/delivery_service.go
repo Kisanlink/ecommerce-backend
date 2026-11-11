@@ -27,6 +27,7 @@ type DeliveryServiceInterface interface {
 	CheckServiceability(ctx context.Context, pincode string) (bool, error)
 	CreateShipment(ctx context.Context, order *models.Order, orderItems []models.OrderItem) (*ShipmentResult, error)
 	GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error)
+	SyncDeliveryStatus(ctx context.Context, orderID string) (*TrackingInfo, error)
 	GetShippingCharges(ctx context.Context, destinationPin string, weightGrams int, codAmount float64) (float64, error)
 }
 
@@ -326,7 +327,10 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 		return nil, fmt.Errorf("failed to load cart: %w", err)
 	}
 
-	if cart.TotalItems <= 0 {
+	// GetUserCart can return (nil, nil) when the user has no cart yet; guard before
+	// dereferencing it (#24) so an estimate for an empty cart returns a clean error
+	// instead of panicking.
+	if cart == nil || cart.TotalItems <= 0 {
 		return nil, fmt.Errorf("cart is empty; add items before estimating shipping")
 	}
 
@@ -412,6 +416,30 @@ func (s *DeliveryService) Estimate(ctx context.Context, userID string, req reque
 	}
 
 	return result, nil
+}
+
+// isPlaceholderDestination reports whether a resolved shipping destination is a
+// placeholder/invalid address that must never be shipped to (#8/#6). It checks the
+// structured destination (pincode/city/state) plus the full address string for the
+// placeholder markers used across the codebase ("Unknown", "000000", "not provided").
+func isPlaceholderDestination(pincode, city, state, addressString string) bool {
+	p := strings.TrimSpace(pincode)
+	if p == "" || p == "000000" {
+		return true
+	}
+	if c := strings.TrimSpace(city); c == "" || strings.EqualFold(c, "Unknown") {
+		return true
+	}
+	if st := strings.TrimSpace(state); st == "" || strings.EqualFold(st, "Unknown") {
+		return true
+	}
+	a := strings.ToLower(addressString)
+	if strings.Contains(a, "address not provided") ||
+		strings.Contains(a, "unknown") ||
+		strings.Contains(a, "000000") {
+		return true
+	}
+	return false
 }
 
 // CreateShipment creates a Delhivery shipment after successful payment
@@ -535,6 +563,22 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		}
 	}
 
+	// SECURITY (#8/#6): refuse to ship to a placeholder/invalid address, at the single choke
+	// point every shipment path goes through (verify/webhook via finalizeFulfillment AND the
+	// admin manual retry via CreateOrderShipment). This guards the resolved destination, not
+	// just the order's address string, so a "Unknown / 000000" parcel can never be dispatched.
+	if isPlaceholderDestination(pincode, destCity, destState, shippingAddressString) {
+		s.logger.Error("CreateShipment: refusing shipment to placeholder/invalid address",
+			zap.String("order_id", order.ID),
+			zap.String("pincode", pincode),
+			zap.String("city", destCity),
+			zap.String("state", destState))
+		return &ShipmentResult{
+			Success: false,
+			Message: "shipping address is incomplete or invalid; cannot create shipment",
+		}, fmt.Errorf("placeholder or invalid shipping address for order %s", order.ID)
+	}
+
 	// Fetch customer data from order_customers table (PRIORITY 1)
 	// Falls back to legacy order-level fields if not available
 	// IMPORTANT: Only lookup if CustomerID has OCUS prefix (order_customers table)
@@ -646,7 +690,10 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 	// Create shipment request
 	shipmentReq := requests.NewShipmentRequest(s.config.WarehouseName)
 
-	uniqueOrderID := fmt.Sprintf("%s_%d", order.ID, time.Now().Unix())
+	// #9 dedupe: use a DETERMINISTIC courier reference (the order ID) rather than appending a
+	// timestamp. A stable reference lets Delhivery reject a duplicate manifest for the same order,
+	// a second line of defense against double shipments on top of the atomic shipment claim.
+	uniqueOrderID := order.ID
 
 	// Use the address string we built (from OrderAddress, Address, or parsed string)
 	// Include phone number subtly in the address - not highlighted, just there if needed
@@ -932,6 +979,63 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 }
 
 // GetTrackingInfo retrieves real-time tracking information for a waybill from Delhivery API
+// SyncDeliveryStatus pulls the latest courier status for an order's shipment and reflects it on
+// the order: it refreshes DelhiveryStatus and advances Order.Status to delivered once the courier
+// reports delivery. Safe to call repeatedly (admin action or scheduled job). No-op (returns an
+// error) for orders without a waybill.
+func (s *DeliveryService) SyncDeliveryStatus(ctx context.Context, orderID string) (*TrackingInfo, error) {
+	if s.dbManager == nil {
+		return nil, fmt.Errorf("db manager unavailable")
+	}
+
+	var order models.Order
+	if err := s.dbManager.GetByID(ctx, orderID, &order); err != nil {
+		return nil, fmt.Errorf("failed to load order %s: %w", orderID, err)
+	}
+
+	waybill := strings.TrimSpace(order.DelhiveryWaybill)
+	if waybill == "" {
+		return nil, fmt.Errorf("order %s has no shipment/waybill to track", orderID)
+	}
+
+	info, err := s.GetTrackingInfo(ctx, waybill)
+	if err != nil || info == nil {
+		return nil, fmt.Errorf("failed to get tracking info for waybill %s: %w", waybill, err)
+	}
+
+	changed := false
+	if info.Status != "" && info.Status != order.DelhiveryStatus {
+		order.DelhiveryStatus = info.Status
+		changed = true
+	}
+	// #16: advance to delivered ONLY on a true customer delivery. A plain substring match on
+	// "delivered" also matched "Undelivered" and "RTO/DTO Delivered" (parcel returned to origin),
+	// which wrongly advanced undelivered/returned orders to delivered. Require "delivered" while
+	// excluding the undelivered and return-to-origin variants.
+	normalized := strings.ToLower(strings.TrimSpace(info.Status))
+	isTrueDelivery := strings.Contains(normalized, "delivered") &&
+		!strings.Contains(normalized, "undelivered") &&
+		!strings.Contains(normalized, "rto") &&
+		!strings.Contains(normalized, "dto")
+	if isTrueDelivery && order.Status != models.OrderStatusDelivered {
+		order.Status = models.OrderStatusDelivered
+		changed = true
+	}
+
+	if changed {
+		if err := s.dbManager.Update(ctx, &order); err != nil {
+			return nil, fmt.Errorf("failed to update order %s delivery status: %w", orderID, err)
+		}
+		s.logger.Info("Synced delivery status",
+			zap.String("order_id", orderID),
+			zap.String("waybill", waybill),
+			zap.String("delhivery_status", order.DelhiveryStatus),
+			zap.String("order_status", string(order.Status)))
+	}
+
+	return info, nil
+}
+
 func (s *DeliveryService) GetTrackingInfo(ctx context.Context, waybill string) (*TrackingInfo, error) {
 	if waybill == "" {
 		return nil, fmt.Errorf("waybill cannot be empty")

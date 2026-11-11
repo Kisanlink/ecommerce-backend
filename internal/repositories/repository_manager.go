@@ -25,15 +25,22 @@ type RepositoryManager struct {
 	ImageRepository               ImageRepositoryInterface     // Image repository
 	InventoryRepository           InventoryRepositoryInterface // Inventory repository
 	CouponRepository              CouponRepositoryInterface    // Coupon repository
+	PaymentCartSnapshotRepository *PaymentCartSnapshotRepository // Cart snapshots for webhook order rebuild
 	RedisManager                  *database.RedisManager       // Redis manager for cart operations
 
 	// Database manager for accessing GORM DB instance
 	dbManager db.DBManager
+	pgManager *db.PostgresManager
 }
 
 // GetDBManager returns the database manager
 func (rm *RepositoryManager) GetDBManager() db.DBManager {
 	return rm.dbManager
+}
+
+// GetPostgresManager returns the Postgres manager for direct GORM access
+func (rm *RepositoryManager) GetPostgresManager() *db.PostgresManager {
+	return rm.pgManager
 }
 
 // NewRepositoryManager creates a new repository manager with database manager
@@ -57,8 +64,8 @@ func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager,
 
 	return &RepositoryManager{
 		UserRepository:                NewUserRepository(dbManager),
-		ProductRepository:             NewProductRepository(dbManager),
-		OrderRepository:               NewOrderRepository(dbManager),
+		ProductRepository:             NewProductRepository(dbManager, pgManager),
+		OrderRepository:               NewOrderRepository(dbManager, pgManager),
 		CartRepository:                NewCartRepository(dbManager, redisManager, logger), // Use new cart repository
 		AddressRepository:             NewAddressRepository(dbManager),
 		RecipesRepository:             recipesRepo,
@@ -69,8 +76,10 @@ func NewRepositoryManager(dbManager db.DBManager, pgManager *db.PostgresManager,
 		ImageRepository:               NewImageRepository(dbManager),          // Image repository
 		InventoryRepository:           NewInventoryRepository(dbManager),      // Inventory repository
 		CouponRepository:              NewCouponRepository(dbManager, logger), // Coupon repository
+		PaymentCartSnapshotRepository: NewPaymentCartSnapshotRepository(pgManager, logger),
 		RedisManager:                  redisManager,
 		dbManager:                     dbManager, // Store dbManager for access
+		pgManager:                     pgManager, // Store pgManager for direct GORM access
 	}
 }
 
@@ -99,12 +108,14 @@ func (rm *RepositoryManager) Close() error {
 type OrderRepository struct {
 	*base.BaseFilterableRepository[*models.Order]
 	dbManager db.DBManager
+	pgManager *db.PostgresManager // direct GORM access for atomic conditional updates
 }
 
-func NewOrderRepository(dbManager db.DBManager) *OrderRepository {
+func NewOrderRepository(dbManager db.DBManager, pgManager *db.PostgresManager) *OrderRepository {
 	repo := &OrderRepository{
 		BaseFilterableRepository: base.NewBaseFilterableRepository[*models.Order](),
 		dbManager:                dbManager,
+		pgManager:                pgManager,
 	}
 	repo.SetDBManager(dbManager)
 	return repo

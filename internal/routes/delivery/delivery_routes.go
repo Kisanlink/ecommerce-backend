@@ -32,14 +32,18 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 
 	// Initialize services and handler
 	deliveryService := services.NewDeliveryService(repoManager, logger)
-	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, serviceManager.OrderService, logger)
+	deliveryHandler := handlers.NewDeliveryHandler(deliveryService, serviceManager.OrderService, serviceManager.UserService, logger)
 
-	// Debug endpoint (no auth required) - for checking Delhivery configuration
-	// Remove this in production or add admin auth
-	r.GET("/delivery/debug/config", deliveryHandler.GetConfigurationStatus)
-	r.GET("/delivery/debug/validate-warehouse", deliveryHandler.ValidateWarehouse)
+	// Debug endpoints - now admin-gated (previously public, which leaked Delhivery config).
+	debug := r.Group("/delivery/debug")
+	debug.Use(middleware.FirebaseAuthMiddleware())
+	debug.Use(middleware.AdminGuard(repoManager))
+	{
+		debug.GET("/config", deliveryHandler.GetConfigurationStatus)
+		debug.GET("/validate-warehouse", deliveryHandler.ValidateWarehouse)
+	}
 
-	// All delivery routes require authentication
+	// Authenticated delivery routes (any signed-in user)
 	delivery := r.Group("/delivery")
 	delivery.Use(middleware.FirebaseAuthMiddleware())
 	{
@@ -52,12 +56,18 @@ func RegisterDeliveryRoutes(r *gin.RouterGroup, repoManager *repositories.Reposi
 		// Tracking by waybill (authenticated)
 		delivery.GET("/track/:waybill", deliveryHandler.GetTrackingInfo)
 
-		// Order shipment operations
-		orders := delivery.Group("/orders/:id")
-		{
-			orders.POST("/shipment", deliveryHandler.CreateOrderShipment)
-			orders.GET("/shipment", deliveryHandler.GetOrderShipment)
-		}
+		// Read shipment details for an order (authenticated)
+		delivery.GET("/orders/:id/shipment", deliveryHandler.GetOrderShipment)
+	}
+
+	// Admin-only shipment mutations: creating/retrying a shipment and syncing courier status
+	// are recovery/operations tooling and must not be callable by ordinary users.
+	adminDelivery := r.Group("/delivery/orders/:id")
+	adminDelivery.Use(middleware.FirebaseAuthMiddleware())
+	adminDelivery.Use(middleware.AdminGuard(repoManager))
+	{
+		adminDelivery.POST("/shipment", deliveryHandler.CreateOrderShipment)
+		adminDelivery.POST("/sync", deliveryHandler.SyncOrderDeliveryStatus)
 	}
 
 	logger.Info("Delivery routes registered successfully")

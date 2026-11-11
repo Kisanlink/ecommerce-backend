@@ -7,9 +7,11 @@ import (
 
 // AddToCartRequest represents the request to add an item to the cart
 type AddToCartRequest struct {
-	ProductID string  `json:"product_id" binding:"required" validate:"required,min=1"`
-	Quantity  int     `json:"quantity" binding:"required,min=1" validate:"required,min=1,max=1000"`
-	UnitPrice float64 `json:"unit_price,omitempty" validate:"omitempty,min=0"` // Optional, will be fetched from product if not provided
+	ProductID string `json:"product_id" binding:"required" validate:"required,min=1"`
+	Quantity  int    `json:"quantity" binding:"required,min=1" validate:"required,min=1,max=1000"`
+	// NOTE: the unit price is intentionally NOT accepted from the client. The cart always
+	// uses the authoritative server-side product price (CartService looks it up). A price in
+	// the request body would be a tampering vector and was never honored.
 }
 
 // UpdateCartItemRequest represents the request to update a cart item
@@ -67,9 +69,6 @@ func (r *AddToCartRequest) IsValid() error {
 	}
 	if r.Quantity > 1000 {
 		return fmt.Errorf("quantity cannot exceed 1000")
-	}
-	if r.UnitPrice < 0 {
-		return fmt.Errorf("unit price cannot be negative")
 	}
 	return nil
 }

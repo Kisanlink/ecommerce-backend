@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,19 +19,21 @@ import (
 
 // OrderHandler handles order-related HTTP requests
 type OrderHandler struct {
-	orderService services.OrderServiceInterface
-	userService  *services.UserService
-	authContext  *auth.AuthContext
-	logger       *zap.Logger
+	orderService   services.OrderServiceInterface
+	paymentService services.PaymentServiceInterface
+	userService    *services.UserService
+	authContext    *auth.AuthContext
+	logger         *zap.Logger
 }
 
 // NewOrderHandler creates a new order handler
-func NewOrderHandler(orderService services.OrderServiceInterface, userService *services.UserService, logger *zap.Logger) *OrderHandler {
+func NewOrderHandler(orderService services.OrderServiceInterface, paymentService services.PaymentServiceInterface, userService *services.UserService, logger *zap.Logger) *OrderHandler {
 	return &OrderHandler{
-		orderService: orderService,
-		userService:  userService,
-		authContext:  auth.NewAuthContext(),
-		logger:       logger,
+		orderService:   orderService,
+		paymentService: paymentService,
+		userService:    userService,
+		authContext:    auth.NewAuthContext(),
+		logger:         logger,
 	}
 }
 
@@ -571,6 +574,25 @@ func (h *OrderHandler) GetOrderDetails(c *gin.Context) {
 // @Failure 403 {object} map[string]interface{} "Access denied"
 // @Failure 500 {object} map[string]interface{} "Internal server error"
 // @Router /orders/{id}/status [get]
+// callerOwnsOrder reports whether the authenticated caller owns an order with the given
+// owner id. Order.UserID holds the internal USER… id, so a Firebase-authenticated caller
+// (whose GetAuthenticatedUserID is a Firebase UID) must be mapped to the internal id before
+// comparison (#26) — otherwise legitimate owners are wrongly denied with 403.
+func (h *OrderHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return false
+	}
+	if ownerUserID == callerID {
+		return true
+	}
+	if !strings.HasPrefix(callerID, "USER") && h.userService != nil {
+		if internalID := h.mapFirebaseUIDToInternalUserID(c, callerID); internalID != "" && internalID == ownerUserID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -590,8 +612,8 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 		return
 	}
 
-	// Verify the order belongs to the authenticated user
-	if order.UserID != userID {
+	// Verify the order belongs to the authenticated user (resolves Firebase UID → internal id)
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
@@ -634,8 +656,8 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 		return
 	}
 
-	// Verify the order belongs to the authenticated user
-	if order.UserID != userID {
+	// Verify the order belongs to the authenticated user (resolves Firebase UID → internal id)
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
@@ -644,50 +666,9 @@ func (h *OrderHandler) GetOrderTracking(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// GetOrderDetailsDebug is a debug endpoint to retrieve order details without authentication
-// GET /api/v1/debug/order/:id
-// @Summary Debug order details (no auth)
-// @Description Get order details without authentication - for debugging only
-// @Tags Debug
-// @Accept json
-// @Produce json
-// @Param id path string true "Order ID"
-// @Success 200 {object} map[string]interface{} "Order details retrieved successfully (debug endpoint)"
-// @Failure 400 {object} map[string]interface{} "Order ID is required"
-// @Failure 500 {object} map[string]interface{} "Internal server error"
-// @Router /debug/order/{id} [get]
-func (h *OrderHandler) GetOrderDetailsDebug(c *gin.Context) {
-	orderID := c.Param("id")
-
-	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
-		return
-	}
-
-	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
-		return
-	}
-
-	response := responses.NewGetOrderDetailsDebugResponse(order)
-	// Add debug note to the response
-	debugResponse := gin.H{
-		"order_id":         response.OrderID,
-		"user_id":          response.UserID,
-		"status":           response.Status,
-		"payment_status":   response.PaymentStatus,
-		"total_amount":     response.TotalAmount,
-		"shipping_address": response.ShippingAddress,
-		"waybill":          response.Waybill,
-		"tracking_url":     response.TrackingURL,
-		"created_at":       response.CreatedAt,
-		"updated_at":       response.UpdatedAt,
-		"debug_note":       "This is a debug endpoint without authentication",
-	}
-
-	c.JSON(http.StatusOK, debugResponse)
-}
+// GetOrderDetailsDebug (removed, #6): the unauthenticated order-details debug endpoint leaked
+// order PII (user_id, shipping address, waybill, total) for any guessable order ID. Authenticated,
+// ownership-checked order reads are available via GetOrderDetails.
 
 // ==========================
 // Admin Order Management
@@ -743,6 +724,39 @@ func (h *OrderHandler) GetAllOrders(c *gin.Context) {
 	})
 }
 
+// GetUnshippedOrders returns paid orders that have no shipment yet (recovery view).
+// GET /api/v1/admin/orders/unshipped
+func (h *OrderHandler) GetUnshippedOrders(c *gin.Context) {
+	page := 1
+	limit := 50
+	if v := c.Query("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := c.Query("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 && l <= 200 {
+			limit = l
+		}
+	}
+
+	orders, total, err := h.orderService.ListUnfulfilledOrders(c.Request.Context(), page, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list unshipped orders"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"orders": orders,
+		"pagination": gin.H{
+			"page":     page,
+			"limit":    limit,
+			"total":    total,
+			"has_more": page*limit < total,
+		},
+	})
+}
+
 // GetOrderDetailsAdmin returns order details for admin without ownership checks
 // GET /api/v1/admin/orders/:id
 func (h *OrderHandler) GetOrderDetailsAdmin(c *gin.Context) {
@@ -775,7 +789,14 @@ func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
 		return
 	}
 	if err := h.orderService.UpdateOrderStatus(c.Request.Context(), orderID, models.OrderStatus(req.Status)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
+		switch {
+		case errors.Is(err, services.ErrUnknownOrderStatus):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown order status"})
+		case errors.Is(err, services.ErrInvalidStatusTransition):
+			c.JSON(http.StatusConflict, gin.H{"error": "Illegal order status transition"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order status"})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Order status updated"})
@@ -797,7 +818,37 @@ func (h *OrderHandler) UpdatePayment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "payment_status is required"})
 		return
 	}
+
+	// SECURITY (#21): marking a payment paid/successful by hand must correspond to a real
+	// Razorpay capture — otherwise an admin (or a compromised admin token) could flip an
+	// unpaid order to paid and trigger fulfillment. Require a payment_id that Razorpay
+	// reports as "captured" (reusing the #12 capture gate). Other payment states
+	// (failed/refunded/pending) carry no such risk and are not gated here.
+	if req.PaymentStatus == "paid" || req.PaymentStatus == "successful" {
+		if h.paymentService == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verification unavailable"})
+			return
+		}
+		if strings.TrimSpace(req.PaymentID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "payment_id is required to mark an order paid"})
+			return
+		}
+		rzpPayment, err := h.paymentService.GetPaymentStatus(c.Request.Context(), req.PaymentID)
+		if err != nil || rzpPayment == nil || rzpPayment.Status != "captured" {
+			h.logger.Warn("Rejecting admin mark-paid: payment not captured",
+				zap.String("order_id", orderID),
+				zap.String("payment_id", req.PaymentID),
+				zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Payment is not captured; cannot mark order as paid"})
+			return
+		}
+	}
+
 	if err := h.orderService.UpdatePaymentStatus(c.Request.Context(), orderID, req.PaymentStatus, req.PaymentID); err != nil {
+		if errors.Is(err, services.ErrInvalidPaymentStatus) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payment status"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update payment status"})
 		return
 	}

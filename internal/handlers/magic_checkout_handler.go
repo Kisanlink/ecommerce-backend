@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -13,10 +14,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// Global cache for Magic Checkout data
+// Magic Checkout cache tuning (#7). Entries are short-lived (a checkout completes
+// in minutes) and expire so stale addresses/order totals can't be reused later, and
+// the maps are hard-capped so a flood of unauthenticated callbacks cannot grow
+// memory without bound.
+const (
+	magicCheckoutCacheTTL     = 45 * time.Minute
+	magicCheckoutCacheMaxSize = 5000
+)
+
+// Global cache for Magic Checkout data (bounded, TTL-evicted — see constants above).
 var (
-	magicCheckoutAddressCache = make(map[string]map[string]interface{})
-	magicCheckoutOrderCache   = make(map[string]MagicCheckoutOrderData) // receipt/order_id -> order data
+	magicCheckoutAddressCache = make(map[string]magicAddressCacheEntry)
+	magicCheckoutOrderCache   = make(map[string]magicOrderCacheEntry)
 	magicCheckoutCacheMutex   sync.RWMutex
 )
 
@@ -28,42 +38,122 @@ type MagicCheckoutOrderData struct {
 	UserID          string  // User ID
 }
 
+type magicOrderCacheEntry struct {
+	data      MagicCheckoutOrderData
+	expiresAt time.Time
+}
+
+type magicAddressCacheEntry struct {
+	data      map[string]interface{}
+	expiresAt time.Time
+}
+
+// purgeExpiredMagicCacheLocked removes expired entries from both caches.
+// Callers must hold magicCheckoutCacheMutex for writing.
+func purgeExpiredMagicCacheLocked(now time.Time) {
+	for k, e := range magicCheckoutOrderCache {
+		if now.After(e.expiresAt) {
+			delete(magicCheckoutOrderCache, k)
+		}
+	}
+	for k, e := range magicCheckoutAddressCache {
+		if now.After(e.expiresAt) {
+			delete(magicCheckoutAddressCache, k)
+		}
+	}
+}
+
+// evictNearestExpiryOrderLocked drops the soonest-to-expire order entries until the
+// map is back under the cap. Backstop for the (pathological) case where live, unexpired
+// entries alone exceed the cap. Callers must hold the write lock.
+func evictNearestExpiryOrderLocked() {
+	for len(magicCheckoutOrderCache) > magicCheckoutCacheMaxSize {
+		var oldestKey string
+		var oldest time.Time
+		first := true
+		for k, e := range magicCheckoutOrderCache {
+			if first || e.expiresAt.Before(oldest) {
+				oldestKey, oldest, first = k, e.expiresAt, false
+			}
+		}
+		delete(magicCheckoutOrderCache, oldestKey)
+	}
+}
+
+// evictNearestExpiryAddressLocked is the address-cache counterpart. Callers hold the write lock.
+func evictNearestExpiryAddressLocked() {
+	for len(magicCheckoutAddressCache) > magicCheckoutCacheMaxSize {
+		var oldestKey string
+		var oldest time.Time
+		first := true
+		for k, e := range magicCheckoutAddressCache {
+			if first || e.expiresAt.Before(oldest) {
+				oldestKey, oldest, first = k, e.expiresAt, false
+			}
+		}
+		delete(magicCheckoutAddressCache, oldestKey)
+	}
+}
+
 // StoreMagicCheckoutOrder stores order data for later retrieval during apply-promotion
 func StoreMagicCheckoutOrder(receiptID string, razorpayOrderID string, cartTotal float64, userID string) {
 	magicCheckoutCacheMutex.Lock()
 	defer magicCheckoutCacheMutex.Unlock()
-	data := MagicCheckoutOrderData{
-		RazorpayOrderID: razorpayOrderID,
-		ReceiptID:       receiptID,
-		CartTotal:       cartTotal,
-		UserID:          userID,
+	now := time.Now()
+	purgeExpiredMagicCacheLocked(now)
+	entry := magicOrderCacheEntry{
+		data: MagicCheckoutOrderData{
+			RazorpayOrderID: razorpayOrderID,
+			ReceiptID:       receiptID,
+			CartTotal:       cartTotal,
+			UserID:          userID,
+		},
+		expiresAt: now.Add(magicCheckoutCacheTTL),
 	}
 	// Store by both receipt ID and Razorpay order ID for flexible lookup
-	magicCheckoutOrderCache[receiptID] = data
-	magicCheckoutOrderCache[razorpayOrderID] = data
+	if receiptID != "" {
+		magicCheckoutOrderCache[receiptID] = entry
+	}
+	if razorpayOrderID != "" {
+		magicCheckoutOrderCache[razorpayOrderID] = entry
+	}
+	evictNearestExpiryOrderLocked()
 }
 
-// GetMagicCheckoutOrder retrieves stored order data by receipt ID or Razorpay order ID
+// GetMagicCheckoutOrder retrieves stored order data by receipt ID or Razorpay order ID.
+// Expired entries are treated as absent.
 func GetMagicCheckoutOrder(orderID string) (MagicCheckoutOrderData, bool) {
 	magicCheckoutCacheMutex.RLock()
-	defer magicCheckoutCacheMutex.RUnlock()
-	data, exists := magicCheckoutOrderCache[orderID]
-	return data, exists
+	entry, exists := magicCheckoutOrderCache[orderID]
+	magicCheckoutCacheMutex.RUnlock()
+	if !exists || time.Now().After(entry.expiresAt) {
+		return MagicCheckoutOrderData{}, false
+	}
+	return entry.data, true
 }
 
 // StoreMagicCheckoutAddress stores address data temporarily
 func StoreMagicCheckoutAddress(razorpayOrderID string, addressData map[string]interface{}) {
 	magicCheckoutCacheMutex.Lock()
 	defer magicCheckoutCacheMutex.Unlock()
-	magicCheckoutAddressCache[razorpayOrderID] = addressData
+	now := time.Now()
+	purgeExpiredMagicCacheLocked(now)
+	magicCheckoutAddressCache[razorpayOrderID] = magicAddressCacheEntry{
+		data:      addressData,
+		expiresAt: now.Add(magicCheckoutCacheTTL),
+	}
+	evictNearestExpiryAddressLocked()
 }
 
-// GetMagicCheckoutAddress retrieves stored address data
+// GetMagicCheckoutAddress retrieves stored address data. Expired entries are treated as absent.
 func GetMagicCheckoutAddress(razorpayOrderID string) (map[string]interface{}, bool) {
 	magicCheckoutCacheMutex.RLock()
-	defer magicCheckoutCacheMutex.RUnlock()
-	data, exists := magicCheckoutAddressCache[razorpayOrderID]
-	return data, exists
+	entry, exists := magicCheckoutAddressCache[razorpayOrderID]
+	magicCheckoutCacheMutex.RUnlock()
+	if !exists || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.data, true
 }
 
 // MagicCheckoutHandler handles Magic Checkout API endpoints
@@ -98,6 +188,47 @@ func NewMagicCheckoutHandler(
 	}
 }
 
+// readAndVerifyCallback reads the raw request body once and, when the 1CC HMAC secret
+// is configured, enforces the Razorpay Magic Checkout callback signature (#7): a missing
+// or invalid X-Razorpay-Signature is rejected with 403 and ok=false. When the secret is
+// unset the check is DORMANT — the body is returned and the caller proceeds with its
+// other server-side protections (server-only discounts, bounded caches, the #1 verify-time
+// amount check). Callers must use the returned bytes (json.Unmarshal) because the gin body
+// is consumed here; ShouldBindJSON would read empty afterward.
+//
+// To confirm the exact scheme before relying on it: set RAZORPAY_MAGIC_CHECKOUT_SECRET in
+// a test environment and run one Magic Checkout checkout — a correctly-signed callback
+// passes, a wrong secret/scheme yields 403. No signature material is logged (see #27).
+func (h *MagicCheckoutHandler) readAndVerifyCallback(c *gin.Context) ([]byte, bool) {
+	raw, err := c.GetRawData()
+	if err != nil {
+		h.logger.Error("Magic Checkout: failed to read callback body",
+			zap.String("path", c.FullPath()), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"code": "INVALID_REQUEST", "description": "Invalid request body"},
+		})
+		return nil, false
+	}
+
+	signature := c.GetHeader("X-Razorpay-Signature")
+	configured, valid := h.paymentService.VerifyMagicCheckoutSignature(raw, signature)
+	if configured && !valid {
+		h.logger.Warn("Magic Checkout: rejecting callback with invalid/missing signature",
+			zap.String("path", c.FullPath()),
+			zap.Bool("signature_present", signature != ""))
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{"code": "INVALID_SIGNATURE", "description": "Signature verification failed"},
+		})
+		return nil, false
+	}
+	if !configured {
+		h.logger.Debug("Magic Checkout: callback signature verification dormant (secret unset)",
+			zap.String("path", c.FullPath()),
+			zap.Bool("signature_present", signature != ""))
+	}
+	return raw, true
+}
+
 // GetPromotions returns available coupons for Magic Checkout
 // POST /api/v1/magic-checkout/get-promotions
 func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
@@ -109,7 +240,11 @@ func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
 		Amount          float64 `json:"amount"` // Cart amount in paise
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	body, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		h.logger.Error("Invalid get promotions request", zap.Error(err))
 		c.JSON(http.StatusOK, gin.H{"promotions": []interface{}{}})
 		return
@@ -178,17 +313,21 @@ func (h *MagicCheckoutHandler) GetPromotions(c *gin.Context) {
 // POST /api/v1/magic-checkout/apply-promotion
 func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 	var req struct {
-		OrderID         string  `json:"order_id"`
-		RazorpayOrderID string  `json:"razorpay_order_id"`
-		Contact         string  `json:"contact"`
-		Email           string  `json:"email"`
-		Code            string  `json:"code"`
-		Amount          float64 `json:"amount"`          // Cart amount in paise (sent by Razorpay)
-		CartAmount      float64 `json:"cart_amount"`     // Alternative field name
-		SubTotal        float64 `json:"sub_total"`       // Another alternative
+		OrderID         string `json:"order_id"`
+		RazorpayOrderID string `json:"razorpay_order_id"`
+		Contact         string `json:"contact"`
+		Email           string `json:"email"`
+		Code            string `json:"code"`
+		// SECURITY (#7): any client-supplied cart amount (amount/cart_amount/sub_total)
+		// is intentionally NOT bound here. Discounts are computed only from an
+		// authoritative server-side total, never from the caller's figure.
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	body, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		h.logger.Error("Invalid apply promotion request", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{
@@ -205,22 +344,23 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		orderID = req.OrderID
 	}
 
-	h.logger.Info("Magic Checkout applying promotion - RAW REQUEST",
+	h.logger.Info("Magic Checkout applying promotion",
 		zap.String("order_id", req.OrderID),
 		zap.String("razorpay_order_id", req.RazorpayOrderID),
 		zap.String("resolved_order_id", orderID),
 		zap.String("code", req.Code),
-		zap.String("contact", req.Contact),
-		zap.Float64("amount", req.Amount),
-		zap.Float64("cart_amount", req.CartAmount),
-		zap.Float64("sub_total", req.SubTotal))
+		zap.String("contact", req.Contact))
 
-	// Get cart total from various sources (priority order)
+	// SECURITY (#7): the cart total used to size the discount comes ONLY from
+	// authoritative server-side sources — our order cache (populated at create-order)
+	// or Razorpay's own order record. A client-supplied amount is never trusted, and
+	// there is no flat default: if no authoritative total is available we fail closed
+	// (no discount), because otherwise a caller could mint a discount against an
+	// arbitrary cart total.
 	var cartTotal float64 = 0
 	var userID string = "guest_" + req.Contact
 
-	// Priority 1: Get from our order cache (stored when order was created)
-	// This is the most reliable source as we store the actual cart total
+	// Source 1: our order cache (stored when the order was created — most reliable).
 	if orderData, found := GetMagicCheckoutOrder(orderID); found {
 		cartTotal = orderData.CartTotal
 		userID = orderData.UserID
@@ -232,25 +372,7 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 			zap.String("user_id", userID))
 	}
 
-	// Priority 2: Check if Razorpay sent amount directly in request
-	if cartTotal == 0 && req.Amount > 0 {
-		cartTotal = req.Amount / 100.0 // Convert from paise to rupees
-		h.logger.Info("Using amount from request",
-			zap.Float64("amount_paise", req.Amount),
-			zap.Float64("cart_total_rupees", cartTotal))
-	} else if cartTotal == 0 && req.CartAmount > 0 {
-		cartTotal = req.CartAmount / 100.0
-		h.logger.Info("Using cart_amount from request",
-			zap.Float64("cart_amount_paise", req.CartAmount),
-			zap.Float64("cart_total_rupees", cartTotal))
-	} else if cartTotal == 0 && req.SubTotal > 0 {
-		cartTotal = req.SubTotal / 100.0
-		h.logger.Info("Using sub_total from request",
-			zap.Float64("sub_total_paise", req.SubTotal),
-			zap.Float64("cart_total_rupees", cartTotal))
-	}
-
-	// Priority 3: Try to get from Razorpay order API
+	// Source 2: Razorpay's order API (authoritative upstream record).
 	if cartTotal == 0 && strings.HasPrefix(orderID, "order_") {
 		rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), orderID)
 		if err == nil {
@@ -274,13 +396,18 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		}
 	}
 
-	// Priority 4: Last resort - use a minimum default but warn
-	if cartTotal == 0 {
-		cartTotal = 500.0 // ₹500 minimum default
-		h.logger.Error("CRITICAL: No cart total found! Using minimum default",
+	// Fail closed: no authoritative total → no discount (never guess, never default).
+	if cartTotal <= 0 {
+		h.logger.Error("Rejecting apply-promotion: no authoritative cart total available",
 			zap.String("order_id", orderID),
-			zap.Float64("default_cart_total", cartTotal),
-			zap.String("note", "Order cache may have expired or order was not created via Magic Checkout"))
+			zap.String("code", req.Code))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"code":        "INVALID_PROMOTION",
+				"description": "Unable to verify the cart total for this order",
+			},
+		})
+		return
 	}
 
 	// Validate coupon using existing service
@@ -383,7 +510,7 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 
 	// Always send as fixed_amount in paise - Razorpay will deduct this from total
 	promotion["value_type"] = "fixed_amount"
-	promotion["value"] = int(discountAmount * 100) // Convert rupees to paise
+	promotion["value"] = services.RupeesToPaisa(discountAmount) // Convert rupees to paise (rounded)
 
 	h.logger.Info("Coupon discount calculated",
 		zap.String("code", req.Code),
@@ -392,7 +519,7 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 		zap.Float64("discount_value_in_rule", bestRule.DiscountValue),
 		zap.Float64("calculated_discount_rupees", calculatedDiscount),
 		zap.Float64("final_discount_rupees", discountAmount),
-		zap.Int("final_discount_paise", int(discountAmount*100)))
+		zap.Int("final_discount_paise", services.RupeesToPaisa(discountAmount)))
 
 	h.logger.Info("Coupon promotion response prepared",
 		zap.String("code", req.Code),
@@ -407,8 +534,10 @@ func (h *MagicCheckoutHandler) ApplyPromotion(c *gin.Context) {
 // UpdateAddresses handles address updates from Magic Checkout
 // POST /api/v1/magic-checkout/addresses-callback
 func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
-	// Read raw body for debugging
-	rawBody, _ := c.GetRawData()
+	rawBody, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
 	h.logger.Info("RAW addresses-callback request body from Razorpay",
 		zap.String("raw_body", string(rawBody)),
 		zap.Int("body_length", len(rawBody)))
@@ -564,8 +693,10 @@ func (h *MagicCheckoutHandler) UpdateAddresses(c *gin.Context) {
 // GetShippingInfo calculates shipping for given addresses
 // POST /api/v1/magic-checkout/shipping-info
 func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
-	// Read raw body first for debugging
-	rawBody, _ := c.GetRawData()
+	rawBody, ok := h.readAndVerifyCallback(c)
+	if !ok {
+		return
+	}
 	h.logger.Info("RAW shipping-info request body from Razorpay",
 		zap.String("raw_body", string(rawBody)),
 		zap.Int("body_length", len(rawBody)))
@@ -769,38 +900,35 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 			zap.String("note", "Order may not have been created via Magic Checkout or server was restarted"))
 	}
 
-	// Priority 2: Check if Razorpay sent amount in request
-	if cartTotal == 0 && req.Amount > 0 {
-		cartTotal = req.Amount / 100.0 // Convert paise to rupees
-		h.logger.Info("Using amount from request",
-			zap.Float64("amount_paise", req.Amount),
-			zap.Float64("cart_total_rupees", cartTotal))
-	} else if cartTotal == 0 && req.CartAmount > 0 {
-		cartTotal = req.CartAmount / 100.0
-		h.logger.Info("Using cart_amount from request",
-			zap.Float64("cart_amount_paise", req.CartAmount),
-			zap.Float64("cart_total_rupees", cartTotal))
-	}
+	// SECURITY (#3/#7): the cart total MUST come from an authoritative server-side source —
+	// our order cache (above) or the Razorpay order's notes.cart_total, which we set at
+	// create-order. It is NEVER taken from the callback request body: a caller could inflate
+	// `amount`/`cart_amount` past the free-delivery threshold to zero out shipping. The
+	// request-body amount fields are deliberately ignored.
 
-	// Priority 3: Try Razorpay API if we have a valid order ID
-	if cartTotal == 0 && strings.HasPrefix(orderID, "order_") {
-		rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), orderID)
-		if err == nil && rzpOrder.Notes != nil {
-			// Get item count from notes
-			if itemCount, ok := rzpOrder.Notes["total_items"].(float64); ok && itemCount > 0 {
-				weight = int(itemCount) * 100 // 100g per item
+	// Priority 2: authoritative Razorpay order (notes.cart_total is server-set at create-order)
+	if cartTotal == 0 {
+		apiOrderID := orderID
+		if !strings.HasPrefix(apiOrderID, "order_") {
+			apiOrderID = razorpayOrderID // the order_-prefixed form built above
+		}
+		if strings.HasPrefix(apiOrderID, "order_") {
+			if rzpOrder, err := h.paymentService.GetOrder(c.Request.Context(), apiOrderID); err == nil && rzpOrder != nil && rzpOrder.Notes != nil {
+				if itemCount, ok := rzpOrder.Notes["total_items"].(float64); ok && itemCount > 0 {
+					weight = int(itemCount) * 100 // 100g per item
+				}
+				if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
+					cartTotal = total
+				}
+				h.logger.Info("Retrieved cart total from Razorpay API",
+					zap.String("order_id", apiOrderID),
+					zap.Float64("cart_total", cartTotal))
 			}
-			// Get cart total for free delivery check
-			if total, ok := rzpOrder.Notes["cart_total"].(float64); ok && total > 0 {
-				cartTotal = total
-			}
-			h.logger.Info("Retrieved cart total from Razorpay API",
-				zap.String("order_id", orderID),
-				zap.Float64("cart_total", cartTotal))
 		}
 	}
 
-	// Log final cart total decision
+	// Log final cart total decision. If no authoritative total was found, cartTotal stays 0,
+	// the free-delivery gate below fails, and shipping is charged (fail closed).
 	h.logger.Info("SHIPPING CALCULATION - CART TOTAL DECISION",
 		zap.Float64("final_cart_total", cartTotal),
 		zap.Bool("qualifies_for_free_delivery", cartTotal >= 500))
@@ -883,14 +1011,14 @@ func (h *MagicCheckoutHandler) GetShippingInfo(c *gin.Context) {
 					charges = 40.0 + (float64(weight)/500.0)*10.0 // Base ₹40 + ₹10 per 500g
 				}
 
-				// Convert to paise
-				addressResult["shipping_fee"] = int(charges * 100)
+				// Convert to paise (rounded)
+				addressResult["shipping_fee"] = services.RupeesToPaisa(charges)
 
 				h.logger.Info("Shipping charges calculated",
 					zap.String("zipcode", zipcode),
 					zap.Float64("cart_total", cartTotal),
 					zap.Float64("charges_rupees", charges),
-					zap.Int("charges_paise", int(charges*100)),
+					zap.Int("charges_paise", services.RupeesToPaisa(charges)),
 					zap.String("note", "Add ₹500+ to cart for free delivery"))
 			}
 

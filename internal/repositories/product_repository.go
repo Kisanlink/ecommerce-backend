@@ -9,6 +9,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
+	"gorm.io/gorm"
 )
 
 // ProductRepositoryInterface defines the contract for product repository operations
@@ -22,22 +23,74 @@ type ProductRepositoryInterface interface {
 	FindOne(ctx context.Context, filter *base.Filter) (*models.Product, error)
 	Exists(ctx context.Context, id string) (bool, error)
 	SoftDelete(ctx context.Context, id string, deletedBy string) error
+	// DecrementStockAtomic decrements a product's stock by qty in a single atomic
+	// UPDATE. Pass a non-nil tx to enlist it in a larger transaction, or nil to run
+	// on the repository's own connection. Returns oversold=true when pre-update
+	// stock was below qty.
+	DecrementStockAtomic(ctx context.Context, tx *gorm.DB, productID string, qty int) (bool, error)
 }
 
 // ProductRepository handles product data operations
 type ProductRepository struct {
 	*base.BaseFilterableRepository[*models.Product]
 	dbManager db.DBManager
+	pgManager *db.PostgresManager // direct GORM access for atomic stock updates
 }
 
 // NewProductRepository creates a new product repository
-func NewProductRepository(dbManager db.DBManager) *ProductRepository {
+func NewProductRepository(dbManager db.DBManager, pgManager *db.PostgresManager) *ProductRepository {
 	repo := &ProductRepository{
 		BaseFilterableRepository: base.NewBaseFilterableRepository[*models.Product](),
 		dbManager:                dbManager,
+		pgManager:                pgManager,
 	}
 	repo.SetDBManager(dbManager)
 	return repo
+}
+
+// DecrementStockAtomic decrements a product's stock by qty in a single atomic UPDATE
+// (GREATEST(stock - qty, 0)), so concurrent deductions cannot lose updates and stock
+// never goes negative. stock_status is flipped to "Out of Stock" when the result
+// reaches zero. It reports oversold=true when the pre-update stock was below qty, so
+// the caller can surface the oversell instead of silently flooring it. When tx is
+// non-nil the update runs inside that transaction (so it can be atomic with other
+// writes, e.g. the order's inventory_deducted guard); when nil it runs on the
+// repository's own connection.
+func (r *ProductRepository) DecrementStockAtomic(ctx context.Context, tx *gorm.DB, productID string, qty int) (bool, error) {
+	gdb := tx
+	if gdb == nil {
+		if r.pgManager == nil {
+			return false, fmt.Errorf("postgres manager unavailable for atomic stock decrement")
+		}
+		var err error
+		gdb, err = r.pgManager.GetDB(ctx, false)
+		if err != nil {
+			return false, fmt.Errorf("failed to get db for stock decrement: %w", err)
+		}
+	}
+
+	// Read current stock first (on the same connection/tx) so we can report an oversell.
+	var current int
+	if err := gdb.WithContext(ctx).
+		Model(&models.Product{}).
+		Where("id = ? AND deleted_at IS NULL", productID).
+		Select("stock").
+		Scan(&current).Error; err != nil {
+		return false, fmt.Errorf("failed to read stock for %s: %w", productID, err)
+	}
+	oversold := current < qty
+
+	res := gdb.WithContext(ctx).
+		Model(&models.Product{}).
+		Where("id = ? AND deleted_at IS NULL", productID).
+		Updates(map[string]interface{}{
+			"stock":        gorm.Expr("GREATEST(stock - ?, 0)", qty),
+			"stock_status": gorm.Expr("CASE WHEN stock - ? <= 0 THEN ? ELSE stock_status END", qty, "Out of Stock"),
+		})
+	if res.Error != nil {
+		return oversold, fmt.Errorf("failed to decrement stock for %s: %w", productID, res.Error)
+	}
+	return oversold, nil
 }
 
 // Create creates a new product

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"regexp"
@@ -86,14 +87,25 @@ type VerifyPaymentRequest struct {
 
 // VerifyPaymentResponse represents payment verification response
 type VerifyPaymentResponse struct {
-	Success          bool   `json:"success"`
-	Message          string `json:"message"`
-	PaymentID        string `json:"payment_id,omitempty"`
-	OrderID          string `json:"order_id,omitempty"`
-	AWBNumber        string `json:"awb_number,omitempty"`
-	TrackingURL      string `json:"tracking_url,omitempty"`
-	InvoiceURL       string `json:"invoice_url,omitempty"`
-	WhatsAppMessage  string `json:"whatsapp_message,omitempty"`
+	Success         bool   `json:"success"`
+	Message         string `json:"message"`
+	PaymentID       string `json:"payment_id,omitempty"`
+	OrderID         string `json:"order_id,omitempty"`
+	AWBNumber       string `json:"awb_number,omitempty"`
+	TrackingURL     string `json:"tracking_url,omitempty"`
+	InvoiceURL      string `json:"invoice_url,omitempty"`
+	WhatsAppMessage string `json:"whatsapp_message,omitempty"`
+	// FulfillmentStatus reflects the post-payment shipment state ("fulfilled",
+	// "pending_shipment", "shipment_failed", "needs_manual_fulfillment"). ShipmentPending is
+	// true whenever a shipment/tracking is not yet available, so the client can reassure the
+	// customer ("payment received, arranging delivery") without implying the payment failed.
+	FulfillmentStatus string `json:"fulfillment_status,omitempty"`
+	ShipmentPending   bool   `json:"shipment_pending"`
+	// PaymentPending is true when the signature is valid but Razorpay has not
+	// reported the payment as "captured" yet (authorized-only, created, or the
+	// status could not be fetched). No order is created in that case; the
+	// order.paid/payment.captured webhook fulfills once capture lands.
+	PaymentPending bool `json:"payment_pending"`
 }
 
 // CheckoutPage serves a minimal Razorpay Checkout HTML to initiate payment
@@ -222,9 +234,20 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Map Firebase UID to internal user ID if needed
+	// Map Firebase UID to internal user ID if needed. Before taking payment we must
+	// resolve a real local user — refuse rather than attach the order to a raw Firebase
+	// UID (#25), which would never match ownership checks and orphan the order.
 	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
-		userID = h.mapFirebaseUIDToInternalUserID(c, userID)
+		resolvedUserID, mapErr := h.mapFirebaseUIDToInternalUserID(c, userID)
+		if mapErr != nil || !strings.HasPrefix(resolvedUserID, "USER") {
+			h.logger.Error("Rejecting payment order: could not resolve caller to a local user",
+				zap.String("request_id", requestID),
+				zap.String("firebase_uid", userID),
+				zap.Error(mapErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "We could not verify your account. Please sign in again and retry."})
+			return
+		}
+		userID = resolvedUserID
 	}
 
 	h.logger.Info("User authenticated for payment order creation",
@@ -297,6 +320,45 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 	shippingAddressID = req.ShippingAddressID
 	if addr, err := h.orderService.GetAddressByID(c.Request.Context(), userID, req.ShippingAddressID); err == nil && addr != nil {
 		shippingAddress = h.orderService.FormatAddress(addr)
+
+		// Gate payment on a real, serviceable address. Previously an empty/garbage address
+		// (city/state "Unknown", pincode "000000") was accepted and the customer was charged,
+		// after which shipment creation silently failed — leaving a paid order that could not be
+		// delivered. Reject such orders BEFORE any Razorpay charge.
+		pincode := strings.TrimSpace(addr.PostalCode)
+		city := strings.TrimSpace(addr.City)
+		state := strings.TrimSpace(addr.State)
+		if !pincodeRegex.MatchString(pincode) || pincode == "000000" ||
+			city == "" || strings.EqualFold(city, "Unknown") ||
+			state == "" || strings.EqualFold(state, "Unknown") {
+			h.logger.Warn("Rejecting payment order: incomplete/invalid shipping address",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("address_id", shippingAddressID),
+				zap.String("city", city),
+				zap.String("state", state),
+				zap.String("postal_code", pincode))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "A valid shipping address (city, state and a 6-digit pincode) is required before payment."})
+			return
+		}
+		// Confirm the pincode is serviceable BEFORE taking payment (#23: fail-closed).
+		// A serviceability-API error is treated the same as "not serviceable" — we do not
+		// charge a customer for an order we cannot confirm we can deliver. (The previous
+		// fail-open let a Delhivery outage pass checkout, producing paid-but-unshippable
+		// orders.) A transient error asks the customer to retry rather than silently proceed.
+		if ok, svcErr := h.deliveryService.CheckServiceability(c.Request.Context(), pincode); svcErr != nil {
+			h.logger.Warn("Rejecting payment order: serviceability check errored (fail-closed)",
+				zap.String("request_id", requestID), zap.String("user_id", userID),
+				zap.String("pincode", pincode), zap.Error(svcErr))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "We could not confirm delivery to this pincode right now. Please try again in a few minutes."})
+			return
+		} else if !ok {
+			h.logger.Warn("Rejecting payment order: pincode not serviceable",
+				zap.String("request_id", requestID), zap.String("user_id", userID), zap.String("pincode", pincode))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "We currently cannot deliver to this pincode. Please use a different delivery address."})
+			return
+		}
+
 		h.logger.Info("Shipping address resolved successfully",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
@@ -349,6 +411,36 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		zap.String("cart_id", cart.ID),
 		zap.Int("item_count", len(cart.Items)))
 
+	// Step 1b (#34): re-price the cart against current product data BEFORE charging.
+	// ValidateCart resets any stale line price/quantity to the current value and reports
+	// what changed. If anything changed, reject this checkout so the user re-confirms the
+	// new total instead of being charged a stale price. The corrected cart is persisted,
+	// so the client's retry will see and confirm the updated prices.
+	if validation, verr := h.orderService.ValidateCart(c.Request.Context(), userID); verr != nil {
+		h.logger.Error("Failed to validate cart before checkout",
+			zap.String("request_id", requestID), zap.Error(verr), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate cart"})
+		return
+	} else if updated, _ := validation["cart_updated"].(bool); updated {
+		h.logger.Warn("Cart changed during validation - rejecting checkout for re-confirmation",
+			zap.String("request_id", requestID), zap.String("user_id", userID))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":             "Your cart was updated (prices or availability changed). Please review the new total and try again.",
+			"code":              "CART_UPDATED",
+			"validation_issues": validation["validation_issues"],
+		})
+		return
+	}
+
+	// Re-fetch the (possibly corrected) cart so totals below use the re-priced values.
+	cart, err = h.orderService.GetUserCart(c.Request.Context(), userID)
+	if err != nil || cart == nil || len(cart.Items) == 0 {
+		h.logger.Error("Failed to re-fetch cart after validation",
+			zap.String("request_id", requestID), zap.Error(err), zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get cart"})
+		return
+	}
+
 	// Step 2: Calculate totals dynamically from cart
 	cartTotal := 0.0
 	for _, item := range cart.Items {
@@ -384,44 +476,29 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Bool("has_shipping_cost", req.ShippingCost > 0),
 			zap.Bool("has_subtotal", req.Subtotal > 0))
 
-		// Calculate from provided subtotal or get dynamic shipping charges
-		subtotal := req.Subtotal
-		if subtotal > 0 {
-			shippingCharges = subtotal - discountedCartTotal
-			if shippingCharges < 0 {
-				shippingCharges = 0
-			}
-			finalAmount = subtotal
-			shippingSource = "subtotal_calculation"
-			h.logger.Info("Using provided subtotal",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.Float64("provided_subtotal", subtotal),
-				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Float64("calculated_shipping", shippingCharges))
-		} else if req.ShippingCost > 0 {
-			// Use provided shipping cost from estimate-shipping endpoint
-			shippingCharges = req.ShippingCost
-			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
-			shippingSource = "estimate_api"
-			h.logger.Info("Using provided shipping cost from estimate-shipping",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.Float64("provided_shipping_cost", req.ShippingCost),
-				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Float64("final_amount", finalAmount))
-		} else {
-			// Get shipping charges dynamically from delivery service API with robust fallback
-			shippingSource = "dynamic_calculation"
-			h.logger.Warn("No shipping cost provided from estimate-shipping endpoint, using dynamic calculation",
-				zap.String("request_id", requestID),
-				zap.String("user_id", userID),
-				zap.Float64("discounted_cart_total", discountedCartTotal),
-				zap.Int("item_count", len(cart.Items)),
-				zap.String("recommendation", "Frontend should pass shipping_cost from estimate-shipping response"))
+		// SECURITY (#1 amount integrity): the goods subtotal is ALWAYS the discounted
+		// server cart total, and shipping is ALWAYS recomputed server-side. Client-supplied
+		// req.Subtotal / req.ShippingCost are treated as display hints only and never
+		// determine the charge, so a tampered subtotal or shipping value cannot reduce the
+		// amount actually charged (previously `finalAmount = req.Subtotal` let a client pay
+		// any amount they liked for the real cart).
+		shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
+		finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
+		shippingSource = "server_calculation"
 
-			shippingCharges = h.calculateShippingChargesRobust(c.Request.Context(), userID, shippingAddress, discountedCartTotal, len(cart.Items))
-			finalAmount = utils.AddShippingCharges(discountedCartTotal, shippingCharges)
+		if req.ShippingCost > 0 && math.Abs(req.ShippingCost-shippingCharges) > 0.01 {
+			h.logger.Warn("Client shipping_cost differs from server calculation; using server value",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("client_shipping_cost", req.ShippingCost),
+				zap.Float64("server_shipping", shippingCharges))
+		}
+		if req.Subtotal > 0 && math.Abs(req.Subtotal-finalAmount) > 0.01 {
+			h.logger.Warn("Client subtotal differs from server-computed amount; ignoring client value",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.Float64("client_subtotal", req.Subtotal),
+				zap.Float64("server_final_amount", finalAmount))
 		}
 
 		h.logger.Info("Shipping charges calculated",
@@ -504,7 +581,9 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 			zap.Float64("amount", finalAmount),
 			zap.String("currency", req.Currency),
 			zap.String("error_type", "payment_service_error"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment order", "details": err.Error()})
+		// SECURITY (#28): error already logged above; do not leak internal/upstream
+		// error text to the client.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment order"})
 		return
 	}
 
@@ -513,6 +592,54 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		zap.String("razorpay_order_id", razorpayOrder.ID),
 		zap.String("user_id", userID),
 		zap.Int("amount_paisa", razorpayOrder.Amount))
+
+	// Persist a durable cart snapshot for paid-but-no-order recovery (#13). Written BEFORE
+	// the customer pays: if they close the tab before /verify runs, fulfillFromWebhook
+	// rebuilds the order from this row. Unlike an in-memory cache it survives a process
+	// restart / host idle-sleep (e.g. Render free tier), which is exactly when the webhook,
+	// not the browser, completes the order. Best-effort — a failure here must not break
+	// checkout (the live verify path is unaffected; only the webhook safety net is weakened).
+	snapItems := make([]models.SnapshotLineItem, 0, len(cart.Items))
+	for _, ci := range cart.Items {
+		snapItems = append(snapItems, models.SnapshotLineItem{ProductID: ci.ProductID, Quantity: ci.Quantity, UnitPrice: ci.UnitPrice})
+	}
+	snapParams := services.CartSnapshotParams{
+		RazorpayOrderID:     razorpayOrder.ID,
+		UserID:              userID,
+		Flow:                "standard",
+		Items:               snapItems,
+		CartTotal:           cartTotal,
+		DiscountAmount:      cart.DiscountAmount,
+		CouponCode:          cart.CouponCode,
+		ShippingCharge:      shippingCharges,
+		FinalAmount:         finalAmount,
+		ExpectedAmountPaisa: razorpayOrder.Amount,
+		CustomerFirstName:   req.FirstName,
+		CustomerLastName:    req.LastName,
+		CustomerPhone:       req.Mobile,
+		CustomerPhoneAlt:    req.MobileSecondary,
+		ShippingAddressID:   shippingAddressID,
+	}
+	if snapAddr, aerr := h.orderService.GetAddressByID(c.Request.Context(), userID, shippingAddressID); aerr == nil && snapAddr != nil {
+		snapParams.AddressLine1 = snapAddr.AddressLine1
+		snapParams.AddressLine2 = snapAddr.AddressLine2
+		snapParams.City = snapAddr.City
+		snapParams.State = snapAddr.State
+		snapParams.PostalCode = snapAddr.PostalCode
+		snapParams.Country = snapAddr.Country
+	}
+	if serr := h.orderService.SaveCartSnapshot(c.Request.Context(), snapParams); serr != nil {
+		// Fail closed: without the snapshot the webhook cannot rebuild a paid-but-no-order,
+		// so we must NOT hand the client an order id it could pay against with no safety net.
+		// The Razorpay order just created is an unpaid intent and harmlessly auto-expires.
+		h.logger.Error("Failed to save cart snapshot - refusing to start payment without recovery net",
+			zap.String("request_id", requestID),
+			zap.String("razorpay_order_id", razorpayOrder.ID),
+			zap.String("user_id", userID),
+			zap.Error(serr))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "We could not start checkout right now. Please try again in a moment."})
+		return
+	}
 
 	// Convert amount back to rupees for response
 	amountInRupees := services.PaisaToRupees(razorpayOrder.Amount)
@@ -590,27 +717,28 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		return
 	}
 
-	// Map Firebase UID to internal user ID
+	// Map Firebase UID to internal user ID. Normally the user already exists (it was
+	// resolved/created at create-order), so this resolves on the first lookup. We must
+	// NOT fall back to the raw Firebase UID as the order owner (#25) — that pollutes
+	// ownership. If resolution genuinely fails (near-impossible after a successful
+	// create-order), do not silently mis-own the order: report that the captured payment
+	// will be reconciled (the order.paid/payment.captured webhook, bound to the
+	// server-set notes.user_id, remains the safety net).
 	internalUserID := userID
 	if !strings.HasPrefix(userID, "USER") && h.userService != nil {
-		// This is likely a Firebase UID, map it to internal user ID
-		userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), userID)
-		if err == nil && userResponse != nil && userResponse.Data != nil {
-			// Extract the internal user ID from the response
-			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
-				if id, ok := userMap["id"].(string); ok {
-					internalUserID = id
-					h.logger.Info("Mapped Firebase UID to internal user ID for payment verification",
-						zap.String("firebase_uid", userID),
-						zap.String("internal_id", internalUserID))
-				}
-			}
-		} else {
-			h.logger.Error("Failed to map Firebase UID to internal user ID in VerifyPayment",
+		resolved, mapErr := h.mapFirebaseUIDToInternalUserID(c, userID)
+		if mapErr != nil || !strings.HasPrefix(resolved, "USER") {
+			h.logger.Error("VerifyPayment: could not resolve caller to a local user; refusing to own the order with a Firebase UID",
+				zap.String("request_id", requestID),
 				zap.String("firebase_uid", userID),
-				zap.Error(err))
-			// Continue with Firebase UID as fallback
+				zap.Error(mapErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment received. We could not finalize your order automatically; it will be reconciled shortly."})
+			return
 		}
+		internalUserID = resolved
+		h.logger.Info("Mapped Firebase UID to internal user ID for payment verification",
+			zap.String("firebase_uid", userID),
+			zap.String("internal_id", internalUserID))
 	}
 
 	var req VerifyPaymentRequest
@@ -648,10 +776,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("order_id", req.OrderID),
 			zap.String("payment_id", req.PaymentID),
 			zap.String("error_type", "payment_api_error"))
+		// SECURITY (#28): error already logged above; do not leak internal details.
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "Payment verification API failed",
-			"code":    "PAYMENT_VERIFICATION_ERROR",
-			"details": err.Error()})
+			"error": "Payment verification API failed",
+			"code":  "PAYMENT_VERIFICATION_ERROR"})
 		return
 	}
 
@@ -686,6 +814,35 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.Error(paymentErr))
 		}
 
+		// #12 Captured-payment gate. A valid signature only proves the
+		// (order_id, payment_id) pair came from Razorpay; it does NOT prove the
+		// money was captured. Do not create an order or ship on an
+		// authorized-only / created payment, nor when the status could not be
+		// fetched (Razorpay outage). The order.paid / payment.captured webhook
+		// is the safety net that fulfills once capture actually lands, so this
+		// is a conservative 200, not a failure the customer should worry about.
+		if rzpPayment == nil || rzpPayment.Status != "captured" {
+			status := "unknown"
+			if rzpPayment != nil {
+				status = rzpPayment.Status
+			}
+			h.logger.Warn("Payment signature valid but not captured - deferring fulfillment to webhook",
+				zap.String("request_id", requestID),
+				zap.String("user_id", userID),
+				zap.String("payment_id", req.PaymentID),
+				zap.String("razorpay_order_id", req.OrderID),
+				zap.String("payment_status", status))
+			c.JSON(http.StatusOK, VerifyPaymentResponse{
+				Success:         false,
+				Message:         "Payment received and being confirmed. Your order will be arranged once the payment is captured.",
+				PaymentID:       req.PaymentID,
+				OrderID:         req.OrderID,
+				PaymentPending:  true,
+				ShipmentPending: true,
+			})
+			return
+		}
+
 		// Fetch Razorpay order to get notes (subtotal, cart_total, shipping_charges, shipping_address)
 		h.logger.Info("Fetching Razorpay order metadata",
 			zap.String("request_id", requestID),
@@ -695,10 +852,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// IMPORTANT: Fetch the complete order details from Razorpay API
 		// After Magic Checkout completes, the order will contain customer_details with addresses
 		rzpOrder, getErr := h.paymentService.GetOrder(c.Request.Context(), req.OrderID)
-		if getErr != nil {
-			h.logger.Warn("Failed to fetch Razorpay order metadata - proceeding without metadata",
+		if getErr != nil || rzpOrder == nil {
+			// SECURITY (fail closed): the Razorpay order is REQUIRED to verify both the charged
+			// amount (cart-swap guard) and the user binding (notes.user_id) before creating a
+			// NEW order. If the lookup fails (e.g. a gateway outage), we must NOT fall through
+			// and build an order from the current cart unchecked — a cart swap during the outage
+			// would otherwise ship. If an order already exists for this razorpay_order_id, the
+			// idempotent-reuse path below completes it (it needs no live lookup). Otherwise return
+			// 503 so the client retries and/or the webhook fulfils it once the gateway recovers.
+			if existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID); lookupErr != nil || existing == nil {
+				h.logger.Error("Rejecting verify: Razorpay order lookup failed and no existing order - cannot verify amount/ownership",
+					zap.String("request_id", requestID),
+					zap.String("user_id", userID),
+					zap.String("payment_id", req.PaymentID),
+					zap.String("razorpay_order_id", req.OrderID),
+					zap.Error(getErr))
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": "Could not verify your payment with the gateway right now. Your payment is safe; if it was charged, your order will be completed automatically. Please retry shortly.",
+					"code":  "GATEWAY_LOOKUP_FAILED",
+				})
+				return
+			}
+			h.logger.Warn("Razorpay order lookup failed but an existing order was found - proceeding to idempotent reuse",
 				zap.String("request_id", requestID),
 				zap.String("user_id", userID),
+				zap.String("razorpay_order_id", req.OrderID),
 				zap.Error(getErr))
 		}
 
@@ -716,25 +894,13 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.Any("notes", rzpOrder.Notes))
 
 			if rzpOrder.CustomerDetails != nil {
+				// SECURITY (#27): log presence only, never customer PII (email/contact/address).
 				h.logger.Info("DEBUG: Razorpay CustomerDetails found",
 					zap.String("request_id", requestID),
-					zap.String("email", rzpOrder.CustomerDetails.Email),
-					zap.String("contact", rzpOrder.CustomerDetails.Contact),
 					zap.Bool("has_shipping_address", rzpOrder.CustomerDetails.ShippingAddress != nil),
 					zap.Bool("has_billing_address", rzpOrder.CustomerDetails.BillingAddress != nil))
 
-				if rzpOrder.CustomerDetails.ShippingAddress != nil {
-					addr := rzpOrder.CustomerDetails.ShippingAddress
-					h.logger.Info("DEBUG: Razorpay ShippingAddress found",
-						zap.String("request_id", requestID),
-						zap.String("name", addr.Name),
-						zap.String("line1", addr.Line1),
-						zap.String("line2", addr.Line2),
-						zap.String("city", addr.City),
-						zap.String("state", addr.State),
-						zap.String("zipcode", addr.Zipcode),
-						zap.String("country", addr.Country))
-				} else {
+				if rzpOrder.CustomerDetails.ShippingAddress == nil {
 					h.logger.Warn("DEBUG: CustomerDetails exists but ShippingAddress is NULL",
 						zap.String("request_id", requestID))
 				}
@@ -762,12 +928,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// Priority 1: Check if Razorpay order has customer_details from Magic Checkout
 		var magicCheckoutAddress map[string]interface{}
 		if rzpOrder != nil && rzpOrder.CustomerDetails != nil && rzpOrder.CustomerDetails.ShippingAddress != nil {
+			// SECURITY (#27): log presence only, never customer PII.
 			h.logger.Info("Found customer_details from Magic Checkout in Razorpay order",
 				zap.String("request_id", requestID),
-				zap.String("razorpay_order_id", req.OrderID),
-				zap.String("email", rzpOrder.CustomerDetails.Email),
-				zap.String("contact", rzpOrder.CustomerDetails.Contact),
-				zap.Any("shipping_address", rzpOrder.CustomerDetails.ShippingAddress))
+				zap.String("razorpay_order_id", req.OrderID))
 
 			// Extract customer details from Magic Checkout
 			email = rzpOrder.CustomerDetails.Email
@@ -797,13 +961,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				"contact": shippingAddr.Contact,
 			}
 
+			// SECURITY (#27): confirm extraction without logging the address PII.
 			h.logger.Info("Extracted Magic Checkout address from Razorpay order",
 				zap.String("request_id", requestID),
-				zap.String("customer_name", shippingAddr.Name),
-				zap.String("address_line1", shippingAddr.Line1),
-				zap.String("city", shippingAddr.City),
-				zap.String("state", shippingAddr.State),
-				zap.String("zipcode", shippingAddr.Zipcode))
+				zap.Bool("has_address_line1", shippingAddr.Line1 != ""),
+				zap.Bool("has_zipcode", shippingAddr.Zipcode != ""))
 
 			// Also update shipping fee from order if available
 			if rzpOrder.ShippingFee > 0 {
@@ -902,41 +1064,31 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 
 		// Extract customer details from payment entity (Magic Checkout stores them here)
 		if rzpPayment != nil {
-			// Log all payment metadata for debugging
+			// SECURITY (#27): log presence/method only, never notes/contact/email PII.
 			h.logger.Info("Razorpay Payment Full Details",
 				zap.String("request_id", requestID),
-				zap.Any("payment_notes", rzpPayment.Notes),
-				zap.String("payment_contact", rzpPayment.Contact),
-				zap.String("payment_email", rzpPayment.Email),
 				zap.Any("payment_method", rzpPayment.Method),
+				zap.Bool("has_notes", len(rzpPayment.Notes) > 0),
+				zap.Bool("has_contact", rzpPayment.Contact != ""),
+				zap.Bool("has_email", rzpPayment.Email != ""),
 				zap.Bool("has_customer_details", rzpPayment.CustomerDetails != nil))
 
 			if rzpPayment.Contact != "" {
 				mobile = rzpPayment.Contact
-				h.logger.Info("Using contact from payment entity",
-					zap.String("request_id", requestID),
-					zap.String("contact", mobile))
 			}
 			if rzpPayment.Email != "" {
 				email = rzpPayment.Email
-				h.logger.Info("Email from payment entity",
-					zap.String("request_id", requestID),
-					zap.String("email", rzpPayment.Email))
 			}
 
 			// PRIORITY: Check for customer_details in payment (Magic Checkout)
 			// This is the most reliable source for shipping address after payment
 			if rzpPayment.CustomerDetails != nil && rzpPayment.CustomerDetails.ShippingAddress != nil {
 				addr := rzpPayment.CustomerDetails.ShippingAddress
+				// SECURITY (#27): presence only, no address PII.
 				h.logger.Info("Found customer_details.shipping_address in payment (Magic Checkout)",
 					zap.String("request_id", requestID),
-					zap.String("name", addr.Name),
-					zap.String("line1", addr.Line1),
-					zap.String("line2", addr.Line2),
-					zap.String("city", addr.City),
-					zap.String("state", addr.State),
-					zap.String("zipcode", addr.Zipcode),
-					zap.String("country", addr.Country))
+					zap.Bool("has_line1", addr.Line1 != ""),
+					zap.Bool("has_zipcode", addr.Zipcode != ""))
 
 				// Convert to map for consistent processing
 				magicCheckoutAddress = map[string]interface{}{
@@ -959,37 +1111,36 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 							lastName = strings.Join(nameParts[1:], " ")
 						}
 					}
+					// SECURITY (#27): confirm extraction without logging the name.
 					h.logger.Info("Extracted customer name from payment.customer_details",
 						zap.String("request_id", requestID),
-						zap.String("firstName", firstName),
-						zap.String("lastName", lastName))
+						zap.Bool("has_name", firstName != ""))
 				}
 			}
 
 			// Magic Checkout stores shipping address in payment metadata
 			// Check for shipping_address in payment notes/metadata (fallback)
 			if magicCheckoutAddress == nil && rzpPayment.Notes != nil {
-				// Log all notes to understand structure
-				for key, value := range rzpPayment.Notes {
-					h.logger.Info("Payment note field",
-						zap.String("request_id", requestID),
-						zap.String("key", key),
-						zap.Any("value", value),
-						zap.String("value_type", fmt.Sprintf("%T", value)))
+				// SECURITY (#27): log only the note keys present, not their values (PII).
+				noteKeys := make([]string, 0, len(rzpPayment.Notes))
+				for key := range rzpPayment.Notes {
+					noteKeys = append(noteKeys, key)
 				}
+				h.logger.Info("Payment notes present",
+					zap.String("request_id", requestID),
+					zap.Strings("note_keys", noteKeys))
 
 				// Try to extract Magic Checkout shipping address
 				if shippingAddr, ok := rzpPayment.Notes["shipping_address"].(map[string]interface{}); ok {
 					magicCheckoutAddress = shippingAddr
 					h.logger.Info("Found Magic Checkout shipping address in payment notes",
-						zap.String("request_id", requestID),
-						zap.Any("address", shippingAddr))
+						zap.String("request_id", requestID))
 				} else if addrNote, ok := rzpPayment.Notes["address"].(string); ok && addrNote != "" {
 					// Fallback to string address
 					shippingAddress = addrNote
 					h.logger.Info("Using address string from payment notes",
 						zap.String("request_id", requestID),
-						zap.String("address", shippingAddress))
+						zap.Bool("has_address", shippingAddress != ""))
 				}
 			}
 
@@ -998,9 +1149,9 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				// Check for billing address in card details
 				if methodData, ok := rzpPayment.Notes["method"].(map[string]interface{}); ok {
 					if cardData, ok := methodData["card"].(map[string]interface{}); ok {
+						// SECURITY (#27): never log card data; presence only.
 						h.logger.Info("Found card data in payment method",
-							zap.String("request_id", requestID),
-							zap.Any("card_data", cardData))
+							zap.String("request_id", requestID))
 						// Extract billing address from card data
 						magicCheckoutAddress = cardData
 					}
@@ -1133,11 +1284,10 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					if len(nameParts) > 1 {
 						lastName = strings.Title(strings.Join(nameParts[1:], " "))
 					}
+					// SECURITY (#27): confirm extraction without logging email/name PII.
 					h.logger.Info("Extracted name from email",
 						zap.String("request_id", requestID),
-						zap.String("email", email),
-						zap.String("firstName", firstName),
-						zap.String("lastName", lastName))
+						zap.Bool("has_name", firstName != ""))
 				}
 			}
 		}
@@ -1163,21 +1313,20 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		var userAddressID string // To store saved address ID for user
 
 		// DEBUG: Log what address data we have from all sources
+		// SECURITY (#27): log source presence only, never the address map (PII).
 		h.logger.Info("ADDRESS DATA SUMMARY - All Sources",
 			zap.String("request_id", requestID),
-			zap.Bool("has_magic_checkout_address", magicCheckoutAddress != nil && len(magicCheckoutAddress) > 0),
+			zap.Bool("has_magic_checkout_address", len(magicCheckoutAddress) > 0),
 			zap.Bool("has_rzp_order", rzpOrder != nil),
 			zap.Bool("has_rzp_order_customer_details", rzpOrder != nil && rzpOrder.CustomerDetails != nil),
 			zap.Bool("has_rzp_payment", rzpPayment != nil),
 			zap.Bool("has_rzp_payment_customer_details", rzpPayment != nil && rzpPayment.CustomerDetails != nil),
-			zap.Any("magic_checkout_address", magicCheckoutAddress),
 			zap.String("razorpay_order_id", req.OrderID))
 
 		// Priority 1: Check for Magic Checkout address data from payment
-		if magicCheckoutAddress != nil && len(magicCheckoutAddress) > 0 {
+		if len(magicCheckoutAddress) > 0 {
 			h.logger.Info("Processing Magic Checkout address",
-				zap.String("request_id", requestID),
-				zap.Any("magic_checkout_address", magicCheckoutAddress))
+				zap.String("request_id", requestID))
 
 			// Extract address fields from Magic Checkout data
 			addressLine1 := ""
@@ -1195,25 +1344,24 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					if len(nameParts) > 1 {
 						lastName = strings.Join(nameParts[1:], " ")
 					}
+					// SECURITY (#27): no name PII in logs.
 					h.logger.Info("Extracted customer name from Magic Checkout address",
 						zap.String("request_id", requestID),
-						zap.String("name", name),
-						zap.String("firstName", firstName),
-						zap.String("lastName", lastName))
+						zap.Bool("has_name", firstName != ""))
 				}
 			}
 
 			// Try to extract phone from Magic Checkout address (if available)
 			if phone, ok := magicCheckoutAddress["phone"].(string); ok && phone != "" && mobile == "" {
 				mobile = strings.TrimSpace(phone)
+				// SECURITY (#27): no phone PII in logs.
 				h.logger.Info("Extracted phone from Magic Checkout address",
-					zap.String("request_id", requestID),
-					zap.String("phone", mobile))
+					zap.String("request_id", requestID))
 			} else if contact, ok := magicCheckoutAddress["contact"].(string); ok && contact != "" && mobile == "" {
 				mobile = strings.TrimSpace(contact)
+				// SECURITY (#27): no contact PII in logs.
 				h.logger.Info("Extracted contact from Magic Checkout address",
-					zap.String("request_id", requestID),
-					zap.String("contact", mobile))
+					zap.String("request_id", requestID))
 			}
 
 			// Magic Checkout may send fields like: line1, line2, city, state, zipcode, country
@@ -1329,11 +1477,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					"name":    addr.Name,
 					"contact": addr.Contact,
 				}
+				// SECURITY (#27): presence only, no address PII.
 				h.logger.Info("FALLBACK SUCCESS: Extracted address from Razorpay order customer_details",
 					zap.String("request_id", requestID),
-					zap.String("line1", addr.Line1),
-					zap.String("city", addr.City),
-					zap.String("zipcode", addr.Zipcode))
+					zap.Bool("has_line1", addr.Line1 != ""),
+					zap.Bool("has_zipcode", addr.Zipcode != ""))
 			} else if rzpPayment != nil && rzpPayment.CustomerDetails != nil && rzpPayment.CustomerDetails.ShippingAddress != nil {
 				// Try payment customer_details as final fallback
 				addr := rzpPayment.CustomerDetails.ShippingAddress
@@ -1347,11 +1495,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 					"name":    addr.Name,
 					"contact": addr.Contact,
 				}
+				// SECURITY (#27): presence only, no address PII.
 				h.logger.Info("FALLBACK SUCCESS: Extracted address from Razorpay payment customer_details",
 					zap.String("request_id", requestID),
-					zap.String("line1", addr.Line1),
-					zap.String("city", addr.City),
-					zap.String("zipcode", addr.Zipcode))
+					zap.Bool("has_line1", addr.Line1 != ""),
+					zap.Bool("has_zipcode", addr.Zipcode != ""))
 			} else {
 				// CRITICAL: Log why we don't have address data
 				h.logger.Error("NO MAGIC CHECKOUT ADDRESS DATA FOUND - Address will NOT be saved!",
@@ -1585,16 +1733,151 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// For now, we store address in the order. To save to user's address book,
 		// we would need to add AddressService to PaymentHandler (can be done later)
 
-		// Create order - simplified approach, always create new order
-		order, err := h.orderService.CreateOrder(
-			c.Request.Context(),
-			internalUserID,
-			customerData,
-			addressData,
-			"razorpay",
-			shippingCharges,
-		)
-		if err != nil {
+		// SECURITY (#2 replay + user binding): a (razorpay_order_id, payment_id, signature)
+		// triple must map to exactly ONE order, owned by exactly the authenticated user.
+		//
+		// (a) Bind the Razorpay order to the caller. The order's notes.user_id (set server-side
+		//     at create-order) must match this user; otherwise a stolen/shared triple could be
+		//     replayed by a different account.
+		notesUserID := ""
+		if rzpOrder != nil && rzpOrder.Notes != nil {
+			if v, ok := rzpOrder.Notes["user_id"].(string); ok {
+				notesUserID = strings.TrimSpace(v)
+			}
+		}
+		// Fail closed (#4): when we have the Razorpay order, its notes.user_id is set by the
+		// server at create-order (both the normal and Magic Checkout paths) and MUST be present
+		// and match the caller. A blank value is no longer skipped — a missing or mismatched
+		// binding means this (order, payment, signature) triple was not issued to this user.
+		// (When the order fetch itself failed, rzpOrder is nil and the captured-payment check
+		// plus the existing-order ownership check below remain the guards.)
+		if rzpOrder != nil && (notesUserID == "" || (notesUserID != internalUserID && notesUserID != userID)) {
+			h.logger.Warn("Rejecting verify: Razorpay order user binding missing or mismatched",
+				zap.String("request_id", requestID),
+				zap.String("caller_internal_id", internalUserID),
+				zap.String("caller_uid", userID),
+				zap.String("notes_user_id", notesUserID),
+				zap.String("razorpay_order_id", req.OrderID))
+			c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
+			return
+		}
+
+		// (b) Idempotency: if an order already exists for this razorpay_order_id, reuse it instead
+		//     of creating a second order from the caller's CURRENT cart. This defeats the replay
+		//     where a paid triple is re-submitted after swapping the cart contents.
+		if existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID); lookupErr == nil && existing != nil {
+			if existing.UserID != internalUserID && existing.UserID != userID {
+				h.logger.Warn("Rejecting verify: existing order for this razorpay_order_id belongs to another user",
+					zap.String("request_id", requestID),
+					zap.String("caller_internal_id", internalUserID),
+					zap.String("order_user_id", existing.UserID),
+					zap.String("razorpay_order_id", req.OrderID))
+				c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
+				return
+			}
+
+			h.logger.Info("Idempotent verify: reusing existing order for razorpay_order_id",
+				zap.String("request_id", requestID),
+				zap.String("order_id", existing.ID),
+				zap.String("razorpay_order_id", req.OrderID))
+
+			if strings.TrimSpace(existing.RazorpayPaymentID) == "" {
+				existing.RazorpayPaymentID = req.PaymentID
+				if updErr := h.orderService.UpdateOrder(c.Request.Context(), existing); updErr != nil {
+					// Non-fatal for the response, but the payment ID is how ownership
+					// checks and reconciliation later find this order — surface it.
+					h.logger.Error("Idempotent verify: failed to persist razorpay_payment_id on existing order",
+						zap.Error(updErr),
+						zap.String("order_id", existing.ID),
+						zap.String("payment_id", req.PaymentID))
+				}
+			}
+
+			// Re-run idempotent fulfillment (completes a shipment that failed the first time; a
+			// no-op once shipped) and respond from the existing order.
+			h.finalizeFulfillment(c.Request.Context(), existing.ID)
+			if refreshed, rerr := h.orderService.GetOrderByID(c.Request.Context(), existing.ID); rerr == nil && refreshed != nil {
+				existing = refreshed
+			}
+
+			shipmentPending := strings.TrimSpace(existing.DelhiveryWaybill) == ""
+			c.JSON(http.StatusOK, VerifyPaymentResponse{
+				Success:           true,
+				Message:           "Payment already verified; your order is confirmed and being fulfilled.",
+				PaymentID:         req.PaymentID,
+				OrderID:           existing.ID,
+				AWBNumber:         existing.DelhiveryWaybill,
+				TrackingURL:       existing.TrackingURL,
+				InvoiceURL:        existing.InvoiceURL,
+				FulfillmentStatus: existing.FulfillmentStatus,
+				ShipmentPending:   shipmentPending,
+			})
+			return
+		}
+
+		// Create the confirmed, paid order transactionally (#13/#14/#32): CreateConfirmedOrder
+		// fetches the cart and REFUSES an empty one (no zero-item orders), binds the order to
+		// razorpay_order_id AT INSERT (so a concurrent verify dedups via the unique index),
+		// commits order+items atomically, and clears the cart ONLY after that commit. The
+		// order is created with Status=confirmed / PaymentStatus=successful and the customer
+		// shipment fields set up front — no separate swallowed UpdateOrder is needed.
+		// Cart-swap guard (#1): pass the amount actually captured so CreateConfirmedOrder
+		// refuses to confirm if the current cart totals more than what was paid.
+		expectedAmountPaisa := 0
+		if rzpOrder != nil && rzpOrder.Amount > 0 {
+			expectedAmountPaisa = rzpOrder.Amount
+		}
+		order, err := h.orderService.CreateConfirmedOrder(c.Request.Context(), services.ConfirmedOrderParams{
+			UserID:              internalUserID,
+			Customer:            customerData,
+			Address:             addressData,
+			PaymentMethod:       "razorpay",
+			ShippingCharges:     shippingCharges,
+			RazorpayOrderID:     req.OrderID,
+			RazorpayPaymentID:   req.PaymentID,
+			CustomerFirstName:   firstName,
+			CustomerLastName:    lastName,
+			CustomerPhone:       mobile,
+			CustomerPhoneAlt:    mobileSecondary,
+			ExpectedAmountPaisa: expectedAmountPaisa,
+		})
+		if errors.Is(err, services.ErrCartAmountMismatch) {
+			// The cart was changed (items added) after the payment was created. Do NOT confirm
+			// or ship. The captured payment is logged with the razorpay ids for reconciliation
+			// (refund / manual review); the customer must re-checkout against a fresh payment.
+			h.logger.Error("Rejecting verify: cart total exceeds amount paid (possible cart swap)",
+				zap.String("request_id", requestID),
+				zap.Error(err),
+				zap.String("user_id", userID),
+				zap.String("payment_id", req.PaymentID),
+				zap.String("razorpay_order_id", req.OrderID))
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "Your cart changed after payment was started. This payment was not applied; please contact support to reconcile it or retry checkout.",
+				"code":  "CART_AMOUNT_MISMATCH",
+			})
+			return
+		}
+		if errors.Is(err, services.ErrDuplicateOrder) {
+			// A concurrent verify for the same razorpay_order_id created the order between the
+			// idempotency lookup above and this insert. Reuse that order instead of failing;
+			// the metadata + finalizeFulfillment steps below are idempotent and keyed on its ID.
+			h.logger.Info("Concurrent verify already created the order; reusing it",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", req.OrderID))
+			existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID)
+			if lookupErr != nil || existing == nil {
+				h.logger.Error("Duplicate order reported but lookup failed",
+					zap.String("request_id", requestID),
+					zap.Error(lookupErr),
+					zap.String("razorpay_order_id", req.OrderID))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Payment verified but failed to load order"})
+				return
+			}
+			order = existing
+		} else if err != nil {
+			// Includes an empty cart (#14): a captured payment with no cart is a recoverable
+			// state the webhook / manual reconciliation handles, not a reason to lose the order
+			// silently — it is logged with the razorpay ids so it can be found.
 			h.logger.Error("Failed to create database order after payment verification",
 				zap.String("request_id", requestID),
 				zap.Error(err),
@@ -1606,34 +1889,6 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			return
 		}
 
-		// Update the order with Razorpay order ID, payment details, and customer info
-		order.RazorpayOrderID = req.OrderID
-		order.PaymentStatus = "paid"
-		order.Status = models.OrderStatusConfirmed
-
-		// CRITICAL: Set customer fields on order for Delhivery shipment
-		order.CustomerFirstName = firstName
-		order.CustomerLastName = lastName
-		order.CustomerPhone = mobile
-		order.CustomerPhoneAlt = mobileSecondary
-
-		h.logger.Info("Setting customer details on order for shipment",
-			zap.String("request_id", requestID),
-			zap.String("order_id", order.ID),
-			zap.String("customer_first_name", firstName),
-			zap.String("customer_last_name", lastName),
-			zap.String("customer_phone", mobile))
-
-		if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
-			h.logger.Error("Failed to update order with Razorpay details",
-				zap.String("request_id", requestID),
-				zap.Error(err),
-				zap.String("user_id", userID),
-				zap.String("order_id", order.ID),
-				zap.String("razorpay_order_id", req.OrderID))
-			// Don't fail the entire operation, just log the error
-		}
-
 		h.logger.Info("Database order created successfully after payment verification",
 			zap.String("request_id", requestID),
 			zap.String("user_id", userID),
@@ -1641,41 +1896,6 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			zap.String("payment_id", req.PaymentID),
 			zap.String("razorpay_order_id", req.OrderID),
 			zap.Float64("total_amount", order.TotalAmount))
-
-		// Update order with payment details and confirm the order
-		if err := h.orderService.UpdatePaymentStatusAndOrderStatus(c.Request.Context(), order.ID, "successful", req.PaymentID, models.OrderStatusConfirmed); err != nil {
-			h.logger.Error("Failed to update payment and order status",
-				zap.String("request_id", requestID),
-				zap.Error(err),
-				zap.String("order_id", order.ID),
-				zap.String("payment_id", req.PaymentID),
-				zap.String("error_type", "status_update_error"))
-			// Don't fail the verification, but log the error
-		} else {
-			h.logger.Info("Order status updated after successful payment",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("payment_id", req.PaymentID),
-				zap.String("order_status", "confirmed"),
-				zap.String("payment_status", "successful"))
-
-			// Fetch the updated order to get the current status
-			updatedOrder, err := h.orderService.GetOrderByID(c.Request.Context(), order.ID)
-			if err != nil {
-				h.logger.Error("Failed to fetch updated order",
-					zap.String("request_id", requestID),
-					zap.Error(err),
-					zap.String("order_id", order.ID),
-					zap.String("error_type", "order_fetch_error"))
-			} else {
-				order = updatedOrder // Use the updated order with correct status
-				h.logger.Info("Updated order fetched successfully",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("payment_status", order.PaymentStatus),
-					zap.String("order_status", string(order.Status)))
-			}
-		}
 
 		// Persist full payment and shipping metadata on order and notes
 		if rzpOrder != nil {
@@ -1689,6 +1909,11 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			order.RazorpayOrderID = rzpOrder.ID
 			order.RazorpayReceipt = rzpOrder.Receipt
 			order.RazorpayAmountPaisa = rzpOrder.Amount
+			// Reconcile the order total to what Razorpay actually captured, instead of trusting
+			// the recomputed cart figure (which diverged from the charged amount, e.g. 360 vs 399).
+			if rzpOrder.Amount > 0 {
+				order.TotalAmount = services.PaisaToRupees(rzpOrder.Amount)
+			}
 			// Basic compact JSON string for notes
 			order.RazorpayNotesJSON = "{}"
 			// Delivery details
@@ -1742,128 +1967,24 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			// Update notes compact string
 			notesStr := fmt.Sprintf("rzp_order:%s, amount_paisa:%d, carrier:%s, mode:%s, charges:%.2f",
 				rzpOrder.ID, rzpOrder.Amount, order.ShippingCarrier, order.ShippingMode, order.ShippingCharge)
-			_ = h.orderService.UpdateOrderNotes(c.Request.Context(), order.ID, notesStr)
+			if notesErr := h.orderService.UpdateOrderNotes(c.Request.Context(), order.ID, notesStr); notesErr != nil {
+				// Non-critical diagnostic metadata; log so it isn't silently lost.
+				h.logger.Warn("Failed to persist order notes",
+					zap.Error(notesErr), zap.String("order_id", order.ID))
+			}
 		}
 
-		// Create shipment immediately to get tracking URL
-		h.logger.Info("Creating shipment to get tracking URL",
-			zap.String("request_id", requestID),
-			zap.String("order_id", order.ID),
-			zap.String("user_id", userID))
+		// Create the Delhivery shipment, decrement inventory, and advance the order.
+		// finalizeFulfillment is idempotent and *records* its outcome on the order
+		// (FulfillmentStatus / ShipmentError) instead of silently swallowing failures, so a
+		// paid order that could not be shipped stays queryable and recoverable (via the
+		// Razorpay webhook or the manual retry endpoint). A captured payment is never failed
+		// because of a shipment problem.
+		h.finalizeFulfillment(c.Request.Context(), order.ID)
 
-		// Get order with items for shipment creation
-		orderWithItems, orderItems, getOrderErr := h.orderService.GetOrderWithItems(c.Request.Context(), order.ID)
-		if getOrderErr != nil {
-			h.logger.Error("Failed to get order items for shipment",
-				zap.String("request_id", requestID),
-				zap.Error(getOrderErr),
-				zap.String("order_id", order.ID),
-				zap.String("user_id", userID))
-		} else if len(orderItems) > 0 {
-			// CRITICAL FIX: Ensure customer and address data is set on orderWithItems for shipment creation
-			// The order object has the latest data, but orderWithItems might not
-			// because it was fetched from DB before the updates were committed
-
-			// Set CustomerID from customerData if empty (ensures Priority 1 lookup in CreateShipment works)
-			if orderWithItems.CustomerID == "" && customerData != nil && customerData.ID != "" {
-				orderWithItems.CustomerID = customerData.ID
-				h.logger.Info("Set CustomerID from customerData for shipment creation",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("customer_id", customerData.ID))
-			}
-
-			// Set legacy customer fields as fallback
-			if orderWithItems.CustomerFirstName == "" && firstName != "" {
-				orderWithItems.CustomerFirstName = firstName
-			}
-			if orderWithItems.CustomerLastName == "" && lastName != "" {
-				orderWithItems.CustomerLastName = lastName
-			}
-			if orderWithItems.CustomerPhone == "" && mobile != "" {
-				orderWithItems.CustomerPhone = mobile
-			}
-			if orderWithItems.CustomerPhoneAlt == "" && mobileSecondary != "" {
-				orderWithItems.CustomerPhoneAlt = mobileSecondary
-			}
-
-			// Set ShippingAddressID from addressData if empty (ensures Priority 1 lookup in CreateShipment works)
-			// IMPORTANT: Use addressData.ID (OADR prefix), NOT the legacy shippingAddressID (ADDR prefix)
-			// The legacy shippingAddressID comes from notes["shipping_addr_id"] and points to the old 'addresses' table
-			// The new ShippingAddressID should point to 'order_addresses' table with OADR prefix
-			if orderWithItems.ShippingAddressID == "" && addressData != nil && addressData.ID != "" {
-				orderWithItems.ShippingAddressID = addressData.ID
-				h.logger.Info("Set ShippingAddressID from addressData for shipment creation",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("shipping_address_id", addressData.ID))
-			} else if orderWithItems.ShippingAddressID == "" {
-				// Log warning if we couldn't set ShippingAddressID - this will cause Priority 1 in CreateShipment to be skipped
-				h.logger.Warn("ShippingAddressID is empty and no addressData available - shipment will use fallback address resolution",
-					zap.String("request_id", requestID),
-					zap.String("order_id", order.ID),
-					zap.String("legacy_shipping_addr_id", shippingAddressID),
-					zap.Bool("has_address_data", addressData != nil))
-			}
-
-			// Set legacy shipping address string as fallback
-			if orderWithItems.ShippingAddr == "" && shippingAddress != "" {
-				orderWithItems.ShippingAddr = shippingAddress
-			}
-
-			// Log order details before shipment creation
-			h.logger.Info("Attempting to create shipment with order details",
-				zap.String("request_id", requestID),
-				zap.String("order_id", order.ID),
-				zap.String("shipping_address", orderWithItems.ShippingAddr),
-				zap.String("shipping_address_id", orderWithItems.ShippingAddressID),
-				zap.String("customer_name", fmt.Sprintf("%s %s", orderWithItems.CustomerFirstName, orderWithItems.CustomerLastName)),
-				zap.String("customer_phone", orderWithItems.CustomerPhone),
-				zap.Int("item_count", len(orderItems)))
-
-			// Create shipment to get tracking URL
-			shipmentResult, shipmentErr := h.deliveryService.CreateShipment(c.Request.Context(), orderWithItems, orderItems)
-			if shipmentErr != nil {
-				h.logger.Error("Shipment creation failed - detailed error",
-					zap.String("request_id", requestID),
-					zap.Error(shipmentErr),
-					zap.String("order_id", order.ID),
-					zap.String("error_details", fmt.Sprintf("%+v", shipmentErr)))
-			} else if shipmentResult != nil && shipmentResult.Success && shipmentResult.Waybill != "" {
-				// Update order with shipment details
-				awbNumber := shipmentResult.Waybill
-				trackingURL := shipmentResult.TrackingURL
-				if trackingURL == "" {
-					trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awbNumber)
-				}
-
-				// Update order with shipment details
-				if updateErr := h.orderService.UpdateOrderWithShipmentAtomic(
-					c.Request.Context(),
-					order.ID,
-					awbNumber,
-					trackingURL,
-					shipmentResult.Status,
-				); updateErr != nil {
-					h.logger.Warn("Failed to update order with shipment details",
-						zap.String("request_id", requestID),
-						zap.Error(updateErr),
-						zap.String("order_id", order.ID))
-				} else {
-					h.logger.Info("Order updated with shipment details",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("waybill", awbNumber),
-						zap.String("tracking_url", trackingURL))
-
-					// Note: WhatsApp notification will be sent later with order_management_amrti template
-					h.logger.Info("Shipment created successfully, WhatsApp notification will be sent with payment confirmation",
-						zap.String("request_id", requestID),
-						zap.String("order_id", order.ID),
-						zap.String("waybill", awbNumber),
-						zap.String("tracking_url", trackingURL))
-				}
-			}
+		// Reload so the response and the WhatsApp step below reflect the shipment outcome.
+		if refreshed, rerr := h.orderService.GetOrderByID(c.Request.Context(), order.ID); rerr == nil && refreshed != nil {
+			order = refreshed
 		}
 
 		// Generate invoice
@@ -1931,7 +2052,7 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				}()))
 
 			customerPhone := h.whatsappService.GetCustomerPhoneFromOrder(updatedOrder)
-			
+
 			// Log the extracted phone number
 			h.logger.Info("Customer phone number extracted for WhatsApp",
 				zap.String("request_id", requestID),
@@ -2027,15 +2148,22 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			whatsAppStatus = "WhatsApp service disabled"
 		}
 
+		shipmentPending := strings.TrimSpace(order.DelhiveryWaybill) == ""
+		if shipmentPending {
+			responseMessage += " Your order is confirmed; we're arranging delivery and tracking will appear shortly."
+		}
+
 		response = VerifyPaymentResponse{
-			Success:         true,
-			Message:         responseMessage,
-			PaymentID:       req.PaymentID,
-			OrderID:         order.ID,
-			AWBNumber:       order.DelhiveryWaybill,
-			TrackingURL:     order.TrackingURL,
-			InvoiceURL:      order.InvoiceURL,
-			WhatsAppMessage: whatsAppStatus,
+			Success:           true,
+			Message:           responseMessage,
+			PaymentID:         req.PaymentID,
+			OrderID:           order.ID,
+			AWBNumber:         order.DelhiveryWaybill,
+			TrackingURL:       order.TrackingURL,
+			InvoiceURL:        order.InvoiceURL,
+			WhatsAppMessage:   whatsAppStatus,
+			FulfillmentStatus: order.FulfillmentStatus,
+			ShipmentPending:   shipmentPending,
 		}
 
 		// Comprehensive success logging
@@ -2073,6 +2201,144 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// finalizeFulfillment creates the Delhivery shipment for an already-paid order (if one does not
+// exist yet), decrements inventory exactly once, advances the order to shipped on success, and
+// records the outcome on the order (FulfillmentStatus / ShipmentError). It is idempotent and
+// safe to call from payment verification, the Razorpay webhook, and the manual retry path.
+//
+// It deliberately returns nothing: a captured payment must never be failed because a shipment
+// could not be created. Instead, failures are persisted so the order can be found and recovered.
+// markFulfillmentOrLog records a fulfillment-recovery state and, crucially, does NOT
+// swallow a failure to write it. A recovery marker (needs_manual_fulfillment /
+// shipment_failed) is what keeps a problem order visible in the admin unshipped
+// queue; if that write fails silently the order still looks healthy and is lost from
+// the queue. So a failed marker write is surfaced at ERROR level (#31).
+func (h *PaymentHandler) markFulfillmentOrLog(ctx context.Context, orderID, status, shipmentErr string) {
+	if err := h.orderService.MarkFulfillmentStatus(ctx, orderID, status, shipmentErr); err != nil {
+		h.logger.Error("CRITICAL: failed to persist fulfillment recovery marker - order may be hidden from the unshipped queue",
+			zap.Error(err),
+			zap.String("order_id", orderID),
+			zap.String("intended_status", status),
+			zap.String("shipment_error", shipmentErr))
+	}
+}
+
+func (h *PaymentHandler) finalizeFulfillment(ctx context.Context, orderID string) {
+	orderWithItems, orderItems, err := h.orderService.GetOrderWithItems(ctx, orderID)
+	if err != nil || orderWithItems == nil {
+		h.logger.Error("finalizeFulfillment: failed to load order",
+			zap.Error(err), zap.String("order_id", orderID))
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "could not load order/items")
+		return
+	}
+
+	// Idempotent: if a shipment already exists, just ensure inventory + fulfilled flag are set.
+	if strings.TrimSpace(orderWithItems.DelhiveryWaybill) != "" {
+		if invErr := h.orderService.DeductInventoryForOrder(ctx, orderID); invErr != nil {
+			h.logger.Warn("finalizeFulfillment: inventory deduction (already-shipped path) failed",
+				zap.Error(invErr), zap.String("order_id", orderID))
+		}
+		if mErr := h.orderService.MarkFulfillmentStatus(ctx, orderID, models.FulfillmentFulfilled, ""); mErr != nil {
+			h.logger.Warn("finalizeFulfillment: failed to mark fulfilled (already-shipped path)",
+				zap.Error(mErr), zap.String("order_id", orderID))
+		}
+		return
+	}
+
+	if len(orderItems) == 0 {
+		h.logger.Error("finalizeFulfillment: order has no items - cannot ship",
+			zap.String("order_id", orderID))
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "order has no items")
+		return
+	}
+
+	// SECURITY (#8 validated-vs-shipped address): never attempt a shipment to a placeholder/invalid
+	// address. The paid address is validated at create-order, but verify can fall back to Magic
+	// Checkout / saved-address data, so guard again here. A bad address becomes an explicit
+	// needs_manual_fulfillment (surfaced in the recovery queue) instead of a cryptic courier error
+	// or a parcel sent to "Unknown / 000000".
+	// A populated normalized order_addresses row (OADR prefix) is the authoritative shipping
+	// destination: it is exactly what CreateShipment resolves and then re-guards via
+	// isPlaceholderDestination on the resolved pincode/city/state (delivery_service.go). The legacy
+	// ShippingAddr text column can legitimately be empty on some creation paths (notably the webhook
+	// snapshot rebuild, which sets only ShippingAddressID), so only apply this text-based early-out
+	// when there is NO normalized address to resolve. This keeps the guard consistent with how the
+	// shipment actually resolves the destination and stops a valid order from being wrongly flagged
+	// needs_manual_fulfillment. A genuinely placeholder normalized address is still caught at the
+	// CreateShipment choke point, so nothing bad can be shipped.
+	addrLower := strings.ToLower(strings.TrimSpace(orderWithItems.ShippingAddr))
+	hasNormalizedAddr := strings.HasPrefix(orderWithItems.ShippingAddressID, "OADR")
+	if !hasNormalizedAddr && (addrLower == "" ||
+		strings.Contains(addrLower, "address not provided") ||
+		strings.Contains(addrLower, "unknown") ||
+		strings.Contains(addrLower, "000000")) {
+		h.logger.Error("finalizeFulfillment: shipping address is placeholder/invalid - needs manual fulfillment",
+			zap.String("order_id", orderID), zap.String("shipping_address", orderWithItems.ShippingAddr))
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual, "invalid or placeholder shipping address")
+		return
+	}
+
+	// SECURITY (#9/#10 shipment race): atomically claim the order before calling the courier so a
+	// concurrent verify + webhook (or a double retry) cannot both create a shipment and leave two
+	// waybills at the courier. Only the single winner proceeds past this point.
+	claimed, claimErr := h.orderService.ClaimOrderForShipment(ctx, orderID)
+	if claimErr != nil {
+		h.logger.Error("finalizeFulfillment: failed to claim order for shipment",
+			zap.Error(claimErr), zap.String("order_id", orderID))
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual,
+			"could not atomically claim order for shipment: "+claimErr.Error())
+		return
+	}
+	if !claimed {
+		// Another path already claimed/completed the shipment, or the order needs manual handling.
+		h.logger.Info("finalizeFulfillment: order not claimable for shipment (already in progress/shipped or needs manual) - skipping",
+			zap.String("order_id", orderID))
+		return
+	}
+
+	shipmentResult, shipmentErr := h.deliveryService.CreateShipment(ctx, orderWithItems, orderItems)
+	if shipmentErr != nil || shipmentResult == nil || !shipmentResult.Success || shipmentResult.Waybill == "" {
+		reason := "shipment creation failed"
+		if shipmentResult != nil && shipmentResult.Message != "" {
+			reason = shipmentResult.Message
+		}
+		if shipmentErr != nil {
+			reason = shipmentErr.Error()
+		}
+		h.logger.Error("finalizeFulfillment: shipment failed - order needs recovery",
+			zap.String("order_id", orderID), zap.String("reason", reason))
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentShipmentFailed, reason)
+		return
+	}
+
+	awb := shipmentResult.Waybill
+	trackingURL := shipmentResult.TrackingURL
+	if trackingURL == "" {
+		trackingURL = fmt.Sprintf("https://www.delhivery.com/track-v2/package/%s", awb)
+	}
+
+	if err := h.orderService.ApplyShipmentSuccess(ctx, orderID, awb, trackingURL, shipmentResult.Status); err != nil {
+		// SECURITY (#10): the shipment EXISTS at the courier but we failed to persist the waybill.
+		// Mark needs_manual_fulfillment (NOT shipment_failed) so the automatic claim will not
+		// re-ship it — re-shipping would create a second parcel. The waybill is recorded in the
+		// error text so an admin can reconcile it by hand.
+		h.logger.Error("finalizeFulfillment: shipment created but DB update failed - needs manual reconciliation",
+			zap.Error(err), zap.String("order_id", orderID), zap.String("waybill", awb))
+		h.markFulfillmentOrLog(ctx, orderID, models.FulfillmentNeedsManual,
+			fmt.Sprintf("shipment created at courier (waybill %s) but DB update failed: %s — reconcile manually, do NOT re-ship", awb, err.Error()))
+		return
+	}
+
+	// Delivery is set; deduct inventory (non-fatal — the order is already fulfilled for the customer).
+	if invErr := h.orderService.DeductInventoryForOrder(ctx, orderID); invErr != nil {
+		h.logger.Warn("finalizeFulfillment: inventory deduction failed",
+			zap.Error(invErr), zap.String("order_id", orderID))
+	}
+
+	h.logger.Info("finalizeFulfillment: order shipped",
+		zap.String("order_id", orderID), zap.String("waybill", awb))
+}
+
 // ProcessWebhook handles Razorpay webhook events
 // @Summary Razorpay webhook
 // @Description Handle Razorpay webhook events (public endpoint)
@@ -2092,7 +2358,18 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		return
 	}
 
-	// Read request body
+	// SECURITY (#30): cap the body size BEFORE reading it. The body is read prior to signature
+	// verification, so without a cap an unauthenticated client could force large allocations.
+	const maxWebhookBodyBytes = 1 << 20 // 1 MiB; Razorpay webhooks are only a few KB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBodyBytes)
+
+	// Event ID for observability / replay diagnostics. We intentionally do NOT reject on event
+	// age: Razorpay legitimately retries webhook delivery for hours, so a timestamp cutoff would
+	// drop valid late events. Replay safety instead comes from the idempotent fulfillment path
+	// (finalizeFulfillment deducts inventory / creates a shipment at most once per order).
+	eventID := c.GetHeader("X-Razorpay-Event-Id")
+
+	// Read request body (bounded by MaxBytesReader above)
 	body, err := c.GetRawData()
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", zap.Error(err))
@@ -2100,15 +2377,171 @@ func (h *PaymentHandler) ProcessWebhook(c *gin.Context) {
 		return
 	}
 
-	// Process webhook
-	if err := h.paymentService.ProcessWebhook(c.Request.Context(), body, signature); err != nil {
-		h.logger.Error("Webhook processing failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Webhook processing failed"})
+	// Verify signature + parse. Nothing in the payload is trusted until this succeeds.
+	webhook, err := h.paymentService.ParseWebhook(body, signature)
+	if err != nil {
+		h.logger.Error("Webhook signature/parse failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook"})
 		return
 	}
 
-	h.logger.Info("Webhook processed successfully")
-	c.JSON(http.StatusOK, gin.H{"message": "Webhook processed successfully"})
+	h.logger.Info("Razorpay webhook received",
+		zap.String("event", webhook.Event),
+		zap.String("event_id", eventID))
+
+	// Server-side fulfillment safety net: if the browser never completed /payments/verify, or the
+	// shipment failed there, the webhook independently drives fulfillment. All paths are idempotent.
+	switch webhook.Event {
+	case "order.paid", "payment.captured":
+		rzpOrderID := webhook.Payload.Order.Entity.ID
+		if rzpOrderID == "" {
+			rzpOrderID = webhook.Payload.Payment.Entity.OrderID
+		}
+		paymentID := webhook.Payload.Payment.Entity.ID
+		if rzpOrderID == "" {
+			h.logger.Warn("Webhook has no Razorpay order ID - cannot fulfill",
+				zap.String("event", webhook.Event))
+			break
+		}
+		h.fulfillFromWebhook(c.Request.Context(), rzpOrderID, paymentID)
+	case "payment.failed":
+		// SECURITY/CORRECTNESS (#35): record the failure on the order so it is queryable
+		// and does not look perpetually "pending". Idempotent; no shipment side effects.
+		h.markPaymentFailedFromWebhook(c.Request.Context(),
+			webhook.Payload.Payment.Entity.OrderID,
+			webhook.Payload.Payment.Entity.ID)
+	default:
+		h.logger.Info("Unhandled Razorpay webhook event", zap.String("event", webhook.Event))
+	}
+
+	// Always ack 2xx so Razorpay does not retry indefinitely; failures are recorded on the order.
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+// markPaymentFailedFromWebhook records a Razorpay payment.failed event on the matching
+// order. It is idempotent (re-marking an already-failed order is a no-op at the repo level)
+// and has no shipment side effects. (#35)
+func (h *PaymentHandler) markPaymentFailedFromWebhook(ctx context.Context, rzpOrderID, paymentID string) {
+	if rzpOrderID == "" {
+		h.logger.Warn("payment.failed webhook has no Razorpay order ID - cannot update order",
+			zap.String("payment_id", paymentID))
+		return
+	}
+	order, err := h.orderService.GetOrderByRazorpayOrderID(ctx, rzpOrderID)
+	if err != nil || order == nil {
+		h.logger.Warn("payment.failed webhook: no matching DB order",
+			zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+		return
+	}
+	// Do not overwrite a successful/paid order (a later failed event for a superseded
+	// attempt must not undo a capture).
+	if order.PaymentStatus == "paid" || order.PaymentStatus == "successful" {
+		h.logger.Info("payment.failed webhook ignored - order already paid",
+			zap.String("order_id", order.ID), zap.String("payment_status", order.PaymentStatus))
+		return
+	}
+	if err := h.orderService.UpdatePaymentStatus(ctx, order.ID, "failed", paymentID); err != nil {
+		h.logger.Error("payment.failed webhook: failed to update order payment status",
+			zap.Error(err), zap.String("order_id", order.ID))
+		return
+	}
+	h.logger.Info("payment.failed recorded on order",
+		zap.String("order_id", order.ID), zap.String("razorpay_order_id", rzpOrderID))
+}
+
+// fulfillFromWebhook completes fulfillment for a paid Razorpay order from the webhook.
+// It repairs orders that exist but were left unshipped (the common production failure), and
+// loudly flags orders that were never created (which cannot be safely rebuilt from the webhook
+// payload alone, since cart/line-items are not included) for manual reconciliation.
+func (h *PaymentHandler) fulfillFromWebhook(ctx context.Context, rzpOrderID, paymentID string) {
+	order, err := h.orderService.GetOrderByRazorpayOrderID(ctx, rzpOrderID)
+	if err != nil || order == nil {
+		// No order yet — the browser never reached /verify (closed tab). Rebuild it from the
+		// durable cart snapshot written at create-order. This is the real paid-but-no-order
+		// safety net (#13) and, because the snapshot lives in Postgres, it works even after a
+		// process restart / host idle-sleep — exactly when the webhook (not the browser) must
+		// finish the order.
+		//
+		// Resolve authoritative values from Razorpay (which the service layer can't reach): the
+		// captured amount (so the order total is reconciled to what was actually charged, not the
+		// snapshot's pre-shipping estimate) and, for 1CC, the real shipping address the buyer
+		// entered in the widget. A lookup failure falls back to snapshot values.
+		ov := services.SnapshotRebuildOverrides{}
+		if rzp, gerr := h.paymentService.GetOrder(ctx, rzpOrderID); gerr == nil && rzp != nil {
+			if rzp.AmountPaid > 0 {
+				ov.CapturedAmountPaisa = rzp.AmountPaid
+			} else if rzp.Amount > 0 {
+				ov.CapturedAmountPaisa = rzp.Amount
+			}
+			// For Magic Checkout the authoritative shipping address is the one the buyer entered
+			// in the widget (on the Razorpay order's customer_details), NOT the saved default the
+			// snapshot froze at create-order. Use it when present and shippable; otherwise the
+			// snapshot address stands and the ship-time placeholder guard catches anything invalid.
+			if rzp.CustomerDetails != nil {
+				// Recover the buyer's name + phone from the Razorpay order. For 1CC these are entered
+				// in the widget AFTER the cart snapshot is written, so the snapshot's customer fields
+				// are blank; without this the rebuilt order ships-failed on "missing customer name/
+				// phone on order". Name comes from the shipping address block; phone prefers the
+				// order-level contact, falling back to the shipping address contact.
+				if sa := rzp.CustomerDetails.ShippingAddress; sa != nil {
+					if n := strings.TrimSpace(sa.Name); n != "" {
+						ov.CustomerName = n
+					}
+				}
+				if c := strings.TrimSpace(rzp.CustomerDetails.Contact); c != "" {
+					ov.CustomerPhone = c
+				} else if sa := rzp.CustomerDetails.ShippingAddress; sa != nil {
+					if c := strings.TrimSpace(sa.Contact); c != "" {
+						ov.CustomerPhone = c
+					}
+				}
+				if sa := rzp.CustomerDetails.ShippingAddress; sa != nil {
+					if strings.TrimSpace(sa.Line1) != "" && strings.TrimSpace(sa.City) != "" && strings.TrimSpace(sa.Zipcode) != "" {
+						country := strings.TrimSpace(sa.Country)
+						if country == "" {
+							country = "India"
+						}
+						ov.ShippingAddress = models.NewOrderAddress(sa.Line1, sa.Line2, sa.City, sa.State, sa.Zipcode, country)
+					}
+				}
+			}
+		} else {
+			h.logger.Warn("Webhook: could not fetch Razorpay order for rebuild reconciliation - using snapshot values",
+				zap.String("razorpay_order_id", rzpOrderID), zap.Error(gerr))
+		}
+		rebuilt, rErr := h.orderService.RebuildOrderFromSnapshot(ctx, rzpOrderID, paymentID, ov)
+		if rErr != nil || rebuilt == nil {
+			switch {
+			case errors.Is(rErr, services.ErrNoSnapshot):
+				h.logger.Error("Webhook: paid order has no matching DB order and no cart snapshot - needs manual reconciliation",
+					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+			case errors.Is(rErr, services.ErrCartAmountMismatch):
+				h.logger.Error("Webhook: captured amount is less than snapshot cart goods - refusing rebuild, needs manual reconciliation",
+					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID), zap.Error(rErr))
+			default:
+				h.logger.Error("Webhook: failed to rebuild paid order from cart snapshot - needs manual reconciliation",
+					zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID), zap.Error(rErr))
+			}
+			return
+		}
+		h.logger.Info("Webhook: rebuilt paid order from cart snapshot",
+			zap.String("order_id", rebuilt.ID), zap.String("razorpay_order_id", rzpOrderID), zap.String("payment_id", paymentID))
+		order = rebuilt
+	}
+
+	// Persist the captured payment ID for reconciliation if we don't have it yet. Defense-in-depth:
+	// only accept a well-formed Razorpay payment id, even though the payload is signature-verified.
+	if strings.HasPrefix(paymentID, "pay_") && order.RazorpayPaymentID == "" {
+		order.RazorpayPaymentID = paymentID
+		if uerr := h.orderService.UpdateOrder(ctx, order); uerr != nil {
+			h.logger.Warn("Webhook: failed to persist payment ID",
+				zap.Error(uerr), zap.String("order_id", order.ID))
+		}
+	}
+
+	// Idempotent: completes the shipment if verify failed or never ran, advances status,
+	// and deducts inventory exactly once.
+	h.finalizeFulfillment(ctx, order.ID)
 }
 
 // GetPaymentStatus retrieves payment status from Razorpay
@@ -2137,6 +2570,22 @@ func (h *PaymentHandler) GetPaymentStatus(c *gin.Context) {
 		h.logger.Error("Payment ID missing in request")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Payment ID is required"})
 		return
+	}
+
+	// Ownership check (#17/#38): a signature-less payment ID must not be a lookup
+	// oracle. Only the owner of the order this payment belongs to — or an admin —
+	// may read its status. Resolve the order by payment ID and compare the owner.
+	// Return 404 (not 403) on mismatch/not-found so the endpoint can't be used to
+	// enumerate which payment IDs exist.
+	if !h.authContext.IsAdmin(c) {
+		order, oErr := h.orderService.GetOrderByRazorpayPaymentID(c.Request.Context(), paymentID)
+		if oErr != nil || order == nil || !h.callerOwnsOrder(c, userID, order.UserID) {
+			h.logger.Warn("Payment status denied - caller does not own the order",
+				zap.String("user_id", userID),
+				zap.String("payment_id", paymentID))
+			c.JSON(http.StatusNotFound, gin.H{"error": "Payment not found"})
+			return
+		}
 	}
 
 	// Get payment details from Razorpay
@@ -2457,13 +2906,43 @@ func (h *PaymentHandler) parseShippingAddressToOrderAddress(shippingAddress stri
 
 // mapFirebaseUIDToInternalUserID maps a Firebase UID to an internal user ID
 // If the user doesn't exist in the local database, it auto-creates them from Firebase
-func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebaseUID string) string {
+// callerOwnsOrder reports whether the authenticated caller owns an order whose
+// stored UserID is ownerUserID. Orders are created with the internal user ID (or,
+// as a fallback, the Firebase UID), so this resolves the caller's Firebase UID to
+// its internal ID read-only (no auto-create) and also accepts a direct match to
+// cover the Firebase-UID-fallback and JWT-internal-ID cases.
+func (h *PaymentHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID string) bool {
+	if ownerUserID == "" {
+		return false
+	}
+	if ownerUserID == callerID {
+		return true
+	}
+	if !strings.HasPrefix(callerID, "USER") && h.userService != nil {
+		if resp, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), callerID); err == nil && resp != nil && resp.Data != nil {
+			if userMap, ok := resp.Data.(map[string]interface{}); ok {
+				if id, ok := userMap["id"].(string); ok && id == ownerUserID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// mapFirebaseUIDToInternalUserID resolves a Firebase UID to the internal USER… id,
+// auto-creating/linking a local user when needed. It returns an error rather than
+// falling back to the Firebase UID (#25): attaching an order/payment to a raw Firebase
+// UID pollutes ownership (it never matches the internal id ownership checks compare
+// against). Callers must treat an error as "could not identify the account" and refuse
+// to proceed, not silently continue with a non-user id.
+func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebaseUID string) (string, error) {
 	// Try to get user by Firebase UID
 	userResponse, err := h.userService.GetUserByFirebaseUID(c.Request.Context(), firebaseUID)
 	if err == nil && userResponse != nil && userResponse.Data != nil {
 		if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
 			if id, ok := userMap["id"].(string); ok {
-				return id
+				return id, nil
 			}
 		}
 	}
@@ -2472,13 +2951,13 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 	firebaseClient := config.GetFirebaseAuth()
 	if firebaseClient == nil {
 		h.logger.Error("Firebase client not initialized", zap.String("firebase_uid", firebaseUID))
-		return firebaseUID // Return as-is (fallback)
+		return "", fmt.Errorf("firebase client not initialized")
 	}
 
 	firebaseUser, firebaseErr := firebaseClient.GetUser(c.Request.Context(), firebaseUID)
 	if firebaseErr != nil {
 		h.logger.Error("Failed to get user from Firebase", zap.String("firebase_uid", firebaseUID), zap.Error(firebaseErr))
-		return firebaseUID
+		return "", fmt.Errorf("failed to look up firebase user: %w", firebaseErr)
 	}
 
 	// Check for existing user by email or phone
@@ -2500,7 +2979,7 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 		internalID := existingUser["id"].(string)
 		h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalID, firebaseUID)
 		h.logger.Info("Linked Firebase UID to existing user", zap.String("firebase_uid", firebaseUID), zap.String("internal_id", internalID))
-		return internalID
+		return internalID, nil
 	}
 
 	// Create new user
@@ -2517,7 +2996,7 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 				if id, ok := userData["id"].(string); ok {
 					h.userService.UpdateUserFirebaseUID(c.Request.Context(), id, firebaseUID)
 					h.logger.Info("Auto-created phone user", zap.String("firebase_uid", firebaseUID), zap.String("internal_id", id))
-					return id
+					return id, nil
 				}
 			}
 		}
@@ -2528,14 +3007,14 @@ func (h *PaymentHandler) mapFirebaseUIDToInternalUserID(c *gin.Context, firebase
 			if userData, ok := createResponse.Data.(map[string]interface{}); ok {
 				if id, ok := userData["id"].(string); ok {
 					h.logger.Info("Auto-created Google user", zap.String("firebase_uid", firebaseUID), zap.String("internal_id", id))
-					return id
+					return id, nil
 				}
 			}
 		}
 	}
 
 	h.logger.Error("Failed to auto-create user", zap.String("firebase_uid", firebaseUID))
-	return firebaseUID
+	return "", fmt.Errorf("failed to resolve or create a local user for firebase uid")
 }
 
 // CreateMagicCheckoutOrder creates a Razorpay order specifically for Magic Checkout
@@ -2653,10 +3132,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 				// User exists, just link the Firebase UID
 				internalUserID = existingUser["id"].(string)
 				h.userService.UpdateUserFirebaseUID(c.Request.Context(), internalUserID, userID)
+				// SECURITY (#27): no email/phone PII in logs.
 				h.logger.Info("Linked Firebase UID to existing user",
 					zap.String("firebase_uid", userID),
-					zap.String("email", firebaseUser.Email),
-					zap.String("phone", firebaseUser.PhoneNumber),
 					zap.String("internal_id", internalUserID))
 			} else {
 				// Create new user in local database based on auth type
@@ -2684,9 +3162,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 							}
 						}
 					}
+					// SECURITY (#27): don't log the phone number.
 					h.logger.Info("Creating phone user in local database",
-						zap.String("firebase_uid", userID),
-						zap.String("phone", firebaseUser.PhoneNumber))
+						zap.String("firebase_uid", userID))
 				} else {
 					// Email/Google user - use CreateGoogleUser
 					signupReq := requests.SignupRequest{
@@ -2695,9 +3173,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 						Password: "", // Google/Firebase users don't have passwords
 					}
 					createResponse, createErr = h.userService.CreateGoogleUser(c.Request.Context(), &signupReq, userID)
+					// SECURITY (#27): don't log the email.
 					h.logger.Info("Creating Google/email user in local database",
-						zap.String("firebase_uid", userID),
-						zap.String("email", firebaseUser.Email))
+						zap.String("firebase_uid", userID))
 				}
 
 				if createErr != nil || createResponse == nil || !createResponse.Success {
@@ -2709,10 +3187,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 					alreadyExists := (createErr == nil && createResponse != nil && !createResponse.Success)
 
 					if alreadyExists {
+						// SECURITY (#27): don't log email/phone PII.
 						h.logger.Info("User already exists when auto-creating for Magic Checkout, fetching existing user instead",
-							zap.String("firebase_uid", userID),
-							zap.String("email", firebaseUser.Email),
-							zap.String("phone", firebaseUser.PhoneNumber))
+							zap.String("firebase_uid", userID))
 
 						// Try by email first
 						if firebaseUser.Email != "" {
@@ -2738,26 +3215,23 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 						}
 
 						if internalUserID == "" {
+							// SECURITY (#27): no email/phone PII in logs.
 							h.logger.Error("Failed to resolve existing user after duplicate error during auto-create",
-								zap.String("firebase_uid", userID),
-								zap.String("email", firebaseUser.Email),
-								zap.String("phone", firebaseUser.PhoneNumber))
+								zap.String("firebase_uid", userID))
 							c.JSON(http.StatusInternalServerError, gin.H{
 								"error": "Failed to resolve user account",
 							})
 							return
 						}
 
+						// SECURITY (#27): no email/phone PII in logs.
 						h.logger.Info("Resolved existing user after duplicate error during auto-create",
 							zap.String("firebase_uid", userID),
-							zap.String("email", firebaseUser.Email),
-							zap.String("phone", firebaseUser.PhoneNumber),
 							zap.String("internal_id", internalUserID))
 					} else {
+						// SECURITY (#27): no email/phone PII in logs.
 						h.logger.Error("Failed to auto-create user in local database",
 							zap.String("firebase_uid", userID),
-							zap.String("email", firebaseUser.Email),
-							zap.String("phone", firebaseUser.PhoneNumber),
 							zap.Error(createErr))
 						c.JSON(http.StatusInternalServerError, gin.H{
 							"error": "Failed to create user account",
@@ -2770,10 +3244,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 							internalUserID = id
 						}
 					}
+					// SECURITY (#27): no email/phone PII in logs.
 					h.logger.Info("Auto-created user in local database from Firebase",
 						zap.String("firebase_uid", userID),
-						zap.String("email", firebaseUser.Email),
-						zap.String("phone", firebaseUser.PhoneNumber),
 						zap.String("internal_id", internalUserID))
 				}
 			}
@@ -2826,12 +3299,13 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 				if phone, ok := userMap["phone_number"].(string); ok {
 					userPhone = phone
 				}
+				// SECURITY (#27): no name/email/phone PII in logs.
 				h.logger.Info("Retrieved user information for Magic Checkout notes",
 					zap.String("request_id", requestID),
 					zap.String("user_id", internalUserID),
-					zap.String("name", userName),
-					zap.String("email", userEmail),
-					zap.String("phone", userPhone))
+					zap.Bool("has_name", userName != ""),
+					zap.Bool("has_email", userEmail != ""),
+					zap.Bool("has_phone", userPhone != ""))
 			}
 		} else {
 			h.logger.Warn("Failed to get user information for notes",
@@ -2887,7 +3361,7 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	lineItemsTotal := 0
 
 	for _, item := range cart.Items {
-		itemTotal := int(item.UnitPrice * float64(item.Quantity) * 100) // Convert to paise
+		itemTotal := utils.RupeesToPaisa(item.UnitPrice * float64(item.Quantity)) // Convert to paise (rounded)
 		lineItemsTotal += itemTotal
 
 		// Fetch product details for proper display
@@ -2940,8 +3414,8 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 		lineItem := map[string]interface{}{
 			"sku":         item.ProductID,
 			"name":        productName,
-			"price":       int(item.UnitPrice * 100), // in paise
-			"offer_price": int(item.UnitPrice * 100), // same as price for now
+			"price":       utils.RupeesToPaisa(item.UnitPrice), // in paise (rounded)
+			"offer_price": utils.RupeesToPaisa(item.UnitPrice), // same as price for now
 			"tax_amount":  0,
 			"quantity":    item.Quantity,
 			"description": productDescription,
@@ -3019,7 +3493,7 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	}
 
 	orderOptions := map[string]interface{}{
-		"amount":           int(discountedTotal * 100), // Convert to paise
+		"amount":           utils.RupeesToPaisa(discountedTotal), // Convert to paise (rounded)
 		"currency":         "INR",
 		"receipt":          receipt,
 		"notes":            notes,
@@ -3040,9 +3514,9 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 			zap.Float64("amount", discountedTotal),
 			zap.Int("line_items_count", len(lineItems)),
 			zap.Int("line_items_total", lineItemsTotal))
+		// SECURITY (#28): error already logged above; do not leak internal details.
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "Failed to create payment order. Please try again.",
-			"details": err.Error(),
+			"error": "Failed to create payment order. Please try again.",
 		})
 		return
 	}
@@ -3067,6 +3541,64 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	// Store order data in cache for coupon apply-promotion to retrieve cart total
 	// This is critical because Razorpay sends our receipt ID, not the Razorpay order ID
 	StoreMagicCheckoutOrder(razorpayOrder.Receipt, razorpayOrder.ID, cartTotal, userID)
+
+	// Persist a durable cart snapshot for paid-but-no-order recovery (#13). Magic Checkout
+	// (1CC) is especially prone to "paid but tab closed", and its in-memory order cache is
+	// wiped on a process restart / host idle-sleep — so a DB snapshot is what lets the
+	// webhook rebuild the order. Keyed to the INTERNAL user id so a rebuilt order passes
+	// ownership checks. The address is the saved/default address known at create-order;
+	// if the customer picked a different one in the widget and never verified, the shipment
+	// guard flags it for manual fulfilment rather than shipping to the wrong place.
+	// Best-effort: a failure must not break checkout.
+	if authenticated && strings.HasPrefix(internalUserID, "USER") {
+		snapItems := make([]models.SnapshotLineItem, 0, len(cart.Items))
+		for _, ci := range cart.Items {
+			snapItems = append(snapItems, models.SnapshotLineItem{ProductID: ci.ProductID, Quantity: ci.Quantity, UnitPrice: ci.UnitPrice})
+		}
+		snapFirst, snapLast := userName, ""
+		if idx := strings.IndexByte(userName, ' '); idx > 0 {
+			snapFirst, snapLast = userName[:idx], strings.TrimSpace(userName[idx+1:])
+		}
+		snapParams := services.CartSnapshotParams{
+			RazorpayOrderID:     razorpayOrder.ID,
+			UserID:              internalUserID,
+			Flow:                "magic",
+			Items:               snapItems,
+			CartTotal:           cartTotal,
+			DiscountAmount:      cart.DiscountAmount,
+			CouponCode:          cart.CouponCode,
+			FinalAmount:         discountedTotal,
+			ExpectedAmountPaisa: razorpayOrder.Amount,
+			CustomerFirstName:   snapFirst,
+			CustomerLastName:    snapLast,
+			CustomerPhone:       userPhone,
+			CustomerEmail:       userEmail,
+		}
+		if savedAddress != nil {
+			snapParams.ShippingAddressID = savedAddress.ID
+			snapParams.AddressLine1 = savedAddress.AddressLine1
+			snapParams.AddressLine2 = savedAddress.AddressLine2
+			snapParams.City = savedAddress.City
+			snapParams.State = savedAddress.State
+			snapParams.PostalCode = savedAddress.PostalCode
+			snapParams.Country = savedAddress.Country
+			if savedAddress.Phone != "" {
+				snapParams.CustomerPhone = savedAddress.Phone
+			}
+		}
+		if serr := h.orderService.SaveCartSnapshot(c.Request.Context(), snapParams); serr != nil {
+			// Fail closed: no snapshot means the webhook cannot rebuild a paid-but-no-order,
+			// which is the most likely failure mode for 1CC (tab closed after pay). Do not
+			// return a payable order id. The unpaid Razorpay intent auto-expires.
+			h.logger.Error("Failed to save Magic Checkout cart snapshot - refusing to start payment without recovery net",
+				zap.String("request_id", requestID),
+				zap.String("razorpay_order_id", razorpayOrder.ID),
+				zap.String("user_id", internalUserID),
+				zap.Error(serr))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "We could not start checkout right now. Please try again in a moment."})
+			return
+		}
+	}
 
 	h.logger.Info("Magic Checkout order created successfully",
 		zap.String("request_id", requestID),
