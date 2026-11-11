@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
@@ -46,8 +47,35 @@ type SessionCartService struct {
 	productRepo repositories.ProductRepositoryInterface
 	couponRepo  repositories.CouponRepositoryInterface
 	logger      *zap.Logger
-	// In-memory storage for session carts (in production, use Redis)
+	// In-memory storage for session carts (in production, use Redis).
+	// mu guards sessionCarts: Go maps are not safe for concurrent use, and
+	// unsynchronized access across Gin goroutines caused "fatal error:
+	// concurrent map read and map write" crashes (DoS). All access goes through
+	// the loadCart/storeCart/deleteCart helpers below.
+	mu           sync.RWMutex
 	sessionCarts map[string]*models.Cart
+}
+
+// loadCart returns the in-memory cart for a session under a read lock.
+func (s *SessionCartService) loadCart(sessionID string) (*models.Cart, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cart, ok := s.sessionCarts[sessionID]
+	return cart, ok
+}
+
+// storeCart writes the in-memory cart for a session under a write lock.
+func (s *SessionCartService) storeCart(sessionID string, cart *models.Cart) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionCarts[sessionID] = cart
+}
+
+// deleteCart removes the in-memory cart for a session under a write lock.
+func (s *SessionCartService) deleteCart(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessionCarts, sessionID)
 }
 
 // NewSessionCartService creates a new session cart service
@@ -88,7 +116,7 @@ func (s *SessionCartService) GetSessionCart(ctx context.Context, sessionID strin
 	}
 
 	// Check if session cart exists in memory
-	if cart, exists := s.sessionCarts[sessionID]; exists {
+	if cart, exists := s.loadCart(sessionID); exists {
 		return cart, nil
 	}
 
@@ -106,7 +134,7 @@ func (s *SessionCartService) GetSessionCart(ctx context.Context, sessionID strin
 	// Override the generated ID with session ID for session carts
 	cart.SetID(sessionID)
 
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 	s.logger.Info("Created new session cart", zap.String("session_id", sessionID))
 
 	return cart, nil
@@ -172,7 +200,7 @@ func (s *SessionCartService) AddItemToSessionCart(ctx context.Context, sessionID
 	s.calculateCartTotals(cart)
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Item added to session cart successfully",
 		zap.String("session_id", sessionID),
@@ -242,7 +270,7 @@ func (s *SessionCartService) UpdateSessionCartItem(ctx context.Context, sessionI
 	s.calculateCartTotals(cart)
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Session cart item updated successfully",
 		zap.String("session_id", sessionID),
@@ -289,7 +317,7 @@ func (s *SessionCartService) RemoveSessionCartItem(ctx context.Context, sessionI
 	s.calculateCartTotals(cart)
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Session cart item removed successfully",
 		zap.String("session_id", sessionID),
@@ -316,7 +344,7 @@ func (s *SessionCartService) ClearSessionCart(ctx context.Context, sessionID str
 	cart.TotalPrice = 0
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Session cart cleared successfully", zap.String("session_id", sessionID))
 	return nil
@@ -420,7 +448,7 @@ func (s *SessionCartService) MigrateSessionCartToUser(ctx context.Context, sessi
 	}
 
 	// Clear session cart
-	delete(s.sessionCarts, sessionID)
+	s.deleteCart(sessionID)
 
 	// Get the final user cart
 	finalCart, err := s.cartRepo.GetUserCart(ctx, userID)
@@ -528,7 +556,7 @@ func (s *SessionCartService) MergeSessionCartWithUserCart(ctx context.Context, s
 	}
 
 	// Clear session cart
-	delete(s.sessionCarts, sessionID)
+	s.deleteCart(sessionID)
 
 	// Get the final user cart
 	finalCart, err := s.cartRepo.GetUserCart(ctx, userID)
@@ -633,7 +661,7 @@ func (s *SessionCartService) ApplyCouponToSessionCart(ctx context.Context, sessi
 	cart.DiscountAmount = discount
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Coupon applied to session cart successfully",
 		zap.String("code", code),
@@ -659,7 +687,7 @@ func (s *SessionCartService) RemoveCouponFromSessionCart(ctx context.Context, se
 	cart.DiscountAmount = 0
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Coupon removed from session cart successfully",
 		zap.String("session_id", sessionID))
