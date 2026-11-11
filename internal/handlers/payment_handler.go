@@ -14,6 +14,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -3289,24 +3290,28 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	if h.userService != nil && internalUserID != "" {
 		userResponse, err := h.userService.GetUserByID(c.Request.Context(), internalUserID)
 		if err == nil && userResponse != nil && userResponse.Success && userResponse.Data != nil {
-			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
-				if name, ok := userMap["name"].(string); ok {
-					userName = name
+			// GetUserByID returns *base.BaseResponse whose .Data holds a
+			// responses.UserResponse VALUE (via ToUserResponse). The previous code
+			// asserted .Data.(map[string]interface{}), which ALWAYS failed, so
+			// userName/userEmail/userPhone stayed "" and were frozen into the cart
+			// snapshot. A webhook-recovered order then reached Delhivery with an
+			// empty customer and failed with "missing customer name/phone on order".
+			// Assert the real type instead.
+			switch u := userResponse.Data.(type) {
+			case responses.UserResponse:
+				userName, userEmail, userPhone = u.Name, u.Email, u.PhoneNumber
+			case *responses.UserResponse:
+				if u != nil {
+					userName, userEmail, userPhone = u.Name, u.Email, u.PhoneNumber
 				}
-				if email, ok := userMap["email"].(string); ok {
-					userEmail = email
-				}
-				if phone, ok := userMap["phone_number"].(string); ok {
-					userPhone = phone
-				}
-				// SECURITY (#27): no name/email/phone PII in logs.
-				h.logger.Info("Retrieved user information for Magic Checkout notes",
-					zap.String("request_id", requestID),
-					zap.String("user_id", internalUserID),
-					zap.Bool("has_name", userName != ""),
-					zap.Bool("has_email", userEmail != ""),
-					zap.Bool("has_phone", userPhone != ""))
 			}
+			// SECURITY (#27): no name/email/phone PII in logs.
+			h.logger.Info("Retrieved user information for Magic Checkout notes",
+				zap.String("request_id", requestID),
+				zap.String("user_id", internalUserID),
+				zap.Bool("has_name", userName != ""),
+				zap.Bool("has_email", userEmail != ""),
+				zap.Bool("has_phone", userPhone != ""))
 		} else {
 			h.logger.Warn("Failed to get user information for notes",
 				zap.String("request_id", requestID),
