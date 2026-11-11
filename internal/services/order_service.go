@@ -1376,6 +1376,18 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 		return nil, err
 	}
 
+	// Increment coupon usage exactly once, for a genuinely new order only. A
+	// concurrent verify+webhook is deduped by the unique razorpay_order_id index:
+	// the duplicate returns ErrDuplicateOrder above and never reaches here, so the
+	// coupon is counted once per order (not once per signal). Non-fatal: the paid
+	// order stands even if the counter update fails (logged for reconciliation).
+	if cart.CouponCode != "" {
+		if cErr := s.ReduceCouponUsage(ctx, cart.CouponCode); cErr != nil {
+			s.logger.Error("Failed to increment coupon usage after confirmed order",
+				zap.Error(cErr), zap.String("coupon_code", cart.CouponCode), zap.String("order_id", order.ID))
+		}
+	}
+
 	// Cart cleared ONLY after the order+items commit (#32). Non-fatal if it fails:
 	// the order is committed; a stale cart is a minor UX issue, not a correctness one.
 	if err := s.ClearUserCart(ctx, p.UserID); err != nil {
@@ -1620,6 +1632,17 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 			}
 		}
 		return nil, err
+	}
+
+	// Increment coupon usage exactly once, for a genuinely new order only (see the
+	// same note in CreateConfirmedOrder). The ErrDuplicateOrder reuse branch above
+	// returns before reaching here, so a verify that already created the order is
+	// not double-counted by this webhook rebuild. Non-fatal.
+	if snap.CouponCode != "" {
+		if cErr := s.ReduceCouponUsage(ctx, snap.CouponCode); cErr != nil {
+			s.logger.Error("Failed to increment coupon usage after webhook order rebuild",
+				zap.Error(cErr), zap.String("coupon_code", snap.CouponCode), zap.String("order_id", order.ID))
+		}
 	}
 
 	if merr := s.snapshotRepo.MarkConsumed(ctx, snap.ID, paymentID); merr != nil {
