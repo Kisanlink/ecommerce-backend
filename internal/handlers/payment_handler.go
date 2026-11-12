@@ -2169,6 +2169,165 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// SubmitShippingAddressRequest is the body a customer sends to supply or correct the shipping
+// address of their own paid order that is awaiting a deliverable destination (PAY-06 / #35).
+type SubmitShippingAddressRequest struct {
+	Name         string `json:"name"`
+	Phone        string `json:"phone"`
+	AddressLine1 string `json:"address_line_1" binding:"required"`
+	AddressLine2 string `json:"address_line_2"`
+	City         string `json:"city" binding:"required"`
+	State        string `json:"state" binding:"required"`
+	PostalCode   string `json:"postal_code" binding:"required"`
+	Country      string `json:"country"`
+}
+
+// SubmitShippingAddress lets the authenticated OWNER of a paid order supply (or correct) the
+// shipping address when the order is stuck in needs_manual_fulfillment because no trusted
+// destination was available at verify time. This is the safe replacement for the unauthenticated
+// Magic Checkout address cache removed in the PAY-06 fix: the destination now comes from the
+// authenticated owner, never an anonymous caller.
+//
+// It persists the address both to the canonical `addresses` table (a reusable saved address, also
+// the legacy shipment-resolution tier) and to a fresh per-order OADR snapshot (the authoritative
+// destination CreateShipment resolves first, so it overrides any stale snapshot), resets the order
+// to pending_shipment so the strict anti-double-ship claim will pick it up again, then re-drives
+// fulfillment through the same guarded, idempotent path used by verify/webhook.
+//
+// POST /api/v1/orders/:id/shipping-address
+func (h *PaymentHandler) SubmitShippingAddress(c *gin.Context) {
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil || order == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		return
+	}
+
+	// Ownership (resolves Firebase UID -> internal id).
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	// State guard: only a PAID, not-yet-shipped order that is stuck awaiting a deliverable address
+	// may have its destination set by the customer. This prevents a customer from rewriting the
+	// address of an order that is already shipping or fulfilled.
+	isPaid := order.PaymentStatus == "paid" || order.PaymentStatus == "successful"
+	alreadyShipped := strings.TrimSpace(order.DelhiveryWaybill) != ""
+	if !isPaid || alreadyShipped || order.FulfillmentStatus != models.FulfillmentNeedsManual {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":              "Shipping address can only be submitted for a paid order that is awaiting a deliverable address",
+			"fulfillment_status": order.FulfillmentStatus,
+		})
+		return
+	}
+
+	var req SubmitShippingAddressRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	line1 := strings.TrimSpace(req.AddressLine1)
+	line2 := strings.TrimSpace(req.AddressLine2)
+	city := strings.TrimSpace(req.City)
+	state := strings.TrimSpace(req.State)
+	pincode := strings.TrimSpace(req.PostalCode)
+	country := strings.TrimSpace(req.Country)
+	if country == "" {
+		country = "India"
+	}
+	if line1 == "" || city == "" || state == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "address_line_1, city and state are required"})
+		return
+	}
+	if !pincodeRegex.MatchString(pincode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "postal_code must be a 6-digit Indian pincode"})
+		return
+	}
+
+	// 1) Persist to the canonical addresses table. order.UserID is already the internal USER… id, so
+	//    it is the owner. Non-fatal: the OADR snapshot below is the authoritative shipment source.
+	if saved, acErr := h.addressService.FindOrCreateAddress(
+		c.Request.Context(), order.UserID, line1, city, state, pincode, country,
+	); acErr == nil && saved != nil {
+		order.ShippingAddrID = saved.ID
+	} else {
+		h.logger.Warn("SubmitShippingAddress: failed to persist to addresses table (continuing with OADR snapshot)",
+			zap.String("order_id", orderID), zap.Error(acErr))
+	}
+
+	// 2) Create a fresh normalized per-order OADR snapshot and point the order at it. CreateShipment
+	//    resolves this first (OADR prefix), so it overrides any stale/placeholder snapshot.
+	oaddr := models.NewOrderAddress(line1, line2, city, state, pincode, country)
+	if err := h.orderService.CreateOrderAddress(c.Request.Context(), oaddr); err != nil {
+		h.logger.Error("SubmitShippingAddress: failed to create order address snapshot",
+			zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save shipping address"})
+		return
+	}
+	order.ShippingAddressID = oaddr.ID
+
+	// 3) Legacy text column + customer identity for the shipment label.
+	if name := strings.TrimSpace(req.Name); name != "" {
+		parts := strings.Fields(name)
+		order.CustomerFirstName = parts[0]
+		if len(parts) > 1 {
+			order.CustomerLastName = strings.Join(parts[1:], " ")
+		}
+	}
+	if phone := strings.TrimSpace(req.Phone); phone != "" {
+		order.CustomerPhone = phone
+	}
+	addrText := line1
+	if line2 != "" {
+		addrText += ", " + line2
+	}
+	order.ShippingAddr = fmt.Sprintf("%s, %s, %s %s, %s", addrText, city, state, pincode, country)
+
+	if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
+		h.logger.Error("SubmitShippingAddress: failed to update order with new address",
+			zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order"})
+		return
+	}
+
+	// 4) The blocker (missing address) is resolved, so move the order out of needs_manual back to
+	//    pending_shipment, making it claimable by the strict (anti-double-ship) claim again.
+	if err := h.orderService.MarkFulfillmentStatus(c.Request.Context(), orderID, models.FulfillmentPendingShipment, ""); err != nil {
+		h.logger.Error("SubmitShippingAddress: failed to reset fulfillment status",
+			zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue order for fulfillment"})
+		return
+	}
+
+	// 5) Re-drive fulfillment through the shared, guarded, idempotent path (claim -> ship -> inventory).
+	h.finalizeFulfillment(c.Request.Context(), orderID)
+
+	// Report the resulting state.
+	resp := gin.H{"success": true, "message": "Shipping address saved; order queued for fulfillment", "order_id": orderID}
+	if updated, rErr := h.orderService.GetOrderByID(c.Request.Context(), orderID); rErr == nil && updated != nil {
+		resp["fulfillment_status"] = updated.FulfillmentStatus
+		if strings.TrimSpace(updated.DelhiveryWaybill) != "" {
+			resp["waybill"] = updated.DelhiveryWaybill
+			resp["tracking_url"] = updated.TrackingURL
+			resp["message"] = "Shipping address saved; shipment created"
+		}
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 // finalizeFulfillment creates the Delhivery shipment for an already-paid order (if one does not
 // exist yet), decrements inventory exactly once, advances the order to shipped on success, and
 // records the outcome on the order (FulfillmentStatus / ShipmentError). It is idempotent and

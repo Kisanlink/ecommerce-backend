@@ -62,6 +62,8 @@ type OrderServiceInterface interface {
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
+	// CreateOrderAddress persists a normalized per-order shipping address (OADR) row.
+	CreateOrderAddress(ctx context.Context, address *models.OrderAddress) error
 	// Admin listing/stats/export
 	ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error)
 	ListUnfulfilledOrders(ctx context.Context, page, limit int) ([]models.Order, int, error)
@@ -502,6 +504,14 @@ func (s *OrderService) GetAddressByID(ctx context.Context, userID, addressID str
 		return nil, fmt.Errorf("forbidden: address does not belong to user")
 	}
 	return &addr, nil
+}
+
+// CreateOrderAddress persists a normalized per-order shipping address (OADR) row.
+func (s *OrderService) CreateOrderAddress(ctx context.Context, address *models.OrderAddress) error {
+	if address == nil {
+		return fmt.Errorf("order address cannot be nil")
+	}
+	return s.orderRepo.CreateOrderAddress(ctx, address)
 }
 
 // FormatAddress builds a single-line shipping address string
