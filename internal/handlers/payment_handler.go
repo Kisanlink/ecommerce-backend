@@ -1671,10 +1671,35 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			addressData = h.parseShippingAddressToOrderAddress(shippingAddress)
 		}
 
-		// Note: Address is already saved in the order via addressData
-		// The order will have the address stored in OrderAddress table
-		// For now, we store address in the order. To save to user's address book,
-		// we would need to add AddressService to PaymentHandler (can be done later)
+		// CONSOLIDATION (PAY-06 / #35): persist the resolved shipping address into the canonical
+		// `addresses` table so the order carries a stable addresses-table reference
+		// (order.ShippingAddrID, resolved by CreateShipment's legacy tier) and the customer gets a
+		// reusable saved address. The address data here comes only from TRUSTED sources — Razorpay
+		// customer_details / payment notes, or the user's own saved addresses; the unauthenticated
+		// Magic Checkout callback cache is no longer consulted (see the PAY-06 fix above). This is
+		// best-effort: any failure is logged and must never block order fulfillment. Skipped when an
+		// addresses-table id is already set or the line is a placeholder.
+		if shippingAddressID == "" && internalUserID != "" && h.addressService != nil &&
+			addressData != nil && strings.TrimSpace(addressData.AddressLine1) != "" {
+			line1Lower := strings.ToLower(strings.TrimSpace(addressData.AddressLine1))
+			if !strings.Contains(line1Lower, "address not provided") && !strings.Contains(line1Lower, "unknown") {
+				if saved, acErr := h.addressService.FindOrCreateAddress(
+					c.Request.Context(), internalUserID,
+					addressData.AddressLine1, addressData.City, addressData.State,
+					addressData.PostalCode, addressData.Country,
+				); acErr == nil && saved != nil {
+					shippingAddressID = saved.ID
+					h.logger.Info("Persisted trusted shipping address into addresses table (consolidation)",
+						zap.String("request_id", requestID),
+						zap.String("address_id", saved.ID),
+						zap.String("user_id", internalUserID))
+				} else {
+					h.logger.Warn("Consolidation: failed to persist shipping address into addresses table (non-fatal)",
+						zap.String("request_id", requestID),
+						zap.Error(acErr))
+				}
+			}
+		}
 
 		// SECURITY (#2 replay + user binding): a (razorpay_order_id, payment_id, signature)
 		// triple must map to exactly ONE order, owned by exactly the authenticated user.
