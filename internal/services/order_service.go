@@ -1338,15 +1338,10 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 		}
 	}
 
-	// Normalized customer + address first (reuse the PK-collision retry). These are
-	// harmless normalized records; the security-critical atomic unit is order + items.
-	if err := s.createOrderCustomerWithRetry(ctx, p.Customer); err != nil {
-		return nil, fmt.Errorf("failed to create order customer: %w", err)
-	}
-	if err := s.createOrderAddressWithRetry(ctx, p.Address); err != nil {
-		return nil, fmt.Errorf("failed to create order address: %w", err)
-	}
-
+	// Build the order referencing the (not-yet-persisted) customer + address IDs. All
+	// four rows — customer, address, order, items — are created in ONE transaction below
+	// (createOrderWithPartiesRetry), so a duplicate-order rollback cannot leave orphaned
+	// customer/address rows behind.
 	order := models.NewOrder(p.UserID, p.Customer.ID, p.Address.ID, totalAmount, p.PaymentMethod, models.OrderStatusConfirmed, "successful")
 	order.RazorpayOrderID = p.RazorpayOrderID
 	order.RazorpayPaymentID = p.RazorpayPaymentID
@@ -1371,7 +1366,7 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 		items = append(items, *models.NewOrderItem(order.ID, ci.ProductID, ci.Quantity, ci.UnitPrice))
 	}
 
-	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+	if err := s.createOrderWithPartiesRetry(ctx, p.Customer, p.Address, order, items); err != nil {
 		// May be ErrDuplicateOrder — surfaced unchanged for the caller to reuse.
 		return nil, err
 	}
@@ -1538,11 +1533,9 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 		custPhone = p
 	}
 
-	// Normalized customer + address from the frozen snapshot (reuse the PK-collision retry).
+	// Normalized customer from the frozen snapshot. Persisted together with the address,
+	// order and items in one transaction below (createOrderWithPartiesRetry).
 	customer := models.NewOrderCustomer(custFirst, custLast, custPhone, snap.CustomerPhoneAlt, snap.CustomerEmail)
-	if err := s.createOrderCustomerWithRetry(ctx, customer); err != nil {
-		return nil, fmt.Errorf("failed to create order customer from snapshot: %w", err)
-	}
 	// Reconcile the order total to what Razorpay actually captured, when the caller resolved it.
 	// The snapshot's FinalAmount can understate the charge — 1CC shipping is added by the widget
 	// AFTER the snapshot is written — so trusting it would under-record the order. We also refuse
@@ -1578,9 +1571,6 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 	address := models.NewOrderAddress(snap.AddressLine1, snap.AddressLine2, snap.City, snap.State, snap.PostalCode, country)
 	if ov.ShippingAddress != nil {
 		address = ov.ShippingAddress
-	}
-	if err := s.createOrderAddressWithRetry(ctx, address); err != nil {
-		return nil, fmt.Errorf("failed to create order address from snapshot: %w", err)
 	}
 
 	order := models.NewOrder(snap.UserID, customer.ID, address.ID, totalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
@@ -1622,7 +1612,7 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 		items = append(items, *models.NewOrderItem(order.ID, li.ProductID, li.Quantity, li.UnitPrice))
 	}
 
-	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+	if err := s.createOrderWithPartiesRetry(ctx, customer, address, order, items); err != nil {
 		if errors.Is(err, ErrDuplicateOrder) {
 			// A concurrent verify/webhook already created the order — reuse it (idempotent).
 			existing, lookupErr := s.orderRepo.GetOrderByRazorpayOrderID(ctx, snap.RazorpayOrderID)
@@ -1801,4 +1791,43 @@ func (s *OrderService) createOrderAddressWithRetry(ctx context.Context, addressD
 
 	// If we still have an error after all retries, return it
 	return fmt.Errorf("failed to create order address after %d attempts: %w", maxRetries, createErr)
+}
+
+// createOrderWithPartiesRetry creates the order customer, address, order and items in
+// a single transaction (orderRepo.CreateOrderWithPartiesTx), retrying with fresh
+// customer/address IDs on a primary-key collision. Unlike creating the parties in
+// separate writes beforehand, a duplicate-order rollback cannot orphan the party rows.
+// ErrDuplicateOrder (and any non-collision error) is surfaced unchanged.
+func (s *OrderService) createOrderWithPartiesRetry(ctx context.Context, customer *models.OrderCustomer, address *models.OrderAddress, order *models.Order, items []models.OrderItem) error {
+	const maxRetries = 3
+	var err error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err = s.orderRepo.CreateOrderWithPartiesTx(ctx, customer, address, order, items)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, repositories.ErrOrderPartyPKCollision) {
+			// ErrDuplicateOrder or any other error: surface unchanged.
+			return err
+		}
+		// Regenerate the colliding customer/address IDs and re-point the order at them,
+		// then retry the whole transaction. order.ID (and the items referencing it) are
+		// unchanged, so only the party foreign keys need updating.
+		if customer != nil {
+			nc := models.NewOrderCustomer(customer.FirstName, customer.LastName, customer.Phone, customer.PhoneAlt, customer.Email)
+			customer.ID = nc.ID
+			customer.BaseModel = nc.BaseModel
+			order.CustomerID = customer.ID
+		}
+		if address != nil {
+			na := models.NewOrderAddress(address.AddressLine1, address.AddressLine2, address.City, address.State, address.PostalCode, address.Country)
+			address.ID = na.ID
+			address.BaseModel = na.BaseModel
+			order.ShippingAddressID = address.ID
+		}
+		s.logger.Warn("Order party PK collision; regenerated IDs and retrying transaction",
+			zap.Int("attempt", attempt+1), zap.Int("max_retries", maxRetries))
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return fmt.Errorf("failed to create order with parties after %d attempts: %w", maxRetries, err)
 }
