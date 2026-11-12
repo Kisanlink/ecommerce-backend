@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"time"
+
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -38,7 +40,9 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		// Phone Authentication endpoints
 		phone := auth.Group("/phone")
 		{
-			phone.POST("/send-code", firebaseAuth.SendPhoneVerificationCode) // Send SMS verification code
+			// Per-IP rate limit on top of the existing per-phone cooldown, to blunt SMS
+			// toll-fraud / enumeration that rotates phone numbers from one source.
+			phone.POST("/send-code", middleware.RateLimitByIP(10, 10*time.Minute), firebaseAuth.SendPhoneVerificationCode) // Send SMS verification code
 			phone.POST("/verify-code", firebaseAuth.VerifyPhoneCode)         // Verify SMS code and authenticate
 			phone.POST("/signup", firebaseAuth.PhoneSignup)                  // Alternative phone signup
 		}
