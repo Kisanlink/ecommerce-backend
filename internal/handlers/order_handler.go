@@ -622,6 +622,54 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// GetOrderInvoice returns a short-lived presigned URL to download the order's invoice
+// PDF, after verifying the authenticated caller owns the order. This replaces exposing
+// a long-lived public invoice URL.
+// GET /api/v1/orders/:id/invoice
+func (h *OrderHandler) GetOrderInvoice(c *gin.Context) {
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
+		return
+	}
+
+	// Ownership check (resolves Firebase UID → internal id).
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if order.InvoiceURL == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Invoice is not available for this order yet"})
+		return
+	}
+
+	url, err := h.orderService.GetInvoiceDownloadURL(c.Request.Context(), order.ID)
+	if err != nil {
+		h.logger.Error("Failed to presign invoice URL", zap.String("order_id", order.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate invoice link"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"invoice_url": url,
+		"expires_in":  900,
+	})
+}
+
 // GetOrderTracking retrieves tracking information for an order
 // GET /api/v1/orders/:id/tracking
 // @Summary Get order tracking

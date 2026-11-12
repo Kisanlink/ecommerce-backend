@@ -48,6 +48,8 @@ type OrderServiceInterface interface {
 	ClearUserCart(ctx context.Context, userID string) error
 	UpdateOrder(ctx context.Context, order *models.Order) error
 	GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error)
+	// GetInvoiceDownloadURL returns a short-lived presigned URL for the order's invoice PDF.
+	GetInvoiceDownloadURL(ctx context.Context, orderID string) (string, error)
 	// Transaction-based methods for payment verification
 	CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error)
 	UpdateOrderWithShipmentAtomic(ctx context.Context, orderID string, waybill string, trackingURL string, delhiveryStatus string) error
@@ -594,6 +596,17 @@ func (s *OrderService) createOrderItems(ctx context.Context, orderItems []models
 }
 
 // GetOrderByID retrieves an order by its ID - using a helper method to call the repository correctly
+// GetInvoiceDownloadURL returns a short-lived presigned URL for the order's invoice
+// PDF in R2. It does NOT verify ownership — the caller must confirm the requester
+// owns the order before calling. Returns an error if invoice storage is unconfigured.
+func (s *OrderService) GetInvoiceDownloadURL(ctx context.Context, orderID string) (string, error) {
+	if s.r2Service == nil || !s.r2Service.IsConfigured() {
+		return "", fmt.Errorf("invoice storage is not configured")
+	}
+	key := fmt.Sprintf("invoices/%s.pdf", orderID)
+	return s.r2Service.GetPresignedURL(ctx, key, 15*time.Minute)
+}
+
 func (s *OrderService) GetOrderByID(ctx context.Context, orderID string) (*models.Order, error) {
 	var order models.Order
 	_, err := s.orderRepo.GetByID(ctx, orderID, &order)

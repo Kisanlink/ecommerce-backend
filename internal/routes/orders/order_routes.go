@@ -23,6 +23,7 @@ func RegisterOrderRoutes(r *gin.RouterGroup, repoManager *repositories.Repositor
 		orders.GET("/:id", orderHandler.GetOrderDetails)           // Get specific order details
 		orders.GET("/:id/status", orderHandler.GetOrderStatus)     // Get order status
 		orders.GET("/:id/tracking", orderHandler.GetOrderTracking) // Get order tracking
+		orders.GET("/:id/invoice", orderHandler.GetOrderInvoice)   // Get a short-lived presigned invoice URL (ownership-checked)
 	}
 	// SECURITY (#6): the unauthenticated /debug/order/:id endpoint, which returned order PII
 	// (user_id, shipping address, waybill, total) for any guessable order ID, has been removed.
