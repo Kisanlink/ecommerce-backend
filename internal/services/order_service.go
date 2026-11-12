@@ -1126,6 +1126,29 @@ func (s *OrderService) DeductInventoryForOrder(ctx context.Context, orderID stri
 			if oversold {
 				oversoldIDs = append(oversoldIDs, it.ProductID)
 			}
+
+			// Mirror the decrement into the new Inventory model in the SAME transaction,
+			// when a row exists for the product. Floor at zero — the order is already paid,
+			// so we never hard-fail on oversell here (the legacy products.stock path above
+			// behaves the same) — and recompute the stored stock_status. available_stock is
+			// a computed column, so it is not stored. Products with no inventory row are
+			// tolerated (RowsAffected == 0), leaving products.stock authoritative for them.
+			invUpd := tx.WithContext(ctx).
+				Model(&models.Inventory{}).
+				Where("product_id = ?", it.ProductID).
+				Updates(map[string]interface{}{
+					"current_stock": gorm.Expr("GREATEST(current_stock - ?, 0)", it.Quantity),
+					"stock_status": gorm.Expr(
+						"CASE WHEN GREATEST(current_stock - ?, 0) <= 0 THEN ? "+
+							"WHEN GREATEST(current_stock - ?, 0) <= min_stock_level THEN ? ELSE ? END",
+						it.Quantity, string(models.StockStatusOutOfStock),
+						it.Quantity, string(models.StockStatusLowStock),
+						string(models.StockStatusInStock)),
+					"last_sold_at": gorm.Expr("NOW()"),
+				})
+			if invUpd.Error != nil {
+				return fmt.Errorf("failed to decrement inventory for product %s: %w", it.ProductID, invUpd.Error)
+			}
 		}
 		return nil
 	})
