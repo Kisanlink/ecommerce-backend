@@ -992,75 +992,17 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("request_id", requestID),
 				zap.Strings("keys_to_try", keysToTry))
 
-			var storedAddressData map[string]interface{}
-			var foundKey string
-			for _, key := range keysToTry {
-				if data, exists := GetMagicCheckoutAddress(key); exists {
-					storedAddressData = data
-					foundKey = key
-					break
-				}
-			}
-
-			if storedAddressData != nil {
-				h.logger.Info("SUCCESS: Found stored Magic Checkout address",
-					zap.String("request_id", requestID),
-					zap.String("found_key", foundKey),
-					zap.String("razorpay_order_id", req.OrderID),
-					zap.Any("address_data", storedAddressData))
-
-				// Extract the shipping address from stored data
-				if shippingAddr, ok := storedAddressData["shipping_address"].(map[string]interface{}); ok {
-					magicCheckoutAddress = shippingAddr
-
-					// IMPORTANT: Extract customer name from shipping address
-					if name, ok := shippingAddr["name"].(string); ok && name != "" {
-						nameParts := strings.Fields(strings.TrimSpace(name))
-						if len(nameParts) > 0 {
-							firstName = nameParts[0]
-							if len(nameParts) > 1 {
-								lastName = strings.Join(nameParts[1:], " ")
-							}
-						}
-						h.logger.Info("Extracted customer name from shipping address",
-							zap.String("request_id", requestID),
-							zap.String("full_name", name),
-							zap.String("firstName", firstName),
-							zap.String("lastName", lastName))
-					}
-				}
-
-				// Extract customer details from stored data
-				if storedEmail, ok := storedAddressData["email"].(string); ok && storedEmail != "" {
-					email = storedEmail
-				}
-				if storedContact, ok := storedAddressData["contact"].(string); ok && storedContact != "" {
-					mobile = storedContact
-				}
-
-				// Extract customer details from customer_details if present
-				if custDetails, ok := storedAddressData["customer_details"].(map[string]interface{}); ok {
-					if name, ok := custDetails["name"].(string); ok && name != "" {
-						nameParts := strings.Fields(strings.TrimSpace(name))
-						if len(nameParts) > 0 {
-							firstName = nameParts[0]
-							if len(nameParts) > 1 {
-								lastName = strings.Join(nameParts[1:], " ")
-							}
-						}
-					}
-					if fn, ok := custDetails["first_name"].(string); ok && fn != "" {
-						firstName = fn
-					}
-					if ln, ok := custDetails["last_name"].(string); ok && ln != "" {
-						lastName = ln
-					}
-				}
-			} else {
-				h.logger.Warn("No stored Magic Checkout address found",
-					zap.String("request_id", requestID),
-					zap.Strings("keys_tried", keysToTry))
-			}
+			// SECURITY (PAY-06 / #35): the /magic-checkout/shipping-info and
+			// /addresses-callback endpoints are UNAUTHENTICATED, so the address they cache
+			// can be poisoned by anyone who knows a Razorpay order ID — redirecting a paid
+			// order's shipment (address-source poisoning). That cache is NOT a trusted source
+			// and is no longer read to decide where an order ships. The real 1CC address
+			// comes from the trusted Razorpay payment/order entity (handled immediately
+			// below); if Razorpay provides none, the order falls through to the existing
+			// needs-manual-fulfillment guard rather than shipping to an unverified address.
+			h.logger.Info("Razorpay order has no shipping address; ignoring unauthenticated callback cache and using the trusted payment entity only",
+				zap.String("request_id", requestID),
+				zap.Strings("keys_considered", keysToTry))
 		}
 
 		// Extract customer details from payment entity (Magic Checkout stores them here)
