@@ -2,8 +2,10 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
@@ -29,9 +31,9 @@ func RegisterAdminUserRoutes(r *gin.RouterGroup, repoManager *repositories.Repos
 		users.DELETE(":id", userHandler.DeleteUser)
 	}
 
-	// Setup endpoint to promote user to admin (requires admin secret key)
-	// This allows initial admin setup without needing an existing admin
-	r.POST("/admin/setup/promote", func(c *gin.Context) {
+	// One-time bootstrap endpoint to create the first admin (requires ADMIN_SECRET_KEY).
+	// Rate-limited per IP, and promoteUserToAdmin refuses once any admin already exists.
+	r.POST("/admin/setup/promote", middleware.RateLimitByIP(5, time.Minute), func(c *gin.Context) {
 		promoteUserToAdmin(c, repoManager)
 	})
 }
@@ -56,13 +58,26 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 		return
 	}
 
-	if req.SecretKey != adminSecretKey {
+	// Constant-time comparison so the secret cannot be recovered via response timing.
+	if subtle.ConstantTimeCompare([]byte(req.SecretKey), []byte(adminSecretKey)) != 1 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid secret key"})
 		return
 	}
 
-	// Find user by email
 	ctx := context.Background()
+
+	// First-admin gate: this bootstrap endpoint is only usable until an admin exists.
+	// Once any admin is present, promotion must go through the authenticated admin
+	// console (/admin/users), so the shared secret cannot be used to mint more admins.
+	if adminCount, err := repoManager.UserRepository.CountUsersByRole(ctx, "admin"); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify admin state"})
+		return
+	} else if adminCount > 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "An admin already exists; use the admin console to manage roles"})
+		return
+	}
+
+	// Find user by email
 	user, err := repoManager.UserRepository.GetUserByEmail(ctx, req.Email)
 	if err != nil || user == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found. Please signup first."})
