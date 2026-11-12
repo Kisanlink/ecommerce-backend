@@ -1,6 +1,9 @@
 package routes
 
 import (
+	"os"
+	"strings"
+
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -41,12 +44,21 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		})
 	})
 
-	// Debug endpoints
-	debugHandler := handlers.NewDebugHandler(logger)
-	debugHandlerWithServices := handlers.NewDebugHandlerWithServices(logger, serviceManager.OrderService)
-	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
-	r.GET("/debug/delhivery-config", debugHandler.CheckDelhiveryConfig)
-	r.POST("/debug/invoice/:id", debugHandlerWithServices.GenerateInvoiceDebug)
+	// Debug endpoints — DISABLED by default. These expose Firebase/Delhivery config
+	// status and can generate any order's invoice, so they are registered only when
+	// ENABLE_DEBUG_ROUTES=true and, even then, require an authenticated admin
+	// (Firebase auth + AdminGuard). In production leave ENABLE_DEBUG_ROUTES unset.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ENABLE_DEBUG_ROUTES")), "true") {
+		debugHandler := handlers.NewDebugHandler(logger)
+		debugHandlerWithServices := handlers.NewDebugHandlerWithServices(logger, serviceManager.OrderService)
+		debugGroup := r.Group("/debug")
+		debugGroup.Use(middleware.FirebaseAuthMiddleware())
+		debugGroup.Use(middleware.AdminGuard(repoManager))
+		debugGroup.GET("/firebase", debugHandler.CheckFirebaseStatus)
+		debugGroup.GET("/delhivery-config", debugHandler.CheckDelhiveryConfig)
+		debugGroup.POST("/invoice/:id", debugHandlerWithServices.GenerateInvoiceDebug)
+		logger.Warn("Debug routes are ENABLED via ENABLE_DEBUG_ROUTES=true (admin-authenticated); do not enable in production")
+	}
 
 	// API versioning
 	v1 := r.Group("/api/v1")
