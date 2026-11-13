@@ -1681,8 +1681,14 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 		// addresses-table id is already set or the line is a placeholder.
 		if shippingAddressID == "" && internalUserID != "" && h.addressService != nil &&
 			addressData != nil && strings.TrimSpace(addressData.AddressLine1) != "" {
-			line1Lower := strings.ToLower(strings.TrimSpace(addressData.AddressLine1))
-			if !strings.Contains(line1Lower, "address not provided") && !strings.Contains(line1Lower, "unknown") {
+			// Vet ALL components, not just line1: the notes parser / parseShippingAddressToOrderAddress
+			// can return a real-looking street with city="Unknown City" and postal_code="000000".
+			// Saving that as a reusable address lets a later checkout pick it via the addresses-table
+			// fallback. Mirror finalizeFulfillment's placeholder rules (valid 6-digit pincode, not 000000).
+			pin := strings.TrimSpace(addressData.PostalCode)
+			all := strings.ToLower(strings.Join([]string{addressData.AddressLine1, addressData.City, addressData.State, pin}, " "))
+			if !strings.Contains(all, "address not provided") && !strings.Contains(all, "unknown") &&
+				pincodeRegex.MatchString(pin) && pin != "000000" {
 				if saved, acErr := h.addressService.FindOrCreateAddress(
 					c.Request.Context(), internalUserID,
 					addressData.AddressLine1, addressData.City, addressData.State,
