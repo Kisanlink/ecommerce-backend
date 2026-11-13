@@ -268,7 +268,10 @@ func (s *CouponService) ValidateCoupon(ctx context.Context, code string, cartTot
 	return base.NewSuccessResponse("Coupon is valid", response), nil
 }
 
-// ApplyCouponToUser applies a coupon and increments usage count
+// ApplyCouponToUser validates that a coupon is applicable for a user. It does NOT increment the
+// coupon's usage count: usage is owned solely by order creation (OrderService.ReduceCouponUsage),
+// so a coupon counts exactly once per confirmed order. Incrementing here as well double-counted
+// usage whenever an order followed an /coupons/apply call.
 func (s *CouponService) ApplyCouponToUser(ctx context.Context, code string, userID string) (*base.BaseResponse, error) {
 	// Get coupon with rules first to check if it exists and is valid
 	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
@@ -286,16 +289,8 @@ func (s *CouponService) ApplyCouponToUser(ctx context.Context, code string, user
 		return base.NewErrorResponse("Coupon usage limit reached", base.NewValidationError("coupon", "Coupon has reached its usage limit")), nil
 	}
 
-	// Increment usage count
-	if err := s.couponRepo.IncrementUsage(ctx, code); err != nil {
-		s.logger.Error("Failed to increment coupon usage",
-			zap.String("code", code),
-			zap.String("user_id", userID),
-			zap.Error(err))
-		return base.NewErrorResponse("Failed to apply coupon", base.NewInternalServerError("Database error", err.Error())), nil
-	}
-
-	s.logger.Info("Coupon applied successfully",
+	// Usage is intentionally NOT incremented here — see the doc comment. Order creation owns it.
+	s.logger.Info("Coupon validated for user (usage counted at order creation)",
 		zap.String("code", code),
 		zap.String("user_id", userID))
 
