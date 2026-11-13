@@ -3,6 +3,7 @@ package routes
 import (
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
@@ -60,13 +61,18 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		logger.Warn("Debug routes are ENABLED via ENABLE_DEBUG_ROUTES=true (admin-authenticated); do not enable in production")
 	}
 
+	// Shared send-code rate limiter: ONE instance reused across the /api/v1 and legacy auth
+	// registrations, so an IP's send-code budget is not multiplied by the number of route aliases
+	// (#30). The admin-bootstrap limiter is constructed separately and is intentionally not shared.
+	sendCodeLimiter := middleware.RateLimitByIP(10, 10*time.Minute)
+
 	// API versioning
 	v1 := r.Group("/api/v1")
 	{
 		// ============================================
 		// PUBLIC ROUTES (no authentication required)
 		// ============================================
-		auth.RegisterAuthRoutes(v1, repoManager, serviceManager)
+		auth.RegisterAuthRoutes(v1, repoManager, serviceManager, sendCodeLimiter)
 		users.RegisterUserRoutes(v1, repoManager, serviceManager)
 		products.RegisterProductRoutes(v1, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager, serviceManager)
@@ -110,7 +116,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 	// Legacy routes (without versioning) for backward compatibility
 	legacy := r.Group("/")
 	{
-		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager)
+		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager, sendCodeLimiter)
 		recipes.RegisterRecipeRoutes(legacy, repoManager, serviceManager)
 	}
 }

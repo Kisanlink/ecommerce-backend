@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"time"
-
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -10,8 +8,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RegisterAuthRoutes registers all authentication related routes
-func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager) {
+// RegisterAuthRoutes registers all authentication related routes. sendCodeLimiter is a single
+// per-IP rate limiter instance supplied by the caller and shared across every registration of
+// these routes (the /api/v1 and legacy aliases), so one IP's send-code budget is not multiplied
+// by the number of aliases (#30).
+func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.RepositoryManager, serviceManager *services.ServiceManager, sendCodeLimiter gin.HandlerFunc) {
 	// Firebase Auth Handler with UserService, ProfileService, WhatsAppService, and OTPService dependency injection
 	firebaseAuth := handlers.NewFirebaseAuthHandler(
 		serviceManager.UserService,
@@ -42,7 +43,7 @@ func RegisterAuthRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 		{
 			// Per-IP rate limit on top of the existing per-phone cooldown, to blunt SMS
 			// toll-fraud / enumeration that rotates phone numbers from one source.
-			phone.POST("/send-code", middleware.RateLimitByIP(10, 10*time.Minute), firebaseAuth.SendPhoneVerificationCode) // Send SMS verification code
+			phone.POST("/send-code", sendCodeLimiter, firebaseAuth.SendPhoneVerificationCode) // Send SMS verification code (shared per-IP limiter)
 			phone.POST("/verify-code", firebaseAuth.VerifyPhoneCode)         // Verify SMS code and authenticate
 			phone.POST("/signup", firebaseAuth.PhoneSignup)                  // Alternative phone signup
 		}
