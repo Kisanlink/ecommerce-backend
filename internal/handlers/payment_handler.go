@@ -2225,7 +2225,14 @@ func (h *PaymentHandler) SubmitShippingAddress(c *gin.Context) {
 	// address of an order that is already shipping or fulfilled.
 	isPaid := order.PaymentStatus == "paid" || order.PaymentStatus == "successful"
 	alreadyShipped := strings.TrimSpace(order.DelhiveryWaybill) != ""
-	if !isPaid || alreadyShipped || order.FulfillmentStatus != models.FulfillmentNeedsManual {
+	// A courier shipment can already EXIST with an empty DelhiveryWaybill: finalizeFulfillment parks
+	// the order in needs_manual_fulfillment (NOT shipment_failed) when CreateShipment succeeded but
+	// ApplyShipmentSuccess failed to persist the waybill, recording "shipment created at courier ..."
+	// in ShipmentError. Accepting a resubmission here would reset the order to pending_shipment and
+	// re-drive CreateShipment, producing a SECOND parcel. Reject that state so the customer path never
+	// double-ships; those orders are reconciled by an admin, not by re-shipping.
+	shipmentAtCourier := strings.Contains(order.ShipmentError, "shipment created at courier")
+	if !isPaid || alreadyShipped || shipmentAtCourier || order.FulfillmentStatus != models.FulfillmentNeedsManual {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":              "Shipping address can only be submitted for a paid order that is awaiting a deliverable address",
 			"fulfillment_status": order.FulfillmentStatus,
