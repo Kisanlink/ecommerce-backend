@@ -9,8 +9,8 @@ package requests
 // admin. Changes to those columns go exclusively through the admin-guarded
 // user-management routes.
 type UpdateUserProfileRequest struct {
-	Name        *string `json:"name,omitempty" validate:"omitempty,min=1,max=100"`
-	PhoneNumber *string `json:"phone_number,omitempty" validate:"omitempty,max=20"`
+	Name        *string `json:"name,omitempty" binding:"omitempty,min=1,max=100"`
+	PhoneNumber *string `json:"phone_number,omitempty" binding:"omitempty,max=20"`
 }
 
 // SanitizedUpdateMap returns a map containing only the fields the user actually
