@@ -844,14 +844,16 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		zap.String("response_length", fmt.Sprintf("%d", len(body))))
 
 	if resp.StatusCode != http.StatusOK {
+		// Do NOT log the response body: phone masking does not scrub names, addresses, or
+		// spaced number formats, so the carrier echo can leak customer PII. Record only its size.
 		s.logger.Error("Delhivery API returned error status",
 			zap.String("order_id", order.ID),
 			zap.Int("status_code", resp.StatusCode),
-			zap.String("response_body", utils.MaskPhonesInText(string(body))))
+			zap.Int("response_bytes", len(body)))
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Delhivery API returned error status %d", resp.StatusCode),
-		}, fmt.Errorf("shipment API failed: HTTP %d - %s", resp.StatusCode, string(body))
+		}, fmt.Errorf("shipment API failed: HTTP %d", resp.StatusCode)
 	}
 
 	// Enhanced response logging for debugging AWS issues
@@ -872,7 +874,7 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		s.logger.Error("Failed to parse Delhivery shipment response - JSON parsing error",
 			zap.Error(err),
 			zap.String("order_id", order.ID),
-			zap.String("response_body", utils.MaskPhonesInText(string(body))),
+			zap.Int("response_bytes", len(body)),
 			zap.String("error_type", "json_parse_error"))
 		return &ShipmentResult{
 			Success: false,
@@ -951,7 +953,7 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 		s.logger.Error("No waybill received from Delhivery despite successful response",
 			zap.String("order_id", order.ID),
-			zap.String("response_body", utils.MaskPhonesInText(string(body))),
+			zap.Int("response_bytes", len(body)),
 			zap.String("error_type", "no_waybill_received"))
 		return &ShipmentResult{
 			Success: false,
