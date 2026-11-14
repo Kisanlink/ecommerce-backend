@@ -1,6 +1,10 @@
 package routes
 
 import (
+	"os"
+	"strings"
+	"time"
+
 	"github.com/Kisanlink/ecommerce-backend/internal/handlers"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
@@ -41,12 +45,26 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		})
 	})
 
-	// Debug endpoints
-	debugHandler := handlers.NewDebugHandler(logger)
-	debugHandlerWithServices := handlers.NewDebugHandlerWithServices(logger, serviceManager.OrderService)
-	r.GET("/debug/firebase", debugHandler.CheckFirebaseStatus)
-	r.GET("/debug/delhivery-config", debugHandler.CheckDelhiveryConfig)
-	r.POST("/debug/invoice/:id", debugHandlerWithServices.GenerateInvoiceDebug)
+	// Debug endpoints — DISABLED by default. These expose Firebase/Delhivery config
+	// status and can generate any order's invoice, so they are registered only when
+	// ENABLE_DEBUG_ROUTES=true and, even then, require an authenticated admin
+	// (Firebase auth + AdminGuard). In production leave ENABLE_DEBUG_ROUTES unset.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ENABLE_DEBUG_ROUTES")), "true") {
+		debugHandler := handlers.NewDebugHandler(logger)
+		debugHandlerWithServices := handlers.NewDebugHandlerWithServices(logger, serviceManager.OrderService)
+		debugGroup := r.Group("/debug")
+		debugGroup.Use(middleware.FirebaseAuthMiddleware())
+		debugGroup.Use(middleware.AdminGuard(repoManager))
+		debugGroup.GET("/firebase", debugHandler.CheckFirebaseStatus)
+		debugGroup.GET("/delhivery-config", debugHandler.CheckDelhiveryConfig)
+		debugGroup.POST("/invoice/:id", debugHandlerWithServices.GenerateInvoiceDebug)
+		logger.Warn("Debug routes are ENABLED via ENABLE_DEBUG_ROUTES=true (admin-authenticated); do not enable in production")
+	}
+
+	// Shared send-code rate limiter: ONE instance reused across the /api/v1 and legacy auth
+	// registrations, so an IP's send-code budget is not multiplied by the number of route aliases
+	// (#30). The admin-bootstrap limiter is constructed separately and is intentionally not shared.
+	sendCodeLimiter := middleware.RateLimitByIP(10, 10*time.Minute)
 
 	// API versioning
 	v1 := r.Group("/api/v1")
@@ -54,7 +72,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 		// ============================================
 		// PUBLIC ROUTES (no authentication required)
 		// ============================================
-		auth.RegisterAuthRoutes(v1, repoManager, serviceManager)
+		auth.RegisterAuthRoutes(v1, repoManager, serviceManager, sendCodeLimiter)
 		users.RegisterUserRoutes(v1, repoManager, serviceManager)
 		products.RegisterProductRoutes(v1, serviceManager)
 		recipes.RegisterRecipeRoutes(v1, repoManager, serviceManager)
@@ -98,7 +116,7 @@ func RegisterRoutes(r *gin.Engine, repoManager *repositories.RepositoryManager, 
 	// Legacy routes (without versioning) for backward compatibility
 	legacy := r.Group("/")
 	{
-		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager)
+		auth.RegisterAuthRoutes(legacy, repoManager, serviceManager, sendCodeLimiter)
 		recipes.RegisterRecipeRoutes(legacy, repoManager, serviceManager)
 	}
 }

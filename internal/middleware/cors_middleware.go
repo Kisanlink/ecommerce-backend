@@ -10,6 +10,46 @@ import (
 	"go.uber.org/zap"
 )
 
+// originHost extracts the lowercased host (without scheme or port) from an Origin
+// header value or a raw Host. Used for suffix-safe origin matching.
+func originHost(origin string) string {
+	h := origin
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	if i := strings.IndexByte(h, '/'); i >= 0 {
+		h = h[:i]
+	}
+	if i := strings.IndexByte(h, ':'); i >= 0 {
+		h = h[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(h))
+}
+
+// isRazorpayOrigin reports whether the origin's host is razorpay.com or one of its
+// subdomains. Suffix-matches the parsed host so look-alikes such as
+// "razorpay.com.attacker.example" are NOT matched (unlike strings.Contains).
+func isRazorpayOrigin(origin string) bool {
+	h := originHost(origin)
+	return h == "razorpay.com" || strings.HasSuffix(h, ".razorpay.com")
+}
+
+// isNgrokOrigin reports whether the host is an ngrok tunnel domain. Suffix-matched
+// on the parsed host to avoid substring bypasses like "notngrok.attacker.example".
+func isNgrokOrigin(origin string) bool {
+	h := originHost(origin)
+	switch {
+	case h == "ngrok.io" || strings.HasSuffix(h, ".ngrok.io"):
+		return true
+	case strings.HasSuffix(h, ".ngrok-free.app") || strings.HasSuffix(h, ".ngrok.app"):
+		return true
+	case strings.HasSuffix(h, ".ngrok-free.dev") || strings.HasSuffix(h, ".ngrok.dev"):
+		return true
+	default:
+		return false
+	}
+}
+
 // CORSMiddlewareWithConfig allows custom CORS configuration
 func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -49,9 +89,9 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 				}
 			}
 
-			// Fallback: Allow ngrok domains for development/testing
-			// This helps with testing via ngrok tunnels
-			if !originAllowed && strings.Contains(origin, "ngrok") {
+			// Fallback: Allow ngrok domains for development/testing (debug mode only).
+			// Suffix-matched on the parsed host so look-alike origins can't bypass it.
+			if !originAllowed && config.Debug && isNgrokOrigin(origin) {
 				originAllowed = true
 				allowedOrigin = origin
 				if config.Debug && logger != nil {
@@ -63,8 +103,8 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 				}
 			}
 
-			// Allow Razorpay domains for Magic Checkout callbacks
-			if !originAllowed && strings.Contains(origin, "razorpay.com") {
+			// Allow Razorpay domains for Magic Checkout callbacks (suffix-safe host match)
+			if !originAllowed && isRazorpayOrigin(origin) {
 				originAllowed = true
 				allowedOrigin = origin
 				if config.Debug && logger != nil {
@@ -99,8 +139,8 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 						zap.String("path", c.Request.URL.Path),
 					)
 				}
-			} else if strings.Contains(host, "ngrok") {
-				// Allow ngrok domains for development/testing
+			} else if config.Debug && isNgrokOrigin(host) {
+				// Allow ngrok domains for development/testing (debug mode only)
 				originAllowed = true
 				if origin != "" && origin != "null" {
 					allowedOrigin = origin
@@ -184,7 +224,7 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 					} else {
 						allowedOrigin = "*"
 					}
-				} else if strings.Contains(host, "ngrok") {
+				} else if config.Debug && isNgrokOrigin(host) {
 					originAllowed = true
 					if origin != "" && origin != "null" {
 						allowedOrigin = origin
@@ -194,7 +234,7 @@ func CORSMiddlewareWithConfig(config CORSConfig) gin.HandlerFunc {
 						// Can't use wildcard with credentials, use host-based origin
 						allowedOrigin = fmt.Sprintf("http://%s", host)
 					}
-				} else if strings.Contains(origin, "razorpay.com") {
+				} else if isRazorpayOrigin(origin) {
 					originAllowed = true
 					allowedOrigin = origin
 				}

@@ -16,6 +16,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/repositories"
+	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
@@ -593,8 +594,8 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 			s.logger.Info("Using OrderCustomer for shipment",
 				zap.String("order_id", order.ID),
 				zap.String("customer_id", order.CustomerID),
-				zap.String("customer_name", custName),
-				zap.String("customer_phone", custPhone))
+				zap.String("customer_name", utils.MaskName(custName)),
+				zap.String("customer_phone", utils.MaskPhone(custPhone)))
 		} else {
 			s.logger.Warn("Failed to fetch OrderCustomer, falling back to legacy fields",
 				zap.String("order_id", order.ID),
@@ -773,15 +774,17 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		zap.String("dest_pincode", pincode),
 		zap.String("dest_city", destCity),
 		zap.String("dest_state", destState),
-		zap.String("customer_name", custName),
-		zap.String("customer_phone", custPhone),
+		zap.String("customer_name", utils.MaskName(custName)),
+		zap.String("customer_phone", utils.MaskPhone(custPhone)),
 		zap.String("unique_order_id", uniqueOrderID))
 
+	// The request body embeds customer name/phone/address, so only its size is
+	// logged at Info — never the raw JSON.
 	s.logger.Info("Sending shipment creation request to Delhivery",
 		zap.String("order_id", order.ID),
 		zap.String("endpoint", endpoint),
 		zap.String("unique_order_id", uniqueOrderID),
-		zap.String("request_data", string(dataJSON)))
+		zap.Int("request_bytes", len(dataJSON)))
 
 	formData := url.Values{}
 	formData.Set("format", "json")
@@ -841,14 +844,16 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		zap.String("response_length", fmt.Sprintf("%d", len(body))))
 
 	if resp.StatusCode != http.StatusOK {
+		// Do NOT log the response body: phone masking does not scrub names, addresses, or
+		// spaced number formats, so the carrier echo can leak customer PII. Record only its size.
 		s.logger.Error("Delhivery API returned error status",
 			zap.String("order_id", order.ID),
 			zap.Int("status_code", resp.StatusCode),
-			zap.String("response_body", string(body)))
+			zap.Int("response_bytes", len(body)))
 		return &ShipmentResult{
 			Success: false,
 			Message: fmt.Sprintf("Delhivery API returned error status %d", resp.StatusCode),
-		}, fmt.Errorf("shipment API failed: HTTP %d - %s", resp.StatusCode, string(body))
+		}, fmt.Errorf("shipment API failed: HTTP %d", resp.StatusCode)
 	}
 
 	// Enhanced response logging for debugging AWS issues
@@ -858,17 +863,18 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 		zap.Int("status_code", resp.StatusCode),
 		zap.String("content_type", resp.Header.Get("Content-Type")))
 
-	// Always log the full response body for debugging
-	s.logger.Info("Full Delhivery API response body",
+	// The response body can echo customer PII, so it is not logged verbatim at Info;
+	// only its size is recorded. Failure paths below log a phone-scrubbed body.
+	s.logger.Info("Delhivery API response received (body omitted from Info logs)",
 		zap.String("order_id", order.ID),
-		zap.String("response_body", string(body)))
+		zap.Int("response_bytes", len(body)))
 
 	shipmentResp, err := responses.ParseShipmentResponse(body)
 	if err != nil {
 		s.logger.Error("Failed to parse Delhivery shipment response - JSON parsing error",
 			zap.Error(err),
 			zap.String("order_id", order.ID),
-			zap.String("response_body", string(body)),
+			zap.Int("response_bytes", len(body)),
 			zap.String("error_type", "json_parse_error"))
 		return &ShipmentResult{
 			Success: false,
@@ -912,9 +918,9 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 			zap.String("dest_pincode", pincode),
 			zap.String("dest_city", destCity),
 			zap.String("dest_state", destState),
-			zap.String("customer_name", custName),
-			zap.String("customer_phone", custPhone),
-			zap.String("shipping_address", shippingAddressString),
+			zap.String("customer_name", utils.MaskName(custName)),
+			zap.String("customer_phone", utils.MaskPhone(custPhone)),
+			zap.String("shipping_address", utils.MaskAddress(shippingAddressString)),
 			zap.String("HINT", "Warehouse name must EXACTLY match pickup location name in Delhivery dashboard"))
 
 		return &ShipmentResult{
@@ -947,7 +953,7 @@ func (s *DeliveryService) CreateShipment(ctx context.Context, order *models.Orde
 
 		s.logger.Error("No waybill received from Delhivery despite successful response",
 			zap.String("order_id", order.ID),
-			zap.String("response_body", string(body)),
+			zap.Int("response_bytes", len(body)),
 			zap.String("error_type", "no_waybill_received"))
 		return &ShipmentResult{
 			Success: false,

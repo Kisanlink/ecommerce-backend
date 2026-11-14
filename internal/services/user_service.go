@@ -308,11 +308,17 @@ func (s *UserService) UpdateUser(ctx context.Context, userID string, updateData 
 	if name, ok := updateData["name"].(string); ok && name != "" {
 		user.Name = name
 	}
-	if phoneNumber, ok := updateData["phone_number"].(string); ok && phoneNumber != "" {
-		user.PhoneNumber = &phoneNumber
-	} else if phoneNumber == "" {
-		// Clear phone number if empty string provided
-		user.PhoneNumber = nil
+	// Distinguish an OMITTED phone_number key from an explicitly supplied empty/null value.
+	// SanitizedUpdateMap omits the key entirely on a name-only profile update, so treating a
+	// missing key like an empty string would wipe an existing phone (saved as NULL via Save).
+	// Only an explicitly present key changes the phone: a non-empty string sets it; an empty or
+	// null value clears it.
+	if raw, present := updateData["phone_number"]; present {
+		if phoneNumber, ok := raw.(string); ok && phoneNumber != "" {
+			user.PhoneNumber = &phoneNumber
+		} else {
+			user.PhoneNumber = nil
+		}
 	}
 	if isVerified, ok := updateData["is_verified"].(bool); ok {
 		user.IsVerified = isVerified
@@ -321,7 +327,10 @@ func (s *UserService) UpdateUser(ctx context.Context, userID string, updateData 
 		user.IsActive = isActive
 	}
 	if role, ok := updateData["role"].(string); ok && role != "" {
-		user.Role = role
+		// Store a canonical role (trimmed, lowercase) so role checks that compare exactly — e.g. the
+		// first-admin bootstrap count — agree with AdminGuard's case/space-insensitive match and a
+		// non-canonical value like "Admin" can never create an uncounted admin.
+		user.Role = strings.ToLower(strings.TrimSpace(role))
 	}
 
 	user.SetUpdatedBy("system")

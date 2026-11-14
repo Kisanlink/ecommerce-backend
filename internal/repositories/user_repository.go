@@ -88,6 +88,15 @@ func (r *UserRepository) CountUsersByStatus(ctx context.Context, isActive bool) 
 	return r.CountWithFilter(ctx, filter)
 }
 
+// CountUsersByRole counts non-deleted users with the given role.
+func (r *UserRepository) CountUsersByRole(ctx context.Context, role string) (int64, error) {
+	filter := base.NewFilterBuilder().
+		Where("role", base.OpEqual, role).
+		WhereNull("deleted_at").
+		Build()
+	return r.CountWithFilter(ctx, filter)
+}
+
 // CountActiveUsers counts all active (non-deleted) users
 func (r *UserRepository) CountActiveUsers(ctx context.Context) (int64, error) {
 	filter := base.NewFilterBuilder().

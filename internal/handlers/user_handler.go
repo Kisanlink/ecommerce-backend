@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Kisanlink/ecommerce-backend/entities/requests"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/Kisanlink/ecommerce-backend/internal/utils"
 	"github.com/gin-gonic/gin"
@@ -166,13 +167,16 @@ func (h *UserHandler) UpdateCurrentUser(c *gin.Context) {
 
 	userID := userData["id"].(string)
 
-	var updateData map[string]interface{}
-	if err := c.ShouldBindJSON(&updateData); err != nil {
+	// Bind to a sanitized DTO (name/phone only). Privileged columns
+	// (role/is_verified/is_active) are intentionally not part of this request, so
+	// a user cannot self-promote via mass assignment (e.g. {"role":"admin"}).
+	var req requests.UpdateUserProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.RespondWithError(c, http.StatusBadRequest, "Invalid request payload", err)
 		return
 	}
 
-	response, err := h.userService.UpdateUser(ctx, userID, updateData)
+	response, err := h.userService.UpdateUser(ctx, userID, req.SanitizedUpdateMap())
 	if err != nil {
 		utils.RespondWithError(c, http.StatusInternalServerError, "Failed to update profile", err)
 		return
