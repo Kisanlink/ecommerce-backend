@@ -1686,69 +1686,16 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			}
 		}
 
-		// CRITICAL FALLBACK: If no valid address from Magic Checkout, try user's saved addresses
-		// This handles the case where Razorpay doesn't call addresses-callback
-		if addressData == nil && h.addressService != nil && internalUserID != "" {
-			h.logger.Warn("No Magic Checkout address available, trying user's saved addresses",
-				zap.String("request_id", requestID),
-				zap.String("user_id", internalUserID))
-
-			// First try default address
-			if defaultAddr, err := h.addressService.GetDefaultAddress(c.Request.Context(), internalUserID); err == nil && defaultAddr != nil {
-				addressData = models.NewOrderAddress(
-					defaultAddr.AddressLine1,
-					defaultAddr.AddressLine2,
-					defaultAddr.City,
-					defaultAddr.State,
-					defaultAddr.PostalCode,
-					defaultAddr.Country,
-				)
-				// Also set customer name from saved address if not already set
-				if firstName == "" && defaultAddr.FirstName != "" {
-					firstName = defaultAddr.FirstName
-					lastName = defaultAddr.LastName
-				}
-				h.logger.Info("Using user's default saved address as fallback",
-					zap.String("request_id", requestID),
-					zap.String("address_id", defaultAddr.ID),
-					zap.String("city", defaultAddr.City),
-					zap.String("state", defaultAddr.State),
-					zap.String("postal_code", defaultAddr.PostalCode),
-					zap.String("first_name", defaultAddr.FirstName))
-			} else {
-				// No default, try to get any saved address
-				h.logger.Warn("No default address, trying any saved address",
-					zap.String("request_id", requestID),
-					zap.String("user_id", internalUserID))
-
-				if addresses, err := h.addressService.GetUserAddresses(c.Request.Context(), internalUserID); err == nil && len(addresses) > 0 {
-					savedAddr := addresses[0] // Use first available address
-					addressData = models.NewOrderAddress(
-						savedAddr.AddressLine1,
-						savedAddr.AddressLine2,
-						savedAddr.City,
-						savedAddr.State,
-						savedAddr.PostalCode,
-						savedAddr.Country,
-					)
-					if firstName == "" && savedAddr.FirstName != "" {
-						firstName = savedAddr.FirstName
-						lastName = savedAddr.LastName
-					}
-					h.logger.Info("Using user's first saved address as fallback",
-						zap.String("request_id", requestID),
-						zap.String("address_id", savedAddr.ID),
-						zap.String("city", savedAddr.City),
-						zap.String("state", savedAddr.State),
-						zap.String("postal_code", savedAddr.PostalCode))
-				} else {
-					h.logger.Warn("No saved addresses found for user",
-						zap.String("request_id", requestID),
-						zap.String("user_id", internalUserID),
-						zap.Error(err))
-				}
-			}
-		}
+		// NOTE: a saved-address fallback used to run here — if no checkout address was resolved, it
+		// substituted the user's DEFAULT (or first) saved address as the order's destination. That is
+		// unsafe: after the PAY-06 cache removal, addressData is nil precisely for orders whose checkout
+		// address was never captured, and shipping to an address the customer did not select for THIS
+		// order is address substitution. The fallback has been removed. An order with no resolvable,
+		// selected address now falls through to the placeholder below; finalizeFulfillment detects the
+		// placeholder and parks the order in needs_manual_fulfillment, where the authenticated owner
+		// supplies the real destination via POST /orders/:id/shipping-address (customer self-entry).
+		// A genuinely selected address is unaffected — it is resolved earlier from the Razorpay order
+		// (customer_details / notes) or the selected shippingAddressID, not from this fallback.
 
 		// Final fallback to string parsing
 		if addressData == nil {
