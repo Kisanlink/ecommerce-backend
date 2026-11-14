@@ -607,18 +607,45 @@ func (h *OrderHandler) callerIsAdmin(c *gin.Context, callerID string) bool {
 		return false
 	}
 	ctx := c.Request.Context()
-	var userMap map[string]interface{}
-	if strings.HasPrefix(callerID, "USER") {
-		if resp, err := h.userService.GetUserByID(ctx, callerID); err == nil && resp != nil && resp.Success && resp.Data != nil {
-			userMap, _ = resp.Data.(map[string]interface{})
+
+	// callerID may be an internal USER… id OR a Firebase UID, and the two lookups return their
+	// payload in DIFFERENT shapes: GetUserByID yields a typed responses.UserResponse value, while
+	// GetUserByFirebaseUID yields a map[string]interface{}. Asserting a single shape (the old
+	// map-only assertion) silently failed for GetUserByID, so an admin resolved by internal id was
+	// read as a non-admin. Read the role from either shape, and don't trust the "USER" prefix as the
+	// sole selector — try the matching lookup first, then fall back to the other.
+	roleFromData := func(data interface{}) (string, bool) {
+		switch d := data.(type) {
+		case responses.UserResponse:
+			return d.Role, true
+		case *responses.UserResponse:
+			if d != nil {
+				return d.Role, true
+			}
+		case map[string]interface{}:
+			if r, ok := d["role"].(string); ok {
+				return r, true
+			}
 		}
-	} else {
-		if resp, err := h.userService.GetUserByFirebaseUID(ctx, callerID); err == nil && resp != nil && resp.Success && resp.Data != nil {
-			userMap, _ = resp.Data.(map[string]interface{})
-		}
+		return "", false
 	}
-	if role, ok := userMap["role"].(string); ok {
-		return strings.EqualFold(strings.TrimSpace(role), "admin")
+
+	tryByID := strings.HasPrefix(callerID, "USER")
+	for attempt := 0; attempt < 2; attempt++ {
+		var data interface{}
+		if tryByID {
+			if resp, err := h.userService.GetUserByID(ctx, callerID); err == nil && resp != nil && resp.Success {
+				data = resp.Data
+			}
+		} else {
+			if resp, err := h.userService.GetUserByFirebaseUID(ctx, callerID); err == nil && resp != nil && resp.Success {
+				data = resp.Data
+			}
+		}
+		if role, ok := roleFromData(data); ok {
+			return strings.EqualFold(strings.TrimSpace(role), "admin")
+		}
+		tryByID = !tryByID // the id shape didn't resolve; fall back to the other lookup
 	}
 	return false
 }
