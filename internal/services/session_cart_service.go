@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
@@ -57,20 +58,27 @@ type SessionCartService struct {
 	//     map read and map write" crashes (DoS). All map access goes through loadCart/storeCart/
 	//     deleteCart.
 	//
-	//   - a PER-SESSION mutex (sessionLocks) serializes each complete read-modify-write of a
-	//     single session's cart. Guarding only the map is not enough: callers loaded the shared
-	//     *models.Cart and then mutated item quantities, appended items, and recalculated totals
-	//     with no lock held, so two concurrent requests for the same session could lose an update
-	//     or drop an appended item, and a get-or-create race could replace a cart that already had
-	//     items. Holding the session's mutex for the whole operation closes both gaps; different
-	//     sessions never contend. Methods return an independent snapshot so a caller never reads a
-	//     cart another request is still mutating.
+	//   - a PER-SESSION mutex serializes each complete read-modify-write of a single session's cart.
+	//     Guarding only the map is not enough: callers loaded the shared *models.Cart and then
+	//     mutated item quantities, appended items, and recalculated totals with no lock held, so two
+	//     concurrent requests for the same session could lose an update or drop an appended item, and
+	//     a get-or-create race could replace a cart that already had items. Holding the session's
+	//     mutex for the whole operation closes both gaps. The per-session mutex is drawn from a
+	//     FIXED-SIZE STRIPE SET (sessionLocks), not a per-session map entry: a map of one mutex per
+	//     session grows without bound and would be unsafe to prune (removing a lock a waiter still
+	//     holds breaks mutual exclusion). Striping bounds memory; a hash collision only makes two
+	//     unrelated sessions share a stripe, which is still correct. Methods return an independent
+	//     snapshot so a caller never reads a cart another request is still mutating.
 	mapMu        sync.RWMutex
 	sessionCarts map[string]*models.Cart
 
-	sessionLocksMu sync.Mutex
-	sessionLocks   map[string]*sync.Mutex
+	sessionLocks [sessionLockStripes]sync.Mutex
 }
+
+// sessionLockStripes is the number of mutex stripes used to serialize per-session cart operations.
+// A power of two keeps the fnv32a modulo cheap; 256 is ample for the concurrency a single instance
+// sees while keeping the lock set tiny and fixed.
+const sessionLockStripes = 256
 
 // loadCart returns the in-memory cart for a session under a read lock on the map.
 func (s *SessionCartService) loadCart(sessionID string) (*models.Cart, bool) {
@@ -94,18 +102,14 @@ func (s *SessionCartService) deleteCart(sessionID string) {
 	delete(s.sessionCarts, sessionID)
 }
 
-// sessionMu returns the mutex dedicated to sessionID, creating it on first use. Callers Lock it
-// for the full duration of a cart operation so same-session requests serialize while different
-// sessions run concurrently.
+// sessionMu returns the striped mutex dedicated to sessionID. Callers Lock it for the full duration
+// of a cart operation so same-session requests serialize while different sessions run concurrently.
+// The session is mapped onto a fixed stripe (fnv32a(sessionID) % sessionLockStripes), so memory is
+// bounded and no lock is ever created per session or removed while a waiter may still hold it.
 func (s *SessionCartService) sessionMu(sessionID string) *sync.Mutex {
-	s.sessionLocksMu.Lock()
-	defer s.sessionLocksMu.Unlock()
-	lk, ok := s.sessionLocks[sessionID]
-	if !ok {
-		lk = &sync.Mutex{}
-		s.sessionLocks[sessionID] = lk
-	}
-	return lk
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sessionID))
+	return &s.sessionLocks[h.Sum32()%sessionLockStripes]
 }
 
 // getOrCreateCart returns the session's cart, creating and storing an empty one on first access.
@@ -154,7 +158,6 @@ func NewSessionCartService(cartRepo repositories.CartRepositoryInterface, produc
 		couponRepo:   couponRepo,
 		logger:       logger,
 		sessionCarts: make(map[string]*models.Cart),
-		sessionLocks: make(map[string]*sync.Mutex),
 	}
 }
 
