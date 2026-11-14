@@ -1018,20 +1018,25 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 	order.CouponCode = cart.CouponCode
 	order.DiscountAmount = cart.DiscountAmount
 
+	// Enforce the coupon usage cap BEFORE creating the order. This is the PRE-PAYMENT path, so a
+	// checkout that would exceed the cap is rejected cleanly and no order is created. The increment
+	// is atomic (conditional on used_count < count), so concurrent checkouts can never push usage
+	// past the cap. A raw infra error does not block checkout (the cap stays best-effort there); a
+	// genuine cap-reached does. If order creation then fails, the counter may be over-counted by one
+	// — benign (slightly more restrictive), never an overshoot — so no compensating decrement is run.
+	if cart.CouponCode != "" && s.couponRepo != nil {
+		counted, cErr := s.couponRepo.IncrementUsageIfAvailable(ctx, cart.CouponCode)
+		if cErr != nil {
+			s.logger.Error("Coupon usage increment errored; proceeding without blocking checkout",
+				zap.String("coupon_code", cart.CouponCode), zap.Error(cErr))
+		} else if !counted {
+			return nil, fmt.Errorf("coupon %q has reached its usage limit", cart.CouponCode)
+		}
+	}
+
 	// Create order with transaction safety
 	if err := s.orderRepo.CreateOrderAtomic(ctx, order, cart.Items); err != nil {
 		return nil, fmt.Errorf("failed to create order atomically: %w", err)
-	}
-
-	// Reduce coupon usage count if a coupon was applied
-	if cart.CouponCode != "" {
-		if err := s.ReduceCouponUsage(ctx, cart.CouponCode); err != nil {
-			s.logger.Error("Failed to reduce coupon usage count after order creation",
-				zap.String("order_id", order.ID),
-				zap.String("coupon_code", cart.CouponCode),
-				zap.Error(err))
-			// Don't fail the order creation, but log the error
-		}
 	}
 
 	s.logger.Info("Order created atomically",
@@ -1217,14 +1222,27 @@ func (s *OrderService) ReduceCouponUsage(ctx context.Context, couponCode string)
 	s.logger.Info("Reducing coupon usage count",
 		zap.String("coupon_code", couponCode))
 
-	if err := s.couponRepo.IncrementUsage(ctx, couponCode); err != nil {
-		s.logger.Error("Failed to reduce coupon usage count",
+	// Atomic conditional increment: only counts while the coupon is below its cap, and cannot lose
+	// an increment under concurrency. This is the POST-PAYMENT path (confirmed/rebuilt orders): a
+	// captured payment must never be failed because a coupon counter could not advance, so a
+	// cap-reached (ok == false) or an infra error is logged and treated as non-fatal — the order
+	// stands, the coupon simply is not counted again (it is already at its limit). The pre-payment
+	// cart path enforces the cap by REJECTING before the order is created (see
+	// CreateOrderFromCartWithShippingAtomic).
+	ok, err := s.couponRepo.IncrementUsageIfAvailable(ctx, couponCode)
+	if err != nil {
+		s.logger.Error("Coupon usage increment errored (non-fatal; order stands)",
 			zap.String("coupon_code", couponCode),
 			zap.Error(err))
-		return fmt.Errorf("failed to reduce coupon usage count: %w", err)
+		return nil
+	}
+	if !ok {
+		s.logger.Warn("Coupon already at its usage limit at order creation; not counted again (order stands)",
+			zap.String("coupon_code", couponCode))
+		return nil
 	}
 
-	s.logger.Info("Successfully reduced coupon usage count",
+	s.logger.Info("Successfully counted coupon usage",
 		zap.String("coupon_code", couponCode))
 
 	return nil

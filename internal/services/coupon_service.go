@@ -269,8 +269,12 @@ func (s *CouponService) ValidateCoupon(ctx context.Context, code string, cartTot
 }
 
 // ApplyCouponToUser validates that a coupon is applicable for a user. It does NOT increment the
-// coupon's usage count: usage is owned solely by order creation (OrderService.ReduceCouponUsage),
-// so a coupon counts exactly once per confirmed order. Incrementing here as well double-counted
+// coupon's usage count: usage is owned solely by order creation, so a coupon counts exactly once
+// per order. Order creation increments atomically with a conditional update that only advances the
+// count while it is below the cap (CouponRepository.IncrementUsageIfAvailable) — the pre-payment
+// cart path rejects a checkout that would exceed the cap, while the post-payment confirmed/rebuilt
+// paths (OrderService.ReduceCouponUsage) log and proceed if the cap is already reached, so a
+// captured payment is never failed over the counter. Incrementing here as well would double-count
 // usage whenever an order followed an /coupons/apply call.
 func (s *CouponService) ApplyCouponToUser(ctx context.Context, code string, userID string) (*base.BaseResponse, error) {
 	// Get coupon with rules first to check if it exists and is valid

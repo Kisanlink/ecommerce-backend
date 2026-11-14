@@ -9,6 +9,7 @@ import (
 	"github.com/Kisanlink/kisanlink-db/pkg/base"
 	"github.com/Kisanlink/kisanlink-db/pkg/db"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // CouponRepositoryInterface defines the interface for coupon repository operations
@@ -21,6 +22,7 @@ type CouponRepositoryInterface interface {
 	Update(ctx context.Context, coupon *models.Coupon) error
 	Delete(ctx context.Context, id string) error
 	IncrementUsage(ctx context.Context, code string) error
+	IncrementUsageIfAvailable(ctx context.Context, code string) (bool, error)
 	GetUsageStats(ctx context.Context, code string) (int, int, error)
 	GetWithRules(ctx context.Context, id string) (*models.Coupon, error)
 	GetByCodeWithRules(ctx context.Context, code string) (*models.Coupon, error)
@@ -161,6 +163,35 @@ func (r *CouponRepository) IncrementUsage(ctx context.Context, code string) erro
 
 	// Update the coupon
 	return r.dbManager.Update(ctx, &coupon)
+}
+
+// IncrementUsageIfAvailable atomically increments a coupon's usage count only while it is below the
+// cap, in a single conditional UPDATE. It returns true if a row was incremented, false if the coupon
+// is already at its limit (or does not exist). Unlike the read-modify-write IncrementUsage, this
+// cannot lose an increment under concurrency (two orders reading the same count and both writing
+// count+1, which would UNDER-count and let usage exceed the cap) and never pushes used_count past
+// count (count <= 0 means unlimited).
+func (r *CouponRepository) IncrementUsageIfAvailable(ctx context.Context, code string) (bool, error) {
+	// GetPostgresManager lives on the concrete manager, not the db.DBManager interface, so assert it.
+	pmProvider, ok := r.dbManager.(interface {
+		GetPostgresManager() *db.PostgresManager
+	})
+	if !ok || pmProvider.GetPostgresManager() == nil {
+		return false, fmt.Errorf("postgres manager unavailable for coupon usage increment")
+	}
+	gdb, err := pmProvider.GetPostgresManager().GetDB(ctx, false)
+	if err != nil {
+		return false, fmt.Errorf("failed to get db for coupon usage increment: %w", err)
+	}
+
+	res := gdb.WithContext(ctx).
+		Model(&models.Coupon{}).
+		Where("code = ? AND deleted_at IS NULL AND (count <= 0 OR used_count < count)", code).
+		Update("used_count", gorm.Expr("used_count + 1"))
+	if res.Error != nil {
+		return false, fmt.Errorf("failed to increment coupon usage: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
 }
 
 // GetUsageStats returns the usage statistics for a coupon
