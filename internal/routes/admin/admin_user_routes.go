@@ -89,17 +89,22 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 	emailNorm := strings.ToLower(strings.TrimSpace(req.Email))
 	errAdminExists := errors.New("admin already exists")
 	errUserNotFound := errors.New("user not found")
+	errTooManyMatches := errors.New("multiple users matched the email")
 
 	txErr := pgManager.WithTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", adminBootstrapLockKey).Error; err != nil {
 			return err
 		}
-		// Re-check inside the lock. Role is matched case/space-insensitively (as AdminGuard does) so a
-		// legacy admin stored as "Admin" is still counted, and deleted_at is filtered explicitly
-		// because the base model's DeletedAt is a plain *time.Time (no gorm soft-delete auto-filter).
+		// Re-check inside the lock. Role is matched case/whitespace-insensitively so a legacy admin
+		// stored as "Admin" or "admin\t" is still counted. SQL TRIM only strips SPACES, whereas
+		// AdminGuard uses Go strings.TrimSpace (all ASCII whitespace), so a tab/newline-padded legacy
+		// role would be counted as admin by the guard but MISSED here, letting a second bootstrap
+		// promotion slip through. BTRIM with the explicit ASCII whitespace set matches Go's
+		// normalization. deleted_at is filtered explicitly because the base model's DeletedAt is a
+		// plain *time.Time (no gorm soft-delete auto-filter).
 		var adminCount int64
 		if err := tx.Model(&models.User{}).
-			Where("deleted_at IS NULL AND LOWER(TRIM(role)) = ?", "admin").
+			Where("deleted_at IS NULL AND LOWER(BTRIM(role, E' \\t\\n\\r\\f\\v')) = ?", "admin").
 			Count(&adminCount).Error; err != nil {
 			return err
 		}
@@ -107,13 +112,19 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 			return errAdminExists
 		}
 		res := tx.Model(&models.User{}).
-			Where("deleted_at IS NULL AND LOWER(TRIM(email)) = ?", emailNorm).
+			Where("deleted_at IS NULL AND LOWER(BTRIM(email, E' \\t\\n\\r\\f\\v')) = ?", emailNorm).
 			Update("role", "admin")
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
 			return errUserNotFound
+		}
+		if res.RowsAffected > 1 {
+			// The normalized-email predicate matched multiple rows. Promoting several accounts to
+			// admin in one bootstrap is never intended; roll back and surface a conflict so the
+			// duplicate accounts can be resolved by hand.
+			return errTooManyMatches
 		}
 		return nil
 	})
@@ -124,6 +135,9 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 		return
 	case errors.Is(txErr, errUserNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found. Please signup first."})
+		return
+	case errors.Is(txErr, errTooManyMatches):
+		c.JSON(http.StatusConflict, gin.H{"error": "Multiple accounts match that email; resolve the duplicates before promoting to admin."})
 		return
 	case txErr != nil:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to promote user to admin"})
