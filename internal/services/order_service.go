@@ -1018,24 +1018,15 @@ func (s *OrderService) CreateOrderFromCartWithShippingAtomic(ctx context.Context
 	order.CouponCode = cart.CouponCode
 	order.DiscountAmount = cart.DiscountAmount
 
-	// Enforce the coupon usage cap BEFORE creating the order. This is the PRE-PAYMENT path, so a
-	// checkout that would exceed the cap is rejected cleanly and no order is created. The increment
-	// is atomic (conditional on used_count < count), so concurrent checkouts can never push usage
-	// past the cap. A raw infra error does not block checkout (the cap stays best-effort there); a
-	// genuine cap-reached does. If order creation then fails, the counter may be over-counted by one
-	// — benign (slightly more restrictive), never an overshoot — so no compensating decrement is run.
-	if cart.CouponCode != "" && s.couponRepo != nil {
-		counted, cErr := s.couponRepo.IncrementUsageIfAvailable(ctx, cart.CouponCode)
-		if cErr != nil {
-			s.logger.Error("Coupon usage increment errored; proceeding without blocking checkout",
-				zap.String("coupon_code", cart.CouponCode), zap.Error(cErr))
-		} else if !counted {
+	// Create the order, its items, and the coupon use in ONE transaction (PRE-PAYMENT path). The
+	// coupon is consumed with a conditional increment inside the same tx as the order insert, so a
+	// checkout that would exceed the cap is rejected cleanly (ErrCouponCapReached, nothing created)
+	// and a duplicate/failed order rolls the coupon increment back — coupon capacity is never burned
+	// on an order that did not commit.
+	if err := s.orderRepo.CreateOrderAtomicWithCoupon(ctx, order, cart.Items, cart.CouponCode); err != nil {
+		if errors.Is(err, repositories.ErrCouponCapReached) {
 			return nil, fmt.Errorf("coupon %q has reached its usage limit", cart.CouponCode)
 		}
-	}
-
-	// Create order with transaction safety
-	if err := s.orderRepo.CreateOrderAtomic(ctx, order, cart.Items); err != nil {
 		return nil, fmt.Errorf("failed to create order atomically: %w", err)
 	}
 

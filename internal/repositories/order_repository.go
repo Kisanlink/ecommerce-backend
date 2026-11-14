@@ -21,6 +21,11 @@ var ErrDuplicateOrder = errors.New("order already exists for razorpay order id")
 // regenerate those IDs and retry the whole transaction.
 var ErrOrderPartyPKCollision = errors.New("order customer/address primary key collision")
 
+// ErrCouponCapReached is returned by a transactional order create when the applied
+// coupon is already at its usage limit, so the whole order (and the coupon increment)
+// is rolled back. The caller should reject the checkout.
+var ErrCouponCapReached = errors.New("coupon has reached its usage limit")
+
 // Additional methods for OrderRepository beyond the base repository
 // The OrderRepository is already defined in repository_manager.go
 
@@ -734,6 +739,59 @@ func (r *OrderRepository) CreateOrderAtomic(ctx context.Context, order *models.O
 	}
 
 	return nil
+}
+
+// CreateOrderAtomicWithCoupon creates an order, its items, and (if a coupon was applied) consumes
+// one coupon use — ALL in a single transaction. Either everything commits or nothing does, so a
+// duplicate/failed order can never leave a coupon over-counted, and the coupon capacity is preserved
+// for later valid checkouts. The coupon use is a conditional increment (only while used_count <
+// count), so concurrent checkouts can never exceed the cap; if the coupon is already at its limit the
+// whole transaction rolls back with ErrCouponCapReached. A duplicate razorpay_order_id rolls back
+// with ErrDuplicateOrder. An empty couponCode skips the coupon step.
+func (r *OrderRepository) CreateOrderAtomicWithCoupon(ctx context.Context, order *models.Order, cartItems []models.CartItem, couponCode string) error {
+	if r.pgManager == nil {
+		return fmt.Errorf("postgres manager unavailable for transactional order creation")
+	}
+
+	// Defense-in-depth pre-check; the unique index on razorpay_order_id is the real guard.
+	if order.RazorpayOrderID != "" {
+		if existing, _ := r.GetOrderByRazorpayOrderID(ctx, order.RazorpayOrderID); existing != nil {
+			return ErrDuplicateOrder
+		}
+	}
+
+	return r.pgManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+		// Consume the coupon use FIRST, inside the tx, with a conditional update that only advances
+		// used_count while it is below the cap. If it changes no row the coupon is full (or gone):
+		// return ErrCouponCapReached so the whole order rolls back. Because this runs in the same tx
+		// as the order insert, a later duplicate/failure also rolls the increment back.
+		if couponCode != "" {
+			res := tx.WithContext(ctx).
+				Model(&models.Coupon{}).
+				Where("code = ? AND deleted_at IS NULL AND (count <= 0 OR used_count < count)", couponCode).
+				Update("used_count", gorm.Expr("used_count + 1"))
+			if res.Error != nil {
+				return fmt.Errorf("failed to consume coupon usage: %w", res.Error)
+			}
+			if res.RowsAffected != 1 {
+				return ErrCouponCapReached
+			}
+		}
+
+		if err := tx.WithContext(ctx).Create(order).Error; err != nil {
+			if isDuplicateKeyError(err) {
+				return ErrDuplicateOrder
+			}
+			return fmt.Errorf("failed to create order: %w", err)
+		}
+		for _, cartItem := range cartItems {
+			orderItem := models.NewOrderItem(order.ID, cartItem.ProductID, cartItem.Quantity, cartItem.UnitPrice)
+			if err := tx.WithContext(ctx).Create(orderItem).Error; err != nil {
+				return fmt.Errorf("failed to create order item for product %s: %w", cartItem.ProductID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // UpdateOrderShipmentAtomic updates order with shipment details atomically
