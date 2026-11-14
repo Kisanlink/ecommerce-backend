@@ -916,6 +916,93 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("razorpay_order_id", req.OrderID))
 		}
 
+		// SECURITY (#2 replay + user binding): a (razorpay_order_id, payment_id, signature)
+		// triple must map to exactly ONE order, owned by exactly the authenticated user. These
+		// checks run HERE — immediately after the Razorpay order fetch and BEFORE any address
+		// resolution or FindOrCreateAddress write — so a caller holding a captured triple for
+		// another user's order can never have that order's address written into the caller's
+		// address book before being rejected.
+		//
+		// (a) Bind the Razorpay order to the caller. The order's notes.user_id (set server-side
+		//     at create-order) must match this user; otherwise a stolen/shared triple could be
+		//     replayed by a different account.
+		notesUserID := ""
+		if rzpOrder != nil && rzpOrder.Notes != nil {
+			if v, ok := rzpOrder.Notes["user_id"].(string); ok {
+				notesUserID = strings.TrimSpace(v)
+			}
+		}
+		// Fail closed (#4): when we have the Razorpay order, its notes.user_id is set by the
+		// server at create-order (both the normal and Magic Checkout paths) and MUST be present
+		// and match the caller. A blank value is no longer skipped — a missing or mismatched
+		// binding means this (order, payment, signature) triple was not issued to this user.
+		// (When the order fetch itself failed, rzpOrder is nil and the captured-payment check
+		// plus the existing-order ownership check below remain the guards.)
+		if rzpOrder != nil && (notesUserID == "" || (notesUserID != internalUserID && notesUserID != userID)) {
+			h.logger.Warn("Rejecting verify: Razorpay order user binding missing or mismatched",
+				zap.String("request_id", requestID),
+				zap.String("caller_internal_id", internalUserID),
+				zap.String("caller_uid", userID),
+				zap.String("notes_user_id", notesUserID),
+				zap.String("razorpay_order_id", req.OrderID))
+			c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
+			return
+		}
+
+		// (b) Idempotency: if an order already exists for this razorpay_order_id, reuse it instead
+		//     of creating a second order from the caller's CURRENT cart. This defeats the replay
+		//     where a paid triple is re-submitted after swapping the cart contents. Running it here,
+		//     before address resolution, also means a non-owner is rejected before any address write.
+		if existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID); lookupErr == nil && existing != nil {
+			if existing.UserID != internalUserID && existing.UserID != userID {
+				h.logger.Warn("Rejecting verify: existing order for this razorpay_order_id belongs to another user",
+					zap.String("request_id", requestID),
+					zap.String("caller_internal_id", internalUserID),
+					zap.String("order_user_id", existing.UserID),
+					zap.String("razorpay_order_id", req.OrderID))
+				c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
+				return
+			}
+
+			h.logger.Info("Idempotent verify: reusing existing order for razorpay_order_id",
+				zap.String("request_id", requestID),
+				zap.String("order_id", existing.ID),
+				zap.String("razorpay_order_id", req.OrderID))
+
+			if strings.TrimSpace(existing.RazorpayPaymentID) == "" {
+				existing.RazorpayPaymentID = req.PaymentID
+				if updErr := h.orderService.UpdateOrder(c.Request.Context(), existing); updErr != nil {
+					// Non-fatal for the response, but the payment ID is how ownership
+					// checks and reconciliation later find this order — surface it.
+					h.logger.Error("Idempotent verify: failed to persist razorpay_payment_id on existing order",
+						zap.Error(updErr),
+						zap.String("order_id", existing.ID),
+						zap.String("payment_id", req.PaymentID))
+				}
+			}
+
+			// Re-run idempotent fulfillment (completes a shipment that failed the first time; a
+			// no-op once shipped) and respond from the existing order.
+			h.finalizeFulfillment(c.Request.Context(), existing.ID)
+			if refreshed, rerr := h.orderService.GetOrderByID(c.Request.Context(), existing.ID); rerr == nil && refreshed != nil {
+				existing = refreshed
+			}
+
+			shipmentPending := strings.TrimSpace(existing.DelhiveryWaybill) == ""
+			c.JSON(http.StatusOK, VerifyPaymentResponse{
+				Success:           true,
+				Message:           "Payment already verified; your order is confirmed and being fulfilled.",
+				PaymentID:         req.PaymentID,
+				OrderID:           existing.ID,
+				AWBNumber:         existing.DelhiveryWaybill,
+				TrackingURL:       existing.TrackingURL,
+				InvoiceURL:        existing.InvoiceURL,
+				FulfillmentStatus: existing.FulfillmentStatus,
+				ShipmentPending:   shipmentPending,
+			})
+			return
+		}
+
 		// Derive shipping values from notes
 		notes := map[string]interface{}{}
 		var shippingAddress string = ""
@@ -1707,87 +1794,13 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			}
 		}
 
-		// SECURITY (#2 replay + user binding): a (razorpay_order_id, payment_id, signature)
-		// triple must map to exactly ONE order, owned by exactly the authenticated user.
-		//
-		// (a) Bind the Razorpay order to the caller. The order's notes.user_id (set server-side
-		//     at create-order) must match this user; otherwise a stolen/shared triple could be
-		//     replayed by a different account.
-		notesUserID := ""
-		if rzpOrder != nil && rzpOrder.Notes != nil {
-			if v, ok := rzpOrder.Notes["user_id"].(string); ok {
-				notesUserID = strings.TrimSpace(v)
-			}
-		}
-		// Fail closed (#4): when we have the Razorpay order, its notes.user_id is set by the
-		// server at create-order (both the normal and Magic Checkout paths) and MUST be present
-		// and match the caller. A blank value is no longer skipped — a missing or mismatched
-		// binding means this (order, payment, signature) triple was not issued to this user.
-		// (When the order fetch itself failed, rzpOrder is nil and the captured-payment check
-		// plus the existing-order ownership check below remain the guards.)
-		if rzpOrder != nil && (notesUserID == "" || (notesUserID != internalUserID && notesUserID != userID)) {
-			h.logger.Warn("Rejecting verify: Razorpay order user binding missing or mismatched",
-				zap.String("request_id", requestID),
-				zap.String("caller_internal_id", internalUserID),
-				zap.String("caller_uid", userID),
-				zap.String("notes_user_id", notesUserID),
-				zap.String("razorpay_order_id", req.OrderID))
-			c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
-			return
-		}
-
-		// (b) Idempotency: if an order already exists for this razorpay_order_id, reuse it instead
-		//     of creating a second order from the caller's CURRENT cart. This defeats the replay
-		//     where a paid triple is re-submitted after swapping the cart contents.
-		if existing, lookupErr := h.orderService.GetOrderByRazorpayOrderID(c.Request.Context(), req.OrderID); lookupErr == nil && existing != nil {
-			if existing.UserID != internalUserID && existing.UserID != userID {
-				h.logger.Warn("Rejecting verify: existing order for this razorpay_order_id belongs to another user",
-					zap.String("request_id", requestID),
-					zap.String("caller_internal_id", internalUserID),
-					zap.String("order_user_id", existing.UserID),
-					zap.String("razorpay_order_id", req.OrderID))
-				c.JSON(http.StatusForbidden, gin.H{"error": "This payment does not belong to the authenticated user"})
-				return
-			}
-
-			h.logger.Info("Idempotent verify: reusing existing order for razorpay_order_id",
-				zap.String("request_id", requestID),
-				zap.String("order_id", existing.ID),
-				zap.String("razorpay_order_id", req.OrderID))
-
-			if strings.TrimSpace(existing.RazorpayPaymentID) == "" {
-				existing.RazorpayPaymentID = req.PaymentID
-				if updErr := h.orderService.UpdateOrder(c.Request.Context(), existing); updErr != nil {
-					// Non-fatal for the response, but the payment ID is how ownership
-					// checks and reconciliation later find this order — surface it.
-					h.logger.Error("Idempotent verify: failed to persist razorpay_payment_id on existing order",
-						zap.Error(updErr),
-						zap.String("order_id", existing.ID),
-						zap.String("payment_id", req.PaymentID))
-				}
-			}
-
-			// Re-run idempotent fulfillment (completes a shipment that failed the first time; a
-			// no-op once shipped) and respond from the existing order.
-			h.finalizeFulfillment(c.Request.Context(), existing.ID)
-			if refreshed, rerr := h.orderService.GetOrderByID(c.Request.Context(), existing.ID); rerr == nil && refreshed != nil {
-				existing = refreshed
-			}
-
-			shipmentPending := strings.TrimSpace(existing.DelhiveryWaybill) == ""
-			c.JSON(http.StatusOK, VerifyPaymentResponse{
-				Success:           true,
-				Message:           "Payment already verified; your order is confirmed and being fulfilled.",
-				PaymentID:         req.PaymentID,
-				OrderID:           existing.ID,
-				AWBNumber:         existing.DelhiveryWaybill,
-				TrackingURL:       existing.TrackingURL,
-				InvoiceURL:        existing.InvoiceURL,
-				FulfillmentStatus: existing.FulfillmentStatus,
-				ShipmentPending:   shipmentPending,
-			})
-			return
-		}
+		// SECURITY (#2 replay + user binding) + idempotent reuse: the notes.user_id binding check and
+		// the existing-order ownership/idempotency reuse were HOISTED to run immediately after the
+		// Razorpay order fetch, BEFORE any address resolution or FindOrCreateAddress write (see the
+		// block just after the rzpOrder fetch). This prevents a caller holding a captured triple for
+		// another user's order from having that order's address written into the caller's address book
+		// before the 403. When we reach here, the caller is bound to this order and no prior order
+		// exists for it, so proceed to create the confirmed order.
 
 		// Create the confirmed, paid order transactionally (#13/#14/#32): CreateConfirmedOrder
 		// fetches the cart and REFUSES an empty one (no zero-item orders), binds the order to
