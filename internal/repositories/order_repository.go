@@ -16,6 +16,11 @@ import (
 // creating a second order.
 var ErrDuplicateOrder = errors.New("order already exists for razorpay order id")
 
+// ErrOrderPartyPKCollision indicates a primary-key collision on the order customer
+// or order address row inside a transactional order create. The caller should
+// regenerate those IDs and retry the whole transaction.
+var ErrOrderPartyPKCollision = errors.New("order customer/address primary key collision")
+
 // Additional methods for OrderRepository beyond the base repository
 // The OrderRepository is already defined in repository_manager.go
 
@@ -629,6 +634,62 @@ func (r *OrderRepository) CreateOrderWithItemsTx(ctx context.Context, order *mod
 	}
 
 	return r.pgManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).Create(order).Error; err != nil {
+			if isDuplicateKeyError(err) {
+				return ErrDuplicateOrder
+			}
+			return fmt.Errorf("failed to create order: %w", err)
+		}
+		for i := range items {
+			if err := tx.WithContext(ctx).Create(&items[i]).Error; err != nil {
+				return fmt.Errorf("failed to create order item for product %s: %w", items[i].ProductID, err)
+			}
+		}
+		return nil
+	})
+}
+
+// CreateOrderWithPartiesTx creates the order customer, order address, order and its
+// items atomically in a single transaction. Unlike creating the customer/address in
+// separate non-transactional writes, a later rollback (e.g. ErrDuplicateOrder on the
+// razorpay_order_id) cannot leave orphaned customer/address rows behind.
+//
+// Returns ErrDuplicateOrder if an order already exists for the razorpay_order_id, or
+// ErrOrderPartyPKCollision if the customer/address primary key collides (the caller
+// should regenerate those IDs and retry the whole transaction). customer and address
+// may be nil to skip them.
+func (r *OrderRepository) CreateOrderWithPartiesTx(ctx context.Context, customer *models.OrderCustomer, address *models.OrderAddress, order *models.Order, items []models.OrderItem) error {
+	if r.pgManager == nil {
+		return fmt.Errorf("postgres manager unavailable for transactional order creation")
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("refusing to create an order with no items")
+	}
+
+	// Defense-in-depth pre-check; the unique index on razorpay_order_id is the real guard.
+	if order.RazorpayOrderID != "" {
+		if existing, _ := r.GetOrderByRazorpayOrderID(ctx, order.RazorpayOrderID); existing != nil {
+			return ErrDuplicateOrder
+		}
+	}
+
+	return r.pgManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+		if customer != nil {
+			if err := tx.WithContext(ctx).Create(customer).Error; err != nil {
+				if isDuplicateKeyError(err) {
+					return fmt.Errorf("%w: %v", ErrOrderPartyPKCollision, err)
+				}
+				return fmt.Errorf("failed to create order customer: %w", err)
+			}
+		}
+		if address != nil {
+			if err := tx.WithContext(ctx).Create(address).Error; err != nil {
+				if isDuplicateKeyError(err) {
+					return fmt.Errorf("%w: %v", ErrOrderPartyPKCollision, err)
+				}
+				return fmt.Errorf("failed to create order address: %w", err)
+			}
+		}
 		if err := tx.WithContext(ctx).Create(order).Error; err != nil {
 			if isDuplicateKeyError(err) {
 				return ErrDuplicateOrder

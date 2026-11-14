@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
@@ -46,8 +47,103 @@ type SessionCartService struct {
 	productRepo repositories.ProductRepositoryInterface
 	couponRepo  repositories.CouponRepositoryInterface
 	logger      *zap.Logger
-	// In-memory storage for session carts (in production, use Redis)
+
+	// In-memory storage for session carts (in production, use Redis).
+	//
+	// Two layers of synchronization are needed and they are NOT the same thing:
+	//
+	//   - mapMu guards the sessionCarts map structure. Go maps are not safe for concurrent
+	//     use, and unsynchronized access across Gin goroutines caused "fatal error: concurrent
+	//     map read and map write" crashes (DoS). All map access goes through loadCart/storeCart/
+	//     deleteCart.
+	//
+	//   - a PER-SESSION mutex (sessionLocks) serializes each complete read-modify-write of a
+	//     single session's cart. Guarding only the map is not enough: callers loaded the shared
+	//     *models.Cart and then mutated item quantities, appended items, and recalculated totals
+	//     with no lock held, so two concurrent requests for the same session could lose an update
+	//     or drop an appended item, and a get-or-create race could replace a cart that already had
+	//     items. Holding the session's mutex for the whole operation closes both gaps; different
+	//     sessions never contend. Methods return an independent snapshot so a caller never reads a
+	//     cart another request is still mutating.
+	mapMu        sync.RWMutex
 	sessionCarts map[string]*models.Cart
+
+	sessionLocksMu sync.Mutex
+	sessionLocks   map[string]*sync.Mutex
+}
+
+// loadCart returns the in-memory cart for a session under a read lock on the map.
+func (s *SessionCartService) loadCart(sessionID string) (*models.Cart, bool) {
+	s.mapMu.RLock()
+	defer s.mapMu.RUnlock()
+	cart, ok := s.sessionCarts[sessionID]
+	return cart, ok
+}
+
+// storeCart writes the in-memory cart for a session under a write lock on the map.
+func (s *SessionCartService) storeCart(sessionID string, cart *models.Cart) {
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
+	s.sessionCarts[sessionID] = cart
+}
+
+// deleteCart removes the in-memory cart for a session under a write lock on the map.
+func (s *SessionCartService) deleteCart(sessionID string) {
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
+	delete(s.sessionCarts, sessionID)
+}
+
+// sessionMu returns the mutex dedicated to sessionID, creating it on first use. Callers Lock it
+// for the full duration of a cart operation so same-session requests serialize while different
+// sessions run concurrently.
+func (s *SessionCartService) sessionMu(sessionID string) *sync.Mutex {
+	s.sessionLocksMu.Lock()
+	defer s.sessionLocksMu.Unlock()
+	lk, ok := s.sessionLocks[sessionID]
+	if !ok {
+		lk = &sync.Mutex{}
+		s.sessionLocks[sessionID] = lk
+	}
+	return lk
+}
+
+// getOrCreateCart returns the session's cart, creating and storing an empty one on first access.
+// It assumes the caller holds the session's mutex, so the load-miss → create → store sequence
+// cannot interleave with another operation on the same session (no get-or-create race). The
+// returned pointer is the shared stored cart and may be mutated by the caller while the session
+// mutex is held; callers hand an independent snapshot back to the HTTP layer.
+func (s *SessionCartService) getOrCreateCart(sessionID string) *models.Cart {
+	if cart, exists := s.loadCart(sessionID); exists {
+		return cart
+	}
+
+	cart := &models.Cart{
+		BaseModel:      base.NewBaseModel("CART", hash.Medium),
+		UserID:         sessionID, // Use sessionID as userID for session carts
+		TotalItems:     0,
+		TotalPrice:     0,
+		CouponCode:     "",
+		DiscountAmount: 0,
+		Items:          []models.CartItem{},
+	}
+	cart.SetID(sessionID)
+
+	s.storeCart(sessionID, cart)
+	s.logger.Info("Created new session cart", zap.String("session_id", sessionID))
+	return cart
+}
+
+// snapshotCart returns a deep-enough copy of a cart for returning to callers: scalar fields are
+// copied by value and the Items slice gets its own backing array, so a subsequent same-session
+// mutation cannot race with a caller still reading (or serializing) the returned cart.
+func snapshotCart(c *models.Cart) *models.Cart {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	cp.Items = append([]models.CartItem(nil), c.Items...)
+	return &cp
 }
 
 // NewSessionCartService creates a new session cart service
@@ -58,6 +154,7 @@ func NewSessionCartService(cartRepo repositories.CartRepositoryInterface, produc
 		couponRepo:   couponRepo,
 		logger:       logger,
 		sessionCarts: make(map[string]*models.Cart),
+		sessionLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -81,35 +178,17 @@ func (s *SessionCartService) ValidateSessionID(sessionID string) bool {
 	return len(sessionID) > 8 && len(sessionID) < 50
 }
 
-// GetSessionCart retrieves the session cart
+// GetSessionCart retrieves the session cart (creating an empty one on first access).
 func (s *SessionCartService) GetSessionCart(ctx context.Context, sessionID string) (*models.Cart, error) {
 	if !s.ValidateSessionID(sessionID) {
 		return nil, fmt.Errorf("invalid session ID")
 	}
 
-	// Check if session cart exists in memory
-	if cart, exists := s.sessionCarts[sessionID]; exists {
-		return cart, nil
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
 
-	// Create new empty cart for this session
-	cart := &models.Cart{
-		BaseModel:      base.NewBaseModel("CART", hash.Medium),
-		UserID:         sessionID, // Use sessionID as userID for session carts
-		TotalItems:     0,
-		TotalPrice:     0,
-		CouponCode:     "",
-		DiscountAmount: 0,
-		Items:          []models.CartItem{},
-	}
-
-	// Override the generated ID with session ID for session carts
-	cart.SetID(sessionID)
-
-	s.sessionCarts[sessionID] = cart
-	s.logger.Info("Created new session cart", zap.String("session_id", sessionID))
-
-	return cart, nil
+	return snapshotCart(s.getOrCreateCart(sessionID)), nil
 }
 
 // AddItemToSessionCart adds an item to the session cart
@@ -124,7 +203,7 @@ func (s *SessionCartService) AddItemToSessionCart(ctx context.Context, sessionID
 		return nil, fmt.Errorf("quantity must be positive")
 	}
 
-	// Validate product exists and get current price
+	// Validate product exists and get current price (DB lookup done before taking the session lock).
 	var product models.Product
 	result, err := s.productRepo.GetByID(ctx, productID, &product)
 	if err != nil {
@@ -140,11 +219,11 @@ func (s *SessionCartService) AddItemToSessionCart(ctx context.Context, sessionID
 		return nil, fmt.Errorf("insufficient stock: requested %d, available %d", quantity, product.Stock)
 	}
 
-	// Get or create session cart
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 
 	// Check if item already exists
 	var existingItem *models.CartItem
@@ -172,14 +251,14 @@ func (s *SessionCartService) AddItemToSessionCart(ctx context.Context, sessionID
 	s.calculateCartTotals(cart)
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Item added to session cart successfully",
 		zap.String("session_id", sessionID),
 		zap.String("product_id", productID),
 		zap.Int("quantity", quantity))
 
-	return cart, nil
+	return snapshotCart(cart), nil
 }
 
 // UpdateSessionCartItem updates the quantity of an item in the session cart
@@ -190,21 +269,42 @@ func (s *SessionCartService) UpdateSessionCartItem(ctx context.Context, sessionI
 	if productID == "" {
 		return nil, fmt.Errorf("product ID is required")
 	}
-
 	if quantity < 0 {
 		return nil, fmt.Errorf("quantity cannot be negative")
 	}
 
-	// If quantity is 0, remove the item
+	// A zero quantity means remove; handle it under the same lock via the shared helper so the
+	// whole operation stays a single serialized read-modify-write.
 	if quantity == 0 {
-		return s.RemoveSessionCartItem(ctx, sessionID, productID)
+		lk := s.sessionMu(sessionID)
+		lk.Lock()
+		defer lk.Unlock()
+		cart, err := s.removeItemLocked(sessionID, productID)
+		if err != nil {
+			return nil, err
+		}
+		return snapshotCart(cart), nil
 	}
 
-	// Get session cart
-	cart, err := s.GetSessionCart(ctx, sessionID)
+	// Validate product exists and check stock (DB lookup done before taking the session lock).
+	var product models.Product
+	result, err := s.productRepo.GetByID(ctx, productID, &product)
 	if err != nil {
-		return nil, err
+		s.logger.Error("Failed to get product", zap.Error(err), zap.String("product_id", productID))
+		return nil, fmt.Errorf("product not found")
 	}
+	if result == nil {
+		return nil, fmt.Errorf("product not found")
+	}
+	if product.Stock < quantity {
+		return nil, fmt.Errorf("insufficient stock: requested %d, available %d", quantity, product.Stock)
+	}
+
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 
 	// Find item to update
 	var itemToUpdate *models.CartItem
@@ -219,21 +319,6 @@ func (s *SessionCartService) UpdateSessionCartItem(ctx context.Context, sessionI
 		return nil, fmt.Errorf("cart item not found")
 	}
 
-	// Validate product exists and check stock
-	var product models.Product
-	result, err := s.productRepo.GetByID(ctx, productID, &product)
-	if err != nil {
-		s.logger.Error("Failed to get product", zap.Error(err), zap.String("product_id", productID))
-		return nil, fmt.Errorf("product not found")
-	}
-	if result == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-
-	if product.Stock < quantity {
-		return nil, fmt.Errorf("insufficient stock: requested %d, available %d", quantity, product.Stock)
-	}
-
 	// Update quantity
 	itemToUpdate.Quantity = quantity
 	itemToUpdate.TotalPrice = itemToUpdate.UnitPrice * float64(quantity)
@@ -242,35 +327,25 @@ func (s *SessionCartService) UpdateSessionCartItem(ctx context.Context, sessionI
 	s.calculateCartTotals(cart)
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Session cart item updated successfully",
 		zap.String("session_id", sessionID),
 		zap.String("product_id", productID),
 		zap.Int("quantity", quantity))
 
-	return cart, nil
+	return snapshotCart(cart), nil
 }
 
-// RemoveSessionCartItem removes an item from the session cart
-func (s *SessionCartService) RemoveSessionCartItem(ctx context.Context, sessionID, productID string) (*models.Cart, error) {
-	if !s.ValidateSessionID(sessionID) {
-		return nil, fmt.Errorf("invalid session ID")
-	}
-	if productID == "" {
-		return nil, fmt.Errorf("product ID is required")
-	}
-
-	// Get session cart
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
+// removeItemLocked removes an item from the session cart. It assumes the caller holds the session
+// mutex, so it never locks itself and can be reused by RemoveSessionCartItem and the quantity==0
+// path of UpdateSessionCartItem without re-entrant locking.
+func (s *SessionCartService) removeItemLocked(sessionID, productID string) (*models.Cart, error) {
+	cart := s.getOrCreateCart(sessionID)
 
 	// Find and remove item
 	newItems := make([]models.CartItem, 0, len(cart.Items))
 	itemFound := false
-
 	for i := range cart.Items {
 		if cart.Items[i].ProductID == productID {
 			itemFound = true
@@ -289,7 +364,7 @@ func (s *SessionCartService) RemoveSessionCartItem(ctx context.Context, sessionI
 	s.calculateCartTotals(cart)
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Session cart item removed successfully",
 		zap.String("session_id", sessionID),
@@ -298,17 +373,37 @@ func (s *SessionCartService) RemoveSessionCartItem(ctx context.Context, sessionI
 	return cart, nil
 }
 
+// RemoveSessionCartItem removes an item from the session cart
+func (s *SessionCartService) RemoveSessionCartItem(ctx context.Context, sessionID, productID string) (*models.Cart, error) {
+	if !s.ValidateSessionID(sessionID) {
+		return nil, fmt.Errorf("invalid session ID")
+	}
+	if productID == "" {
+		return nil, fmt.Errorf("product ID is required")
+	}
+
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart, err := s.removeItemLocked(sessionID, productID)
+	if err != nil {
+		return nil, err
+	}
+	return snapshotCart(cart), nil
+}
+
 // ClearSessionCart removes all items from the session cart
 func (s *SessionCartService) ClearSessionCart(ctx context.Context, sessionID string) error {
 	if !s.ValidateSessionID(sessionID) {
 		return fmt.Errorf("invalid session ID")
 	}
 
-	// Get session cart
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return err
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 
 	// Clear items
 	cart.Items = []models.CartItem{}
@@ -316,7 +411,7 @@ func (s *SessionCartService) ClearSessionCart(ctx context.Context, sessionID str
 	cart.TotalPrice = 0
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Session cart cleared successfully", zap.String("session_id", sessionID))
 	return nil
@@ -328,10 +423,11 @@ func (s *SessionCartService) GetSessionCartSummary(ctx context.Context, sessionI
 		return nil, fmt.Errorf("invalid session ID")
 	}
 
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get session cart summary: %w", err)
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 
 	discounted := cart.TotalPrice - cart.DiscountAmount
 	if discounted < 0 {
@@ -360,11 +456,13 @@ func (s *SessionCartService) MigrateSessionCartToUser(ctx context.Context, sessi
 		return nil, fmt.Errorf("user ID is required")
 	}
 
-	// Get session cart
-	sessionCart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	// Work from an independent snapshot of the session cart so the migration reads a stable set of
+	// items even though the session mutex already excludes concurrent same-session writes.
+	sessionCart := snapshotCart(s.getOrCreateCart(sessionID))
 
 	// If session cart is empty, just return the user's existing cart
 	if len(sessionCart.Items) == 0 {
@@ -420,7 +518,7 @@ func (s *SessionCartService) MigrateSessionCartToUser(ctx context.Context, sessi
 	}
 
 	// Clear session cart
-	delete(s.sessionCarts, sessionID)
+	s.deleteCart(sessionID)
 
 	// Get the final user cart
 	finalCart, err := s.cartRepo.GetUserCart(ctx, userID)
@@ -445,11 +543,12 @@ func (s *SessionCartService) MergeSessionCartWithUserCart(ctx context.Context, s
 		return nil, fmt.Errorf("user ID is required")
 	}
 
-	// Get session cart
-	sessionCart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	// Independent snapshot of the session cart items for a stable merge.
+	sessionCart := snapshotCart(s.getOrCreateCart(sessionID))
 
 	// If session cart is empty, just return the user's existing cart
 	if len(sessionCart.Items) == 0 {
@@ -528,7 +627,7 @@ func (s *SessionCartService) MergeSessionCartWithUserCart(ctx context.Context, s
 	}
 
 	// Clear session cart
-	delete(s.sessionCarts, sessionID)
+	s.deleteCart(sessionID)
 
 	// Get the final user cart
 	finalCart, err := s.cartRepo.GetUserCart(ctx, userID)
@@ -575,7 +674,7 @@ func (s *SessionCartService) ApplyCouponToSessionCart(ctx context.Context, sessi
 
 	code := strings.TrimSpace(strings.ToUpper(couponCode))
 
-	// Get coupon with rules from database
+	// Get coupon with rules from database (before taking the session lock).
 	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
 	if err != nil {
 		s.logger.Error("Invalid coupon code",
@@ -585,11 +684,11 @@ func (s *SessionCartService) ApplyCouponToSessionCart(ctx context.Context, sessi
 		return nil, 0, fmt.Errorf("invalid coupon code")
 	}
 
-	// Get session cart
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get session cart: %w", err)
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 	if cart == nil || len(cart.Items) == 0 || cart.TotalPrice <= 0 {
 		return nil, 0, fmt.Errorf("cart is empty")
 	}
@@ -633,7 +732,7 @@ func (s *SessionCartService) ApplyCouponToSessionCart(ctx context.Context, sessi
 	cart.DiscountAmount = discount
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Coupon applied to session cart successfully",
 		zap.String("code", code),
@@ -641,7 +740,7 @@ func (s *SessionCartService) ApplyCouponToSessionCart(ctx context.Context, sessi
 		zap.Float64("discount", discount),
 		zap.String("rule_type", string(bestRule.RuleType)))
 
-	return cart, discount, nil
+	return snapshotCart(cart), discount, nil
 }
 
 // RemoveCouponFromSessionCart removes a coupon from a session cart
@@ -650,21 +749,22 @@ func (s *SessionCartService) RemoveCouponFromSessionCart(ctx context.Context, se
 		return nil, fmt.Errorf("invalid session ID")
 	}
 
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get session cart: %w", err)
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 
 	cart.CouponCode = ""
 	cart.DiscountAmount = 0
 
 	// Save the updated cart back to session storage
-	s.sessionCarts[sessionID] = cart
+	s.storeCart(sessionID, cart)
 
 	s.logger.Info("Coupon removed from session cart successfully",
 		zap.String("session_id", sessionID))
 
-	return cart, nil
+	return snapshotCart(cart), nil
 }
 
 // ValidateCouponForSessionCart validates a coupon for a session cart without applying it
@@ -675,7 +775,7 @@ func (s *SessionCartService) ValidateCouponForSessionCart(ctx context.Context, s
 
 	code := strings.TrimSpace(strings.ToUpper(couponCode))
 
-	// Get coupon with rules from database
+	// Get coupon with rules from database (before taking the session lock).
 	coupon, err := s.couponRepo.GetByCodeWithRules(ctx, code)
 	if err != nil {
 		s.logger.Error("Invalid coupon code for validation",
@@ -685,11 +785,11 @@ func (s *SessionCartService) ValidateCouponForSessionCart(ctx context.Context, s
 		return nil, 0, fmt.Errorf("invalid coupon code")
 	}
 
-	// Get session cart
-	cart, err := s.GetSessionCart(ctx, sessionID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get session cart: %w", err)
-	}
+	lk := s.sessionMu(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	cart := s.getOrCreateCart(sessionID)
 	if cart == nil || len(cart.Items) == 0 || cart.TotalPrice <= 0 {
 		return nil, 0, fmt.Errorf("cart is empty")
 	}
@@ -734,5 +834,5 @@ func (s *SessionCartService) ValidateCouponForSessionCart(ctx context.Context, s
 		zap.Float64("discount", discount),
 		zap.String("rule_type", string(bestRule.RuleType)))
 
-	return cart, discount, nil
+	return snapshotCart(cart), discount, nil
 }

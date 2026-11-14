@@ -16,15 +16,22 @@ func RegisterUserRoutes(r *gin.RouterGroup, repoManager *repositories.Repository
 	users := r.Group("/users")
 	users.Use(middleware.FirebaseAuthMiddleware())
 	{
-		// User profile operations
+		// User profile operations (any authenticated user, self only)
 		users.GET("/profile", userHandler.GetCurrentUserProfile) // Get current user profile
 		users.PUT("/profile", userHandler.UpdateCurrentUser)     // Update current user profile
 
-		// User management (admin only - add admin middleware later)
-		users.GET("/:id", userHandler.GetUserByID)   // Get user by ID
-		users.PUT("/:id", userHandler.UpdateUser)    // Update user by ID
-		users.DELETE("/:id", userHandler.DeleteUser) // Delete user by ID
-		users.GET("", userHandler.ListUsers)         // Get all users (admin)
+		// User management — admin only. These expose every user's PII and allow
+		// updating/deleting arbitrary accounts, so they MUST sit behind AdminGuard
+		// (previously only FirebaseAuthMiddleware, so any authenticated customer
+		// could dump the user table or delete accounts via full IDOR).
+		adminUsers := users.Group("")
+		adminUsers.Use(middleware.AdminGuard(repoManager))
+		{
+			adminUsers.GET("/:id", userHandler.GetUserByID)   // Get user by ID
+			adminUsers.PUT("/:id", userHandler.UpdateUser)    // Update user by ID
+			adminUsers.DELETE("/:id", userHandler.DeleteUser) // Delete user by ID
+			adminUsers.GET("", userHandler.ListUsers)         // Get all users
+		}
 	}
 
 	// Future route groups (commented until handlers are implemented)

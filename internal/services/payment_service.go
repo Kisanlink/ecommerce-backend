@@ -494,6 +494,16 @@ func (s *PaymentService) GetOrder(ctx context.Context, orderID string) (*Razorpa
 // Fulfillment is driven by the handler (which has the order/delivery dependencies); this keeps
 // signature verification and parsing in one place.
 func (s *PaymentService) ParseWebhook(body []byte, signature string) (*RazorpayWebhookPayload, error) {
+	// Fail closed when no webhook secret is configured. Otherwise generateSignature
+	// computes HMAC-SHA256(body, "") with an empty key, which an attacker can
+	// reproduce — letting them forge order.paid/payment.captured events and trick
+	// the server into fulfilling unpaid orders. A webhook with no verifiable secret
+	// must never be trusted.
+	if s.config.WebhookSecret == "" {
+		s.logger.Error("Razorpay webhook secret is not configured - rejecting webhook (fail closed)")
+		return nil, fmt.Errorf("webhook secret not configured")
+	}
+
 	expectedSignature := s.generateSignature(string(body), s.config.WebhookSecret)
 	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
 		s.logger.Error("Webhook signature verification failed",

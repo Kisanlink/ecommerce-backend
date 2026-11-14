@@ -15,6 +15,7 @@ import (
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // OrderHandler handles order-related HTTP requests
@@ -593,6 +594,35 @@ func (h *OrderHandler) callerOwnsOrder(c *gin.Context, callerID, ownerUserID str
 	return false
 }
 
+// callerIsAdmin reports whether the authenticated caller has the admin role. This route runs under
+// FirebaseAuthMiddleware only (not AdminGuard), so "role" is usually absent from the gin context;
+// fall back to resolving the caller's user record and checking its role. Issue #29 requires the
+// order owner OR an admin to fetch an invoice. Role comparison is case/space-insensitive to match
+// AdminGuard's normalization.
+func (h *OrderHandler) callerIsAdmin(c *gin.Context, callerID string) bool {
+	if h.authContext.IsAdmin(c) { // fast path when AdminGuard already populated the context
+		return true
+	}
+	if h.userService == nil || callerID == "" {
+		return false
+	}
+	ctx := c.Request.Context()
+	var userMap map[string]interface{}
+	if strings.HasPrefix(callerID, "USER") {
+		if resp, err := h.userService.GetUserByID(ctx, callerID); err == nil && resp != nil && resp.Success && resp.Data != nil {
+			userMap, _ = resp.Data.(map[string]interface{})
+		}
+	} else {
+		if resp, err := h.userService.GetUserByFirebaseUID(ctx, callerID); err == nil && resp != nil && resp.Success && resp.Data != nil {
+			userMap, _ = resp.Data.(map[string]interface{})
+		}
+	}
+	if role, ok := userMap["role"].(string); ok {
+		return strings.EqualFold(strings.TrimSpace(role), "admin")
+	}
+	return false
+}
+
 func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 	userID, exists := h.authContext.GetAuthenticatedUserID(c)
 	if !exists {
@@ -620,6 +650,59 @@ func (h *OrderHandler) GetOrderStatus(c *gin.Context) {
 
 	response := responses.NewGetOrderStatusResponse(order)
 	c.JSON(http.StatusOK, response)
+}
+
+// GetOrderInvoice returns a short-lived presigned URL to download the order's invoice
+// PDF, after verifying the authenticated caller owns the order. This replaces exposing
+// a long-lived public invoice URL.
+// GET /api/v1/orders/:id/invoice
+func (h *OrderHandler) GetOrderInvoice(c *gin.Context) {
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+			return
+		}
+		h.logger.Error("Failed to retrieve order for invoice", zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve order"})
+		return
+	}
+
+	// Access: the order owner OR an admin may fetch the invoice (issue #29).
+	if !h.callerOwnsOrder(c, userID, order.UserID) && !h.callerIsAdmin(c, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if order.InvoiceURL == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Invoice is not available for this order yet"})
+		return
+	}
+
+	url, err := h.orderService.GetInvoiceDownloadURL(c.Request.Context(), order.ID)
+	if err != nil {
+		h.logger.Error("Failed to presign invoice URL", zap.String("order_id", order.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate invoice link"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"invoice_url": url,
+		"expires_in":  900,
+	})
 }
 
 // GetOrderTracking retrieves tracking information for an order

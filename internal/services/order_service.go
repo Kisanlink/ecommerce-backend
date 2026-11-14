@@ -48,6 +48,8 @@ type OrderServiceInterface interface {
 	ClearUserCart(ctx context.Context, userID string) error
 	UpdateOrder(ctx context.Context, order *models.Order) error
 	GenerateAndAttachInvoice(ctx context.Context, orderID string) (string, error)
+	// GetInvoiceDownloadURL returns a short-lived presigned URL for the order's invoice PDF.
+	GetInvoiceDownloadURL(ctx context.Context, orderID string) (string, error)
 	// Transaction-based methods for payment verification
 	CreateOrderFromCartWithShippingAtomic(ctx context.Context, userID string, shippingAddress string, paymentMethod string, shippingCharges float64, razorpayOrderID string) (*models.Order, error)
 	UpdateOrderWithShipmentAtomic(ctx context.Context, orderID string, waybill string, trackingURL string, delhiveryStatus string) error
@@ -60,6 +62,8 @@ type OrderServiceInterface interface {
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
+	// CreateOrderAddress persists a normalized per-order shipping address (OADR) row.
+	CreateOrderAddress(ctx context.Context, address *models.OrderAddress) error
 	// Admin listing/stats/export
 	ListOrders(ctx context.Context, status, paymentStatus, q string, from, to *time.Time, page, limit int) ([]models.Order, int, error)
 	ListUnfulfilledOrders(ctx context.Context, page, limit int) ([]models.Order, int, error)
@@ -502,6 +506,14 @@ func (s *OrderService) GetAddressByID(ctx context.Context, userID, addressID str
 	return &addr, nil
 }
 
+// CreateOrderAddress persists a normalized per-order shipping address (OADR) row.
+func (s *OrderService) CreateOrderAddress(ctx context.Context, address *models.OrderAddress) error {
+	if address == nil {
+		return fmt.Errorf("order address cannot be nil")
+	}
+	return s.orderRepo.CreateOrderAddress(ctx, address)
+}
+
 // FormatAddress builds a single-line shipping address string
 func (s *OrderService) FormatAddress(addr *models.Address) string {
 	if addr == nil {
@@ -594,6 +606,17 @@ func (s *OrderService) createOrderItems(ctx context.Context, orderItems []models
 }
 
 // GetOrderByID retrieves an order by its ID - using a helper method to call the repository correctly
+// GetInvoiceDownloadURL returns a short-lived presigned URL for the order's invoice
+// PDF in R2. It does NOT verify ownership — the caller must confirm the requester
+// owns the order before calling. Returns an error if invoice storage is unconfigured.
+func (s *OrderService) GetInvoiceDownloadURL(ctx context.Context, orderID string) (string, error) {
+	if s.r2Service == nil || !s.r2Service.IsConfigured() {
+		return "", fmt.Errorf("invoice storage is not configured")
+	}
+	key := fmt.Sprintf("invoices/%s.pdf", orderID)
+	return s.r2Service.GetPresignedURL(ctx, key, 15*time.Minute)
+}
+
 func (s *OrderService) GetOrderByID(ctx context.Context, orderID string) (*models.Order, error) {
 	var order models.Order
 	_, err := s.orderRepo.GetByID(ctx, orderID, &order)
@@ -1126,6 +1149,29 @@ func (s *OrderService) DeductInventoryForOrder(ctx context.Context, orderID stri
 			if oversold {
 				oversoldIDs = append(oversoldIDs, it.ProductID)
 			}
+
+			// Mirror the decrement into the new Inventory model in the SAME transaction,
+			// when a row exists for the product. Floor at zero — the order is already paid,
+			// so we never hard-fail on oversell here (the legacy products.stock path above
+			// behaves the same) — and recompute the stored stock_status. available_stock is
+			// a computed column, so it is not stored. Products with no inventory row are
+			// tolerated (RowsAffected == 0), leaving products.stock authoritative for them.
+			invUpd := tx.WithContext(ctx).
+				Model(&models.Inventory{}).
+				Where("product_id = ?", it.ProductID).
+				Updates(map[string]interface{}{
+					"current_stock": gorm.Expr("GREATEST(current_stock - ?, 0)", it.Quantity),
+					"stock_status": gorm.Expr(
+						"CASE WHEN GREATEST(current_stock - ?, 0) <= 0 THEN ? "+
+							"WHEN GREATEST(current_stock - ?, 0) <= min_stock_level THEN ? ELSE ? END",
+						it.Quantity, string(models.StockStatusOutOfStock),
+						it.Quantity, string(models.StockStatusLowStock),
+						string(models.StockStatusInStock)),
+					"last_sold_at": gorm.Expr("NOW()"),
+				})
+			if invUpd.Error != nil {
+				return fmt.Errorf("failed to decrement inventory for product %s: %w", it.ProductID, invUpd.Error)
+			}
 		}
 		return nil
 	})
@@ -1338,15 +1384,10 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 		}
 	}
 
-	// Normalized customer + address first (reuse the PK-collision retry). These are
-	// harmless normalized records; the security-critical atomic unit is order + items.
-	if err := s.createOrderCustomerWithRetry(ctx, p.Customer); err != nil {
-		return nil, fmt.Errorf("failed to create order customer: %w", err)
-	}
-	if err := s.createOrderAddressWithRetry(ctx, p.Address); err != nil {
-		return nil, fmt.Errorf("failed to create order address: %w", err)
-	}
-
+	// Build the order referencing the (not-yet-persisted) customer + address IDs. All
+	// four rows — customer, address, order, items — are created in ONE transaction below
+	// (createOrderWithPartiesRetry), so a duplicate-order rollback cannot leave orphaned
+	// customer/address rows behind.
 	order := models.NewOrder(p.UserID, p.Customer.ID, p.Address.ID, totalAmount, p.PaymentMethod, models.OrderStatusConfirmed, "successful")
 	order.RazorpayOrderID = p.RazorpayOrderID
 	order.RazorpayPaymentID = p.RazorpayPaymentID
@@ -1371,9 +1412,21 @@ func (s *OrderService) CreateConfirmedOrder(ctx context.Context, p ConfirmedOrde
 		items = append(items, *models.NewOrderItem(order.ID, ci.ProductID, ci.Quantity, ci.UnitPrice))
 	}
 
-	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+	if err := s.createOrderWithPartiesRetry(ctx, p.Customer, p.Address, order, items); err != nil {
 		// May be ErrDuplicateOrder — surfaced unchanged for the caller to reuse.
 		return nil, err
+	}
+
+	// Increment coupon usage exactly once, for a genuinely new order only. A
+	// concurrent verify+webhook is deduped by the unique razorpay_order_id index:
+	// the duplicate returns ErrDuplicateOrder above and never reaches here, so the
+	// coupon is counted once per order (not once per signal). Non-fatal: the paid
+	// order stands even if the counter update fails (logged for reconciliation).
+	if cart.CouponCode != "" {
+		if cErr := s.ReduceCouponUsage(ctx, cart.CouponCode); cErr != nil {
+			s.logger.Error("Failed to increment coupon usage after confirmed order",
+				zap.Error(cErr), zap.String("coupon_code", cart.CouponCode), zap.String("order_id", order.ID))
+		}
 	}
 
 	// Cart cleared ONLY after the order+items commit (#32). Non-fatal if it fails:
@@ -1526,11 +1579,9 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 		custPhone = p
 	}
 
-	// Normalized customer + address from the frozen snapshot (reuse the PK-collision retry).
+	// Normalized customer from the frozen snapshot. Persisted together with the address,
+	// order and items in one transaction below (createOrderWithPartiesRetry).
 	customer := models.NewOrderCustomer(custFirst, custLast, custPhone, snap.CustomerPhoneAlt, snap.CustomerEmail)
-	if err := s.createOrderCustomerWithRetry(ctx, customer); err != nil {
-		return nil, fmt.Errorf("failed to create order customer from snapshot: %w", err)
-	}
 	// Reconcile the order total to what Razorpay actually captured, when the caller resolved it.
 	// The snapshot's FinalAmount can understate the charge — 1CC shipping is added by the widget
 	// AFTER the snapshot is written — so trusting it would under-record the order. We also refuse
@@ -1566,9 +1617,6 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 	address := models.NewOrderAddress(snap.AddressLine1, snap.AddressLine2, snap.City, snap.State, snap.PostalCode, country)
 	if ov.ShippingAddress != nil {
 		address = ov.ShippingAddress
-	}
-	if err := s.createOrderAddressWithRetry(ctx, address); err != nil {
-		return nil, fmt.Errorf("failed to create order address from snapshot: %w", err)
 	}
 
 	order := models.NewOrder(snap.UserID, customer.ID, address.ID, totalAmount, "razorpay", models.OrderStatusConfirmed, "successful")
@@ -1610,7 +1658,7 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 		items = append(items, *models.NewOrderItem(order.ID, li.ProductID, li.Quantity, li.UnitPrice))
 	}
 
-	if err := s.orderRepo.CreateOrderWithItemsTx(ctx, order, items); err != nil {
+	if err := s.createOrderWithPartiesRetry(ctx, customer, address, order, items); err != nil {
 		if errors.Is(err, ErrDuplicateOrder) {
 			// A concurrent verify/webhook already created the order — reuse it (idempotent).
 			existing, lookupErr := s.orderRepo.GetOrderByRazorpayOrderID(ctx, snap.RazorpayOrderID)
@@ -1620,6 +1668,17 @@ func (s *OrderService) RebuildOrderFromSnapshot(ctx context.Context, rzpOrderID,
 			}
 		}
 		return nil, err
+	}
+
+	// Increment coupon usage exactly once, for a genuinely new order only (see the
+	// same note in CreateConfirmedOrder). The ErrDuplicateOrder reuse branch above
+	// returns before reaching here, so a verify that already created the order is
+	// not double-counted by this webhook rebuild. Non-fatal.
+	if snap.CouponCode != "" {
+		if cErr := s.ReduceCouponUsage(ctx, snap.CouponCode); cErr != nil {
+			s.logger.Error("Failed to increment coupon usage after webhook order rebuild",
+				zap.Error(cErr), zap.String("coupon_code", snap.CouponCode), zap.String("order_id", order.ID))
+		}
 	}
 
 	if merr := s.snapshotRepo.MarkConsumed(ctx, snap.ID, paymentID); merr != nil {
@@ -1778,4 +1837,43 @@ func (s *OrderService) createOrderAddressWithRetry(ctx context.Context, addressD
 
 	// If we still have an error after all retries, return it
 	return fmt.Errorf("failed to create order address after %d attempts: %w", maxRetries, createErr)
+}
+
+// createOrderWithPartiesRetry creates the order customer, address, order and items in
+// a single transaction (orderRepo.CreateOrderWithPartiesTx), retrying with fresh
+// customer/address IDs on a primary-key collision. Unlike creating the parties in
+// separate writes beforehand, a duplicate-order rollback cannot orphan the party rows.
+// ErrDuplicateOrder (and any non-collision error) is surfaced unchanged.
+func (s *OrderService) createOrderWithPartiesRetry(ctx context.Context, customer *models.OrderCustomer, address *models.OrderAddress, order *models.Order, items []models.OrderItem) error {
+	const maxRetries = 3
+	var err error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err = s.orderRepo.CreateOrderWithPartiesTx(ctx, customer, address, order, items)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, repositories.ErrOrderPartyPKCollision) {
+			// ErrDuplicateOrder or any other error: surface unchanged.
+			return err
+		}
+		// Regenerate the colliding customer/address IDs and re-point the order at them,
+		// then retry the whole transaction. order.ID (and the items referencing it) are
+		// unchanged, so only the party foreign keys need updating.
+		if customer != nil {
+			nc := models.NewOrderCustomer(customer.FirstName, customer.LastName, customer.Phone, customer.PhoneAlt, customer.Email)
+			customer.ID = nc.ID
+			customer.BaseModel = nc.BaseModel
+			order.CustomerID = customer.ID
+		}
+		if address != nil {
+			na := models.NewOrderAddress(address.AddressLine1, address.AddressLine2, address.City, address.State, address.PostalCode, address.Country)
+			address.ID = na.ID
+			address.BaseModel = na.BaseModel
+			order.ShippingAddressID = address.ID
+		}
+		s.logger.Warn("Order party PK collision; regenerated IDs and retrying transaction",
+			zap.Int("attempt", attempt+1), zap.Int("max_retries", maxRetries))
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return fmt.Errorf("failed to create order with parties after %d attempts: %w", maxRetries, err)
 }

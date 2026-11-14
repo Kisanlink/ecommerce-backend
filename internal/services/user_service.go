@@ -321,7 +321,10 @@ func (s *UserService) UpdateUser(ctx context.Context, userID string, updateData 
 		user.IsActive = isActive
 	}
 	if role, ok := updateData["role"].(string); ok && role != "" {
-		user.Role = role
+		// Store a canonical role (trimmed, lowercase) so role checks that compare exactly — e.g. the
+		// first-admin bootstrap count — agree with AdminGuard's case/space-insensitive match and a
+		// non-canonical value like "Admin" can never create an uncounted admin.
+		user.Role = strings.ToLower(strings.TrimSpace(role))
 	}
 
 	user.SetUpdatedBy("system")

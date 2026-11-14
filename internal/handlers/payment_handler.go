@@ -14,6 +14,7 @@ import (
 
 	"github.com/Kisanlink/ecommerce-backend/entities/models"
 	"github.com/Kisanlink/ecommerce-backend/entities/requests"
+	"github.com/Kisanlink/ecommerce-backend/entities/responses"
 	"github.com/Kisanlink/ecommerce-backend/internal/config"
 	"github.com/Kisanlink/ecommerce-backend/internal/middleware/auth"
 	"github.com/Kisanlink/ecommerce-backend/internal/services"
@@ -991,75 +992,17 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 				zap.String("request_id", requestID),
 				zap.Strings("keys_to_try", keysToTry))
 
-			var storedAddressData map[string]interface{}
-			var foundKey string
-			for _, key := range keysToTry {
-				if data, exists := GetMagicCheckoutAddress(key); exists {
-					storedAddressData = data
-					foundKey = key
-					break
-				}
-			}
-
-			if storedAddressData != nil {
-				h.logger.Info("SUCCESS: Found stored Magic Checkout address",
-					zap.String("request_id", requestID),
-					zap.String("found_key", foundKey),
-					zap.String("razorpay_order_id", req.OrderID),
-					zap.Any("address_data", storedAddressData))
-
-				// Extract the shipping address from stored data
-				if shippingAddr, ok := storedAddressData["shipping_address"].(map[string]interface{}); ok {
-					magicCheckoutAddress = shippingAddr
-
-					// IMPORTANT: Extract customer name from shipping address
-					if name, ok := shippingAddr["name"].(string); ok && name != "" {
-						nameParts := strings.Fields(strings.TrimSpace(name))
-						if len(nameParts) > 0 {
-							firstName = nameParts[0]
-							if len(nameParts) > 1 {
-								lastName = strings.Join(nameParts[1:], " ")
-							}
-						}
-						h.logger.Info("Extracted customer name from shipping address",
-							zap.String("request_id", requestID),
-							zap.String("full_name", name),
-							zap.String("firstName", firstName),
-							zap.String("lastName", lastName))
-					}
-				}
-
-				// Extract customer details from stored data
-				if storedEmail, ok := storedAddressData["email"].(string); ok && storedEmail != "" {
-					email = storedEmail
-				}
-				if storedContact, ok := storedAddressData["contact"].(string); ok && storedContact != "" {
-					mobile = storedContact
-				}
-
-				// Extract customer details from customer_details if present
-				if custDetails, ok := storedAddressData["customer_details"].(map[string]interface{}); ok {
-					if name, ok := custDetails["name"].(string); ok && name != "" {
-						nameParts := strings.Fields(strings.TrimSpace(name))
-						if len(nameParts) > 0 {
-							firstName = nameParts[0]
-							if len(nameParts) > 1 {
-								lastName = strings.Join(nameParts[1:], " ")
-							}
-						}
-					}
-					if fn, ok := custDetails["first_name"].(string); ok && fn != "" {
-						firstName = fn
-					}
-					if ln, ok := custDetails["last_name"].(string); ok && ln != "" {
-						lastName = ln
-					}
-				}
-			} else {
-				h.logger.Warn("No stored Magic Checkout address found",
-					zap.String("request_id", requestID),
-					zap.Strings("keys_tried", keysToTry))
-			}
+			// SECURITY (PAY-06 / #35): the /magic-checkout/shipping-info and
+			// /addresses-callback endpoints are UNAUTHENTICATED, so the address they cache
+			// can be poisoned by anyone who knows a Razorpay order ID — redirecting a paid
+			// order's shipment (address-source poisoning). That cache is NOT a trusted source
+			// and is no longer read to decide where an order ships. The real 1CC address
+			// comes from the trusted Razorpay payment/order entity (handled immediately
+			// below); if Razorpay provides none, the order falls through to the existing
+			// needs-manual-fulfillment guard rather than shipping to an unverified address.
+			h.logger.Info("Razorpay order has no shipping address; ignoring unauthenticated callback cache and using the trusted payment entity only",
+				zap.String("request_id", requestID),
+				zap.Strings("keys_considered", keysToTry))
 		}
 
 		// Extract customer details from payment entity (Magic Checkout stores them here)
@@ -1728,10 +1671,41 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 			addressData = h.parseShippingAddressToOrderAddress(shippingAddress)
 		}
 
-		// Note: Address is already saved in the order via addressData
-		// The order will have the address stored in OrderAddress table
-		// For now, we store address in the order. To save to user's address book,
-		// we would need to add AddressService to PaymentHandler (can be done later)
+		// CONSOLIDATION (PAY-06 / #35): persist the resolved shipping address into the canonical
+		// `addresses` table so the order carries a stable addresses-table reference
+		// (order.ShippingAddrID, resolved by CreateShipment's legacy tier) and the customer gets a
+		// reusable saved address. The address data here comes only from TRUSTED sources — Razorpay
+		// customer_details / payment notes, or the user's own saved addresses; the unauthenticated
+		// Magic Checkout callback cache is no longer consulted (see the PAY-06 fix above). This is
+		// best-effort: any failure is logged and must never block order fulfillment. Skipped when an
+		// addresses-table id is already set or the line is a placeholder.
+		if shippingAddressID == "" && internalUserID != "" && h.addressService != nil &&
+			addressData != nil && strings.TrimSpace(addressData.AddressLine1) != "" {
+			// Vet ALL components, not just line1: the notes parser / parseShippingAddressToOrderAddress
+			// can return a real-looking street with city="Unknown City" and postal_code="000000".
+			// Saving that as a reusable address lets a later checkout pick it via the addresses-table
+			// fallback. Mirror finalizeFulfillment's placeholder rules (valid 6-digit pincode, not 000000).
+			pin := strings.TrimSpace(addressData.PostalCode)
+			all := strings.ToLower(strings.Join([]string{addressData.AddressLine1, addressData.City, addressData.State, pin}, " "))
+			if !strings.Contains(all, "address not provided") && !strings.Contains(all, "unknown") &&
+				pincodeRegex.MatchString(pin) && pin != "000000" {
+				if saved, acErr := h.addressService.FindOrCreateAddress(
+					c.Request.Context(), internalUserID,
+					addressData.AddressLine1, addressData.City, addressData.State,
+					addressData.PostalCode, addressData.Country,
+				); acErr == nil && saved != nil {
+					shippingAddressID = saved.ID
+					h.logger.Info("Persisted trusted shipping address into addresses table (consolidation)",
+						zap.String("request_id", requestID),
+						zap.String("address_id", saved.ID),
+						zap.String("user_id", internalUserID))
+				} else {
+					h.logger.Warn("Consolidation: failed to persist shipping address into addresses table (non-fatal)",
+						zap.String("request_id", requestID),
+						zap.Error(acErr))
+				}
+			}
+		}
 
 		// SECURITY (#2 replay + user binding): a (razorpay_order_id, payment_id, signature)
 		// triple must map to exactly ONE order, owned by exactly the authenticated user.
@@ -2199,6 +2173,172 @@ func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// SubmitShippingAddressRequest is the body a customer sends to supply or correct the shipping
+// address of their own paid order that is awaiting a deliverable destination (PAY-06 / #35).
+type SubmitShippingAddressRequest struct {
+	Name         string `json:"name"`
+	Phone        string `json:"phone"`
+	AddressLine1 string `json:"address_line_1" binding:"required"`
+	AddressLine2 string `json:"address_line_2"`
+	City         string `json:"city" binding:"required"`
+	State        string `json:"state" binding:"required"`
+	PostalCode   string `json:"postal_code" binding:"required"`
+	Country      string `json:"country"`
+}
+
+// SubmitShippingAddress lets the authenticated OWNER of a paid order supply (or correct) the
+// shipping address when the order is stuck in needs_manual_fulfillment because no trusted
+// destination was available at verify time. This is the safe replacement for the unauthenticated
+// Magic Checkout address cache removed in the PAY-06 fix: the destination now comes from the
+// authenticated owner, never an anonymous caller.
+//
+// It persists the address both to the canonical `addresses` table (a reusable saved address, also
+// the legacy shipment-resolution tier) and to a fresh per-order OADR snapshot (the authoritative
+// destination CreateShipment resolves first, so it overrides any stale snapshot), resets the order
+// to pending_shipment so the strict anti-double-ship claim will pick it up again, then re-drives
+// fulfillment through the same guarded, idempotent path used by verify/webhook.
+//
+// POST /api/v1/orders/:id/shipping-address
+func (h *PaymentHandler) SubmitShippingAddress(c *gin.Context) {
+	userID, exists := h.authContext.GetAuthenticatedUserID(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Order ID is required"})
+		return
+	}
+
+	order, err := h.orderService.GetOrderByID(c.Request.Context(), orderID)
+	if err != nil || order == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+		return
+	}
+
+	// Ownership (resolves Firebase UID -> internal id).
+	if !h.callerOwnsOrder(c, userID, order.UserID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	// State guard: only a PAID, not-yet-shipped order that is stuck awaiting a deliverable address
+	// may have its destination set by the customer. This prevents a customer from rewriting the
+	// address of an order that is already shipping or fulfilled.
+	isPaid := order.PaymentStatus == "paid" || order.PaymentStatus == "successful"
+	alreadyShipped := strings.TrimSpace(order.DelhiveryWaybill) != ""
+	// A courier shipment can already EXIST with an empty DelhiveryWaybill: finalizeFulfillment parks
+	// the order in needs_manual_fulfillment (NOT shipment_failed) when CreateShipment succeeded but
+	// ApplyShipmentSuccess failed to persist the waybill, recording "shipment created at courier ..."
+	// in ShipmentError. Accepting a resubmission here would reset the order to pending_shipment and
+	// re-drive CreateShipment, producing a SECOND parcel. Reject that state so the customer path never
+	// double-ships; those orders are reconciled by an admin, not by re-shipping.
+	shipmentAtCourier := strings.Contains(order.ShipmentError, "shipment created at courier")
+	if !isPaid || alreadyShipped || shipmentAtCourier || order.FulfillmentStatus != models.FulfillmentNeedsManual {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":              "Shipping address can only be submitted for a paid order that is awaiting a deliverable address",
+			"fulfillment_status": order.FulfillmentStatus,
+		})
+		return
+	}
+
+	var req SubmitShippingAddressRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	line1 := strings.TrimSpace(req.AddressLine1)
+	line2 := strings.TrimSpace(req.AddressLine2)
+	city := strings.TrimSpace(req.City)
+	state := strings.TrimSpace(req.State)
+	pincode := strings.TrimSpace(req.PostalCode)
+	country := strings.TrimSpace(req.Country)
+	if country == "" {
+		country = "India"
+	}
+	if line1 == "" || city == "" || state == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "address_line_1, city and state are required"})
+		return
+	}
+	if !pincodeRegex.MatchString(pincode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "postal_code must be a 6-digit Indian pincode"})
+		return
+	}
+
+	// 1) Persist to the canonical addresses table. order.UserID is already the internal USER… id, so
+	//    it is the owner. Non-fatal: the OADR snapshot below is the authoritative shipment source.
+	if saved, acErr := h.addressService.FindOrCreateAddress(
+		c.Request.Context(), order.UserID, line1, city, state, pincode, country,
+	); acErr == nil && saved != nil {
+		order.ShippingAddrID = saved.ID
+	} else {
+		h.logger.Warn("SubmitShippingAddress: failed to persist to addresses table (continuing with OADR snapshot)",
+			zap.String("order_id", orderID), zap.Error(acErr))
+	}
+
+	// 2) Create a fresh normalized per-order OADR snapshot and point the order at it. CreateShipment
+	//    resolves this first (OADR prefix), so it overrides any stale/placeholder snapshot.
+	oaddr := models.NewOrderAddress(line1, line2, city, state, pincode, country)
+	if err := h.orderService.CreateOrderAddress(c.Request.Context(), oaddr); err != nil {
+		h.logger.Error("SubmitShippingAddress: failed to create order address snapshot",
+			zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save shipping address"})
+		return
+	}
+	order.ShippingAddressID = oaddr.ID
+
+	// 3) Legacy text column + customer identity for the shipment label.
+	if name := strings.TrimSpace(req.Name); name != "" {
+		parts := strings.Fields(name)
+		order.CustomerFirstName = parts[0]
+		if len(parts) > 1 {
+			order.CustomerLastName = strings.Join(parts[1:], " ")
+		}
+	}
+	if phone := strings.TrimSpace(req.Phone); phone != "" {
+		order.CustomerPhone = phone
+	}
+	addrText := line1
+	if line2 != "" {
+		addrText += ", " + line2
+	}
+	order.ShippingAddr = fmt.Sprintf("%s, %s, %s %s, %s", addrText, city, state, pincode, country)
+
+	if err := h.orderService.UpdateOrder(c.Request.Context(), order); err != nil {
+		h.logger.Error("SubmitShippingAddress: failed to update order with new address",
+			zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order"})
+		return
+	}
+
+	// 4) The blocker (missing address) is resolved, so move the order out of needs_manual back to
+	//    pending_shipment, making it claimable by the strict (anti-double-ship) claim again.
+	if err := h.orderService.MarkFulfillmentStatus(c.Request.Context(), orderID, models.FulfillmentPendingShipment, ""); err != nil {
+		h.logger.Error("SubmitShippingAddress: failed to reset fulfillment status",
+			zap.String("order_id", orderID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue order for fulfillment"})
+		return
+	}
+
+	// 5) Re-drive fulfillment through the shared, guarded, idempotent path (claim -> ship -> inventory).
+	h.finalizeFulfillment(c.Request.Context(), orderID)
+
+	// Report the resulting state.
+	resp := gin.H{"success": true, "message": "Shipping address saved; order queued for fulfillment", "order_id": orderID}
+	if updated, rErr := h.orderService.GetOrderByID(c.Request.Context(), orderID); rErr == nil && updated != nil {
+		resp["fulfillment_status"] = updated.FulfillmentStatus
+		if strings.TrimSpace(updated.DelhiveryWaybill) != "" {
+			resp["waybill"] = updated.DelhiveryWaybill
+			resp["tracking_url"] = updated.TrackingURL
+			resp["message"] = "Shipping address saved; shipment created"
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // finalizeFulfillment creates the Delhivery shipment for an already-paid order (if one does not
@@ -3289,24 +3429,28 @@ func (h *PaymentHandler) CreateMagicCheckoutOrder(c *gin.Context) {
 	if h.userService != nil && internalUserID != "" {
 		userResponse, err := h.userService.GetUserByID(c.Request.Context(), internalUserID)
 		if err == nil && userResponse != nil && userResponse.Success && userResponse.Data != nil {
-			if userMap, ok := userResponse.Data.(map[string]interface{}); ok {
-				if name, ok := userMap["name"].(string); ok {
-					userName = name
+			// GetUserByID returns *base.BaseResponse whose .Data holds a
+			// responses.UserResponse VALUE (via ToUserResponse). The previous code
+			// asserted .Data.(map[string]interface{}), which ALWAYS failed, so
+			// userName/userEmail/userPhone stayed "" and were frozen into the cart
+			// snapshot. A webhook-recovered order then reached Delhivery with an
+			// empty customer and failed with "missing customer name/phone on order".
+			// Assert the real type instead.
+			switch u := userResponse.Data.(type) {
+			case responses.UserResponse:
+				userName, userEmail, userPhone = u.Name, u.Email, u.PhoneNumber
+			case *responses.UserResponse:
+				if u != nil {
+					userName, userEmail, userPhone = u.Name, u.Email, u.PhoneNumber
 				}
-				if email, ok := userMap["email"].(string); ok {
-					userEmail = email
-				}
-				if phone, ok := userMap["phone_number"].(string); ok {
-					userPhone = phone
-				}
-				// SECURITY (#27): no name/email/phone PII in logs.
-				h.logger.Info("Retrieved user information for Magic Checkout notes",
-					zap.String("request_id", requestID),
-					zap.String("user_id", internalUserID),
-					zap.Bool("has_name", userName != ""),
-					zap.Bool("has_email", userEmail != ""),
-					zap.Bool("has_phone", userPhone != ""))
 			}
+			// SECURITY (#27): no name/email/phone PII in logs.
+			h.logger.Info("Retrieved user information for Magic Checkout notes",
+				zap.String("request_id", requestID),
+				zap.String("user_id", internalUserID),
+				zap.Bool("has_name", userName != ""),
+				zap.Bool("has_email", userEmail != ""),
+				zap.Bool("has_phone", userPhone != ""))
 		} else {
 			h.logger.Warn("Failed to get user information for notes",
 				zap.String("request_id", requestID),

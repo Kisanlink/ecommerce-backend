@@ -142,6 +142,29 @@ func (s *R2Service) GetPublicURL(key string) string {
 	return fmt.Sprintf("https://%s.r2.cloudflarestorage.com/%s", s.bucketName, key)
 }
 
+// GetPresignedURL returns a short-lived presigned GET URL for an object. Use this
+// instead of GetPublicURL for access-controlled files (e.g. invoices) so the object
+// does not need to be publicly readable. For the gating to be meaningful the bucket's
+// public access must be disabled; otherwise the object is still reachable via its
+// public URL regardless of presigning.
+func (s *R2Service) GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	if !s.configured || s.client == nil {
+		return "", fmt.Errorf("R2 service is not configured")
+	}
+	if expiry <= 0 {
+		expiry = 15 * time.Minute
+	}
+	presigner := s3.NewPresignClient(s.client)
+	req, err := presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expiry))
+	if err != nil {
+		return "", fmt.Errorf("failed to presign object %s: %w", key, err)
+	}
+	return req.URL, nil
+}
+
 // DeleteFile deletes a file from R2
 func (s *R2Service) DeleteFile(ctx context.Context, key string) error {
 	if !s.IsConfigured() {
