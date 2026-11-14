@@ -100,11 +100,13 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 		// AdminGuard uses Go strings.TrimSpace (all ASCII whitespace), so a tab/newline-padded legacy
 		// role would be counted as admin by the guard but MISSED here, letting a second bootstrap
 		// promotion slip through. BTRIM with the explicit ASCII whitespace set matches Go's
-		// normalization. deleted_at is filtered explicitly because the base model's DeletedAt is a
-		// plain *time.Time (no gorm soft-delete auto-filter).
+		// normalization. NOTE: Postgres escape strings do NOT recognize \v — it collapses to a
+		// literal 'v', which would make BTRIM also strip the letter 'v' from the ends. Use the octal
+		// escape \013 (vertical tab) instead. deleted_at is filtered explicitly because the base
+		// model's DeletedAt is a plain *time.Time (no gorm soft-delete auto-filter).
 		var adminCount int64
 		if err := tx.Model(&models.User{}).
-			Where("deleted_at IS NULL AND LOWER(BTRIM(role, E' \\t\\n\\r\\f\\v')) = ?", "admin").
+			Where("deleted_at IS NULL AND LOWER(BTRIM(role, E' \\t\\n\\r\\f\\013')) = ?", "admin").
 			Count(&adminCount).Error; err != nil {
 			return err
 		}
@@ -112,7 +114,7 @@ func promoteUserToAdmin(c *gin.Context, repoManager *repositories.RepositoryMana
 			return errAdminExists
 		}
 		res := tx.Model(&models.User{}).
-			Where("deleted_at IS NULL AND LOWER(BTRIM(email, E' \\t\\n\\r\\f\\v')) = ?", emailNorm).
+			Where("deleted_at IS NULL AND LOWER(BTRIM(email, E' \\t\\n\\r\\f\\013')) = ?", emailNorm).
 			Update("role", "admin")
 		if res.Error != nil {
 			return res.Error
