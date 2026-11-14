@@ -59,6 +59,7 @@ type OrderServiceInterface interface {
 	DeductInventoryForOrder(ctx context.Context, orderID string) error
 	ClaimOrderForShipment(ctx context.Context, orderID string) (bool, error)
 	ClaimOrderForShipmentAdmin(ctx context.Context, orderID string) (bool, error)
+	ResetNeedsManualToPending(ctx context.Context, orderID string) (bool, error)
 	// Address helpers
 	GetAddressByID(ctx context.Context, userID, addressID string) (*models.Address, error)
 	FormatAddress(addr *models.Address) string
@@ -1084,6 +1085,16 @@ func (s *OrderService) MarkFulfillmentStatus(ctx context.Context, orderID, statu
 		return fmt.Errorf("order repository unavailable")
 	}
 	return s.orderRepo.SetFulfillmentStatus(ctx, orderID, status, shipmentErr)
+}
+
+// ResetNeedsManualToPending atomically returns an order from needs_manual_fulfillment to
+// pending_shipment (see the repository method). Returns true only to the one caller that wins the
+// transition, so overlapping address resubmissions cannot both re-drive fulfillment.
+func (s *OrderService) ResetNeedsManualToPending(ctx context.Context, orderID string) (bool, error) {
+	if s.orderRepo == nil {
+		return false, fmt.Errorf("order repository unavailable")
+	}
+	return s.orderRepo.ResetNeedsManualToPending(ctx, orderID)
 }
 
 // DeductInventoryForOrder decrements stock for the order's items exactly once (idempotent).

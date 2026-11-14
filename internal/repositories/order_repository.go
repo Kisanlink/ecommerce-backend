@@ -874,6 +874,34 @@ func (r *OrderRepository) ClaimOrderForShipmentAdmin(ctx context.Context, orderI
 	return res.RowsAffected == 1, nil
 }
 
+// ResetNeedsManualToPending atomically moves an order from needs_manual_fulfillment back to
+// pending_shipment so the customer-supplied address can re-drive fulfillment. It is a conditional
+// compare-and-set (not a read-set-save): only the single caller that observes the order still in
+// needs_manual_fulfillment with an empty waybill wins. This closes a TOCTOU where two overlapping
+// address resubmissions both pass the handler's state guard and both reset the status — the second,
+// unconditional reset could flip an order another request had already claimed
+// (shipment_in_progress) back to pending_shipment, letting CreateShipment run twice.
+func (r *OrderRepository) ResetNeedsManualToPending(ctx context.Context, orderID string) (bool, error) {
+	if r.pgManager == nil {
+		// Fail safe: without atomic DB access, refuse rather than risk an unconditional reset.
+		return false, fmt.Errorf("postgres manager unavailable for fulfillment reset")
+	}
+	gdb, err := r.pgManager.GetDB(ctx, false)
+	if err != nil {
+		return false, fmt.Errorf("failed to get db for fulfillment reset: %w", err)
+	}
+
+	res := gdb.WithContext(ctx).
+		Model(&models.Order{}).
+		Where("id = ? AND fulfillment_status = ? AND (delhivery_waybill IS NULL OR delhivery_waybill = '')",
+			orderID, models.FulfillmentNeedsManual).
+		Update("fulfillment_status", models.FulfillmentPendingShipment)
+	if res.Error != nil {
+		return false, fmt.Errorf("failed to reset fulfillment status: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // isDuplicateKeyError checks if an error is a duplicate key constraint violation
 func isDuplicateKeyError(err error) bool {
 	if err == nil {

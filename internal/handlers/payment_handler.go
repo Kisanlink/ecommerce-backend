@@ -2317,11 +2317,28 @@ func (h *PaymentHandler) SubmitShippingAddress(c *gin.Context) {
 	}
 
 	// 4) The blocker (missing address) is resolved, so move the order out of needs_manual back to
-	//    pending_shipment, making it claimable by the strict (anti-double-ship) claim again.
-	if err := h.orderService.MarkFulfillmentStatus(c.Request.Context(), orderID, models.FulfillmentPendingShipment, ""); err != nil {
+	//    pending_shipment, making it claimable by the strict (anti-double-ship) claim again. This is a
+	//    conditional compare-and-set, NOT an unconditional write: the state guard at the top of this
+	//    handler reads the order once, so two overlapping resubmissions can both pass it. An
+	//    unconditional reset by the second request could flip an order the first already claimed
+	//    (shipment_in_progress) back to pending_shipment and let CreateShipment run twice. Only the one
+	//    caller that still observes needs_manual_fulfillment wins the transition; the loser gets 409 and
+	//    must not re-drive fulfillment.
+	reset, err := h.orderService.ResetNeedsManualToPending(c.Request.Context(), orderID)
+	if err != nil {
 		h.logger.Error("SubmitShippingAddress: failed to reset fulfillment status",
 			zap.String("order_id", orderID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue order for fulfillment"})
+		return
+	}
+	if !reset {
+		// Another request already moved this order out of needs_manual_fulfillment (it is being
+		// shipped or has been handled). Do not finalize again.
+		h.logger.Info("SubmitShippingAddress: order no longer awaiting an address; skipping re-fulfillment",
+			zap.String("order_id", orderID))
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "This order is no longer awaiting a delivery address; it is already being fulfilled",
+		})
 		return
 	}
 
